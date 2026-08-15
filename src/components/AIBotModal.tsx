@@ -1,69 +1,265 @@
 import { useEffect, useState } from 'react';
 import { useAIBot } from '../hooks/useAIBot';
-import { AIBotSettings } from '../ai/engine';
+import type { AIBotSettings } from '../ai/engine';
 
-const overlayStyle: React.CSSProperties = {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(0, 0, 0, 0.55)',
-    zIndex: 2147483646,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-};
+const styles = `
+    .ai-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483646;
+        background: rgba(15, 23, 42, 0.55);
+        backdrop-filter: blur(5px);
+        -webkit-backdrop-filter: blur(5px);
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        padding: 0;
+        animation: aiFadeIn 0.18s ease;
+    }
 
-const modalStyle: React.CSSProperties = {
-    width: '100%',
-    maxWidth: 860,
-    maxHeight: '90vh',
-    overflow: 'auto',
-    background: '#ffffff',
-    color: '#111827',
-    borderRadius: 16,
-    padding: 20,
-    boxShadow: '0 20px 60px rgba(0,0,0,0.35)',
-    fontFamily: 'Arial, sans-serif',
-};
+    @media (min-width: 768px) {
+        .ai-overlay {
+            align-items: center;
+            padding: 24px;
+        }
+    }
 
-const gridStyle: React.CSSProperties = {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-    gap: 12,
-};
+    .ai-modal {
+        width: 100%;
+        max-width: 960px;
+        max-height: 92vh;
+        max-height: 92dvh;
+        overflow: auto;
+        background: #ffffff;
+        color: #111827;
+        border-radius: 20px 20px 0 0;
+        padding: 18px;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.35);
+        animation: aiSlideUp 0.25s ease;
+        font-family: inherit;
+    }
 
-const labelStyle: React.CSSProperties = {
-    fontSize: 12,
-    fontWeight: 700,
-    marginBottom: 4,
-    display: 'block',
-};
+    @media (min-width: 768px) {
+        .ai-modal {
+            border-radius: 20px;
+            padding: 22px;
+        }
+    }
 
-const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '8px 10px',
-    borderRadius: 8,
-    border: '1px solid #d1d5db',
-};
+    .ai-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+    }
 
-const buttonStyle: React.CSSProperties = {
-    padding: '10px 16px',
-    borderRadius: 10,
-    border: 'none',
-    cursor: 'pointer',
-    fontWeight: 800,
-};
+    .ai-title {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 900;
+    }
 
-const logsStyle: React.CSSProperties = {
-    marginTop: 16,
-    maxHeight: 180,
-    overflow: 'auto',
-    background: '#f9fafb',
-    border: '1px solid #e5e7eb',
-    borderRadius: 10,
-    padding: 10,
-    fontSize: 12,
-};
+    .ai-subtitle {
+        margin-top: 4px;
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.4;
+    }
+
+    .ai-banner {
+        background: #fff7ed;
+        border: 1px solid #fdba74;
+        color: #9a3412;
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 12px;
+        line-height: 1.5;
+        margin-bottom: 16px;
+    }
+
+    .ai-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    @media (min-width: 700px) {
+        .ai-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (min-width: 1024px) {
+        .ai-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+    }
+
+    .ai-field label {
+        display: block;
+        font-size: 12px;
+        font-weight: 800;
+        color: #374151;
+        margin-bottom: 5px;
+    }
+
+    .ai-input {
+        width: 100%;
+        min-height: 38px;
+        border-radius: 10px;
+        border: 1px solid #d1d5db;
+        background: #fff;
+        color: #111827;
+        padding: 9px 10px;
+        outline: none;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .ai-input:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    }
+
+    .ai-checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 700;
+        color: #374151;
+        padding: 10px 0;
+    }
+
+    .ai-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-top: 18px;
+    }
+
+    .ai-button {
+        border: none;
+        border-radius: 12px;
+        padding: 11px 16px;
+        font-weight: 900;
+        cursor: pointer;
+        transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .ai-button:hover {
+        transform: translateY(-1px);
+        opacity: 0.94;
+    }
+
+    .ai-button:active {
+        transform: scale(0.99);
+    }
+
+    .ai-button-primary {
+        background: linear-gradient(135deg, #16a34a, #22c55e);
+        color: white;
+        box-shadow: 0 10px 24px rgba(22, 163, 74, 0.22);
+    }
+
+    .ai-button-danger {
+        background: linear-gradient(135deg, #dc2626, #ef4444);
+        color: white;
+        box-shadow: 0 10px 24px rgba(220, 38, 38, 0.22);
+    }
+
+    .ai-button-neutral {
+        background: #e5e7eb;
+        color: #111827;
+    }
+
+    .ai-status {
+        font-size: 12px;
+        color: #4b5563;
+        line-height: 1.5;
+    }
+
+    .ai-stats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 16px;
+    }
+
+    @media (min-width: 900px) {
+        .ai-stats {
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+        }
+    }
+
+    .ai-stat-card {
+        background: linear-gradient(180deg, #ffffff, #f9fafb);
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 10px 12px;
+        min-width: 0;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+    }
+
+    .ai-stat-label {
+        color: #6b7280;
+        font-size: 11px;
+        font-weight: 800;
+        margin-bottom: 4px;
+    }
+
+    .ai-stat-value {
+        font-size: 16px;
+        font-weight: 950;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .ai-logs {
+        margin-top: 16px;
+        max-height: 190px;
+        overflow: auto;
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 10px;
+        font-size: 12px;
+        line-height: 1.5;
+    }
+
+    .ai-log-line {
+        margin-bottom: 4px;
+        word-break: break-word;
+    }
+
+    .ai-section-title {
+        margin: 18px 0 10px;
+        font-size: 13px;
+        font-weight: 950;
+        color: #111827;
+    }
+
+    @media (max-width: 767px) {
+        .ai-title {
+            font-size: 18px;
+        }
+
+        .ai-modal {
+            padding: 14px;
+        }
+
+        .ai-stat-value {
+            font-size: 14px;
+        }
+    }
+`;
+
+function toNumber(value: string, fallback: number): number {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
 
 export default function AIBotModal({
     open,
@@ -86,10 +282,10 @@ export default function AIBotModal({
         return null;
     }
 
-    const set = <K extends keyof AIBotSettings>(key: K, value: AIBotSettings[K]) => {
+    const set = (patch: Partial<AIBotSettings>) => {
         setForm(previous => ({
             ...previous,
-            [key]: value,
+            ...patch,
         }));
     };
 
@@ -102,116 +298,110 @@ export default function AIBotModal({
     };
 
     return (
-        <div style={overlayStyle} onClick={onClose}>
-            <div style={modalStyle} onClick={event => event.stopPropagation()}>
-                <div
-                    style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        marginBottom: 16,
-                    }}
-                >
-                    <h2 style={{ margin: 0 }}>AI Synthetic Indices Bot</h2>
-                    <button
-                        onClick={onClose}
-                        style={{
-                            ...buttonStyle,
-                            background: '#e5e7eb',
-                            color: '#111827',
-                        }}
-                    >
+        <div className="ai-overlay" onClick={onClose}>
+            <style>{styles}</style>
+
+            <div className="ai-modal" onClick={event => event.stopPropagation()}>
+                <div className="ai-header">
+                    <div>
+                        <h2 className="ai-title">AI Synthetic Indices Bot</h2>
+                        <div className="ai-subtitle">
+                            Scans synthetic markets, analyzes live ticks, and executes only when
+                            your configured confidence and projection rules are met.
+                        </div>
+                    </div>
+
+                    <button className="ai-button ai-button-neutral" onClick={onClose}>
                         Close
                     </button>
                 </div>
 
-                <div
-                    style={{
-                        background: '#fff7ed',
-                        border: '1px solid #fdba74',
-                        color: '#9a3412',
-                        borderRadius: 10,
-                        padding: 10,
-                        marginBottom: 16,
-                        fontSize: 12,
-                        lineHeight: 1.5,
-                    }}
-                >
-                    Risk warning: autonomous trading can lose money. This bot defaults to
-                    paper trading. Use live mode only with a Deriv API token that has
-                    trade permission. Martingale can rapidly exhaust your balance.
+                <div className="ai-banner">
+                    Risk warning: autonomous trading can lose money. This bot defaults to paper
+                    trading. Use live mode only with a Deriv API token that has trade permission.
+                    Martingale can rapidly exhaust your balance.
                 </div>
 
-                <div style={gridStyle}>
-                    <div>
-                        <label style={labelStyle}>Mode</label>
+                <div className="ai-section-title">Connection &amp; Execution</div>
+
+                <div className="ai-grid">
+                    <div className="ai-field">
+                        <label>Mode</label>
                         <select
-                            style={inputStyle}
+                            className="ai-input"
                             value={form.mode}
-                            onChange={e => set('mode', e.target.value as AIBotSettings['mode'])}
+                            onChange={e =>
+                                set({ mode: e.target.value as AIBotSettings['mode'] })
+                            }
                         >
                             <option value="paper">Paper / Simulation</option>
                             <option value="live">Live Trading</option>
                         </select>
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Deriv App ID</label>
+                    <div className="ai-field">
+                        <label>Deriv App ID</label>
                         <input
-                            style={inputStyle}
+                            className="ai-input"
                             value={form.appId}
-                            onChange={e => set('appId', e.target.value)}
+                            onChange={e => set({ appId: e.target.value })}
                         />
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Deriv API Token</label>
+                    <div className="ai-field">
+                        <label>Deriv API Token</label>
                         <input
-                            style={inputStyle}
+                            className="ai-input"
                             type="password"
                             placeholder="Required only for live mode"
                             value={form.apiToken}
-                            onChange={e => set('apiToken', e.target.value)}
+                            onChange={e => set({ apiToken: e.target.value })}
                         />
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Base Stake</label>
+                    <div className="ai-field">
+                        <label>Base Stake</label>
                         <input
-                            style={inputStyle}
+                            className="ai-input"
                             type="number"
                             step="0.01"
                             value={form.stake}
-                            onChange={e => set('stake', Number(e.target.value))}
+                            onChange={e =>
+                                set({ stake: toNumber(e.target.value, form.stake) })
+                            }
                         />
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Currency</label>
+                    <div className="ai-field">
+                        <label>Currency</label>
                         <input
-                            style={inputStyle}
+                            className="ai-input"
                             value={form.currency}
-                            onChange={e => set('currency', e.target.value)}
+                            onChange={e => set({ currency: e.target.value })}
                         />
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Duration</label>
+                    <div className="ai-field">
+                        <label>Duration</label>
                         <input
-                            style={inputStyle}
+                            className="ai-input"
                             type="number"
                             value={form.duration}
-                            onChange={e => set('duration', Number(e.target.value))}
+                            onChange={e =>
+                                set({ duration: toNumber(e.target.value, form.duration) })
+                            }
                         />
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Duration Unit</label>
+                    <div className="ai-field">
+                        <label>Duration Unit</label>
                         <select
-                            style={inputStyle}
+                            className="ai-input"
                             value={form.durationUnit}
                             onChange={e =>
-                                set('durationUnit', e.target.value as AIBotSettings['durationUnit'])
+                                set({
+                                    durationUnit: e.target.value as AIBotSettings['durationUnit'],
+                                })
                             }
                         >
                             <option value="t">Ticks</option>
@@ -220,254 +410,311 @@ export default function AIBotModal({
                         </select>
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Minimum Confidence</label>
+                    <div className="ai-field">
+                        <label>Max Concurrent Trades</label>
                         <input
-                            style={inputStyle}
+                            className="ai-input"
+                            type="number"
+                            value={form.maxConcurrentTrades}
+                            onChange={e =>
+                                set({
+                                    maxConcurrentTrades: toNumber(
+                                        e.target.value,
+                                        form.maxConcurrentTrades
+                                    ),
+                                })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Cooldown ms</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.cooldownMs}
+                            onChange={e =>
+                                set({ cooldownMs: toNumber(e.target.value, form.cooldownMs) })
+                            }
+                        />
+                    </div>
+                </div>
+
+                <div className="ai-section-title">AI Entry Rules</div>
+
+                <div className="ai-grid">
+                    <div className="ai-field">
+                        <label>Minimum Confidence</label>
+                        <input
+                            className="ai-input"
                             type="number"
                             step="0.01"
                             min="0.5"
                             max="0.95"
                             value={form.minConfidence}
-                            onChange={e => set('minConfidence', Number(e.target.value))}
+                            onChange={e =>
+                                set({
+                                    minConfidence: toNumber(e.target.value, form.minConfidence),
+                                })
+                            }
                         />
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Max Volatility</label>
+                    <div className="ai-field">
+                        <label>Max Volatility</label>
                         <input
-                            style={inputStyle}
+                            className="ai-input"
                             type="number"
                             value={form.maxVolatility}
-                            onChange={e => set('maxVolatility', Number(e.target.value))}
+                            onChange={e =>
+                                set({
+                                    maxVolatility: toNumber(e.target.value, form.maxVolatility),
+                                })
+                            }
                         />
                     </div>
 
-                    <div>
-                        <label style={labelStyle}>Max Concurrent Trades</label>
+                    <div className="ai-field">
+                        <label>Minimum Projected Edge</label>
                         <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.maxConcurrentTrades}
-                            onChange={e => set('maxConcurrentTrades', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Daily Loss Limit</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.dailyLossLimit}
-                            onChange={e => set('dailyLossLimit', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Daily Take Profit</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.takeProfit}
-                            onChange={e => set('takeProfit', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Max Stake</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.maxStake}
-                            onChange={e => set('maxStake', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Cooldown ms</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.cooldownMs}
-                            onChange={e => set('cooldownMs', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Scan Interval ms</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.scanIntervalMs}
-                            onChange={e => set('scanIntervalMs', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Market Symbols Override</label>
-                        <input
-                            style={inputStyle}
-                            placeholder="Blank = all synthetic indices"
-                            value={form.symbolsOverride}
-                            onChange={e => set('symbolsOverride', e.target.value)}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Max Symbols</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.maxSymbols}
-                            onChange={e => set('maxSymbols', Number(e.target.value))}
-                        />
-                    </div>
-                </div>
-
-                <div
-                    style={{
-                        marginTop: 16,
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                        gap: 12,
-                    }}
-                >
-                    <label style={{ fontSize: 13 }}>
-                        <input
-                            type="checkbox"
-                            checked={form.martingaleEnabled}
-                            onChange={e => set('martingaleEnabled', e.target.checked)}
-                        />{' '}
-                        Enable Martingale
-                    </label>
-
-                    <div>
-                        <label style={labelStyle}>Martingale Multiplier</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            step="0.1"
-                            value={form.martingaleMultiplier}
-                            onChange={e => set('martingaleMultiplier', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <div>
-                        <label style={labelStyle}>Max Martingale Steps</label>
-                        <input
-                            style={inputStyle}
-                            type="number"
-                            value={form.maxMartingaleSteps}
-                            onChange={e => set('maxMartingaleSteps', Number(e.target.value))}
-                        />
-                    </div>
-
-                    <label style={{ fontSize: 13 }}>
-                        <input
-                            type="checkbox"
-                            checked={form.requireProfitProjection}
-                            onChange={e => set('requireProfitProjection', e.target.checked)}
-                        />{' '}
-                        Require Positive Projection
-                    </label>
-
-                    <div>
-                        <label style={labelStyle}>Minimum Projected Edge</label>
-                        <input
-                            style={inputStyle}
+                            className="ai-input"
                             type="number"
                             step="0.01"
                             value={form.minProjectedEdge}
-                            onChange={e => set('minProjectedEdge', Number(e.target.value))}
+                            onChange={e =>
+                                set({
+                                    minProjectedEdge: toNumber(
+                                        e.target.value,
+                                        form.minProjectedEdge
+                                    ),
+                                })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Scan Interval ms</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.scanIntervalMs}
+                            onChange={e =>
+                                set({
+                                    scanIntervalMs: toNumber(e.target.value, form.scanIntervalMs),
+                                })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Scan Batch Delay ms</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.scanBatchDelayMs}
+                            onChange={e =>
+                                set({
+                                    scanBatchDelayMs: toNumber(
+                                        e.target.value,
+                                        form.scanBatchDelayMs
+                                    ),
+                                })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Max Symbols</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.maxSymbols}
+                            onChange={e =>
+                                set({ maxSymbols: toNumber(e.target.value, form.maxSymbols) })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field" style={{ gridColumn: '1 / -1' }}>
+                        <label>Market Symbols Override</label>
+                        <input
+                            className="ai-input"
+                            placeholder="Blank = all synthetic indices. Example: R_10,R_25,R_50"
+                            value={form.symbolsOverride}
+                            onChange={e => set({ symbolsOverride: e.target.value })}
                         />
                     </div>
                 </div>
 
-                <div
-                    style={{
-                        display: 'flex',
-                        gap: 10,
-                        marginTop: 18,
-                        flexWrap: 'wrap',
-                    }}
-                >
+                <div className="ai-section-title">Risk Management</div>
+
+                <div className="ai-grid">
+                    <div className="ai-field">
+                        <label>Daily Loss Limit</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.dailyLossLimit}
+                            onChange={e =>
+                                set({
+                                    dailyLossLimit: toNumber(e.target.value, form.dailyLossLimit),
+                                })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Daily Take Profit</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.takeProfit}
+                            onChange={e =>
+                                set({ takeProfit: toNumber(e.target.value, form.takeProfit) })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Max Stake</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.maxStake}
+                            onChange={e =>
+                                set({ maxStake: toNumber(e.target.value, form.maxStake) })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Martingale Multiplier</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            step="0.1"
+                            value={form.martingaleMultiplier}
+                            onChange={e =>
+                                set({
+                                    martingaleMultiplier: toNumber(
+                                        e.target.value,
+                                        form.martingaleMultiplier
+                                    ),
+                                })
+                            }
+                        />
+                    </div>
+
+                    <div className="ai-field">
+                        <label>Max Martingale Steps</label>
+                        <input
+                            className="ai-input"
+                            type="number"
+                            value={form.maxMartingaleSteps}
+                            onChange={e =>
+                                set({
+                                    maxMartingaleSteps: toNumber(
+                                        e.target.value,
+                                        form.maxMartingaleSteps
+                                    ),
+                                })
+                            }
+                        />
+                    </div>
+
+                    <label className="ai-checkbox-row">
+                        <input
+                            type="checkbox"
+                            checked={form.martingaleEnabled}
+                            onChange={e => set({ martingaleEnabled: e.target.checked })}
+                        />
+                        Enable Martingale
+                    </label>
+
+                    <label className="ai-checkbox-row">
+                        <input
+                            type="checkbox"
+                            checked={form.requireProfitProjection}
+                            onChange={e => set({ requireProfitProjection: e.target.checked })}
+                        />
+                        Require Positive Projection
+                    </label>
+                </div>
+
+                <div className="ai-actions">
                     {!state.running ? (
                         <button
+                            className="ai-button ai-button-primary"
                             onClick={handleStart}
-                            style={{
-                                ...buttonStyle,
-                                background: '#16a34a',
-                                color: '#ffffff',
-                            }}
                         >
                             Start AI Bot
                         </button>
                     ) : (
-                        <button
-                            onClick={handleStop}
-                            style={{
-                                ...buttonStyle,
-                                background: '#dc2626',
-                                color: '#ffffff',
-                            }}
-                        >
+                        <button className="ai-button ai-button-danger" onClick={handleStop}>
                             Stop AI Bot
                         </button>
                     )}
 
-                    <div style={{ fontSize: 13, alignSelf: 'center' }}>
-                        Status: {state.running ? 'Running' : 'Stopped'} | Mode:{' '}
-                        {state.settings.mode.toUpperCase()} | Connected:{' '}
-                        {state.connected ? 'Yes' : 'No'} | Authorized:{' '}
-                        {state.authorized ? 'Yes' : 'No'}
+                    <div className="ai-status">
+                        Status: {state.running ? 'Running' : 'Stopped'}
+                        <br />
+                        Mode: {state.settings.mode.toUpperCase()}
+                        <br />
+                        Connected: {state.connected ? 'Yes' : 'No'}
+                        <br />
+                        Authorized: {state.authorized ? 'Yes' : 'No'}
                     </div>
                 </div>
 
-                <div
-                    style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-                        gap: 10,
-                        marginTop: 16,
-                    }}
-                >
-                    <div style={{ background: '#f9fafb', borderRadius: 10, padding: 10 }}>
-                        Net P/L
-                        <div style={{ fontWeight: 900 }}>
+                <div className="ai-stats">
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Net P/L</div>
+                        <div
+                            className="ai-stat-value"
+                            style={{
+                                color: state.stats.net >= 0 ? '#16a34a' : '#dc2626',
+                            }}
+                        >
                             {state.stats.net.toFixed(2)}
                         </div>
                     </div>
 
-                    <div style={{ background: '#f9fafb', borderRadius: 10, padding: 10 }}>
-                        Daily P/L
-                        <div style={{ fontWeight: 900 }}>
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Daily P/L</div>
+                        <div
+                            className="ai-stat-value"
+                            style={{
+                                color: state.stats.dailyNet >= 0 ? '#16a34a' : '#dc2626',
+                            }}
+                        >
                             {state.stats.dailyNet.toFixed(2)}
                         </div>
                     </div>
 
-                    <div style={{ background: '#f9fafb', borderRadius: 10, padding: 10 }}>
-                        Wins
-                        <div style={{ fontWeight: 900 }}>{state.stats.wins}</div>
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Wins</div>
+                        <div className="ai-stat-value">{state.stats.wins}</div>
                     </div>
 
-                    <div style={{ background: '#f9fafb', borderRadius: 10, padding: 10 }}>
-                        Losses
-                        <div style={{ fontWeight: 900 }}>{state.stats.losses}</div>
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Losses</div>
+                        <div className="ai-stat-value">{state.stats.losses}</div>
                     </div>
 
-                    <div style={{ background: '#f9fafb', borderRadius: 10, padding: 10 }}>
-                        Open Trades
-                        <div style={{ fontWeight: 900 }}>{state.stats.open}</div>
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Open Trades</div>
+                        <div className="ai-stat-value">{state.stats.open}</div>
                     </div>
                 </div>
 
-                <div style={logsStyle}>
+                <div className="ai-logs">
                     {state.logs.length === 0 ? (
                         <div>No logs yet.</div>
                     ) : (
                         state.logs.map((log, index) => (
                             <div
                                 key={`${log.time}-${index}`}
+                                className="ai-log-line"
                                 style={{
                                     color:
                                         log.level === 'error'
@@ -477,7 +724,6 @@ export default function AIBotModal({
                                               : log.level === 'success'
                                                 ? '#15803d'
                                                 : '#111827',
-                                    marginBottom: 4,
                                 }}
                             >
                                 [{log.time}] {log.message}
