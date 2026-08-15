@@ -14,34 +14,427 @@
         <title>DollarBotFX</title>
 
         <style>
-            html,
-            body {
-                margin: 0;
-                padding: 0;
-                min-height: 100%;
-                background-color: #ffffff !important;
-                color: #000000 !important;
+            :root {
+                --bg: #ffffff;
+                --text: #111827;
+                --muted: #6b7280;
+                --border: #e5e7eb;
+                --card: #ffffff;
+                --accent: #2563eb;
+                --accent-2: #7c3aed;
+                --success: #16a34a;
+                --danger: #dc2626;
+                --warning: #d97706;
+                --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+                --shadow-lg: 0 18px 50px rgba(15, 23, 42, 0.14);
+                --radius: 14px;
+                --radius-lg: 18px;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            html {
+                font-size: 100% !important;
+                -webkit-text-size-adjust: 100%;
+                text-size-adjust: 100%;
             }
 
             body {
+                margin: 0;
+                padding: 0;
+                width: 100%;
+                min-height: 100vh;
+                overflow-x: hidden;
+                background-color: var(--bg) !important;
+                color: var(--text) !important;
                 font-family:
                     -apple-system,
                     BlinkMacSystemFont,
                     "Segoe UI",
                     Roboto,
+                    "Helvetica Neue",
                     Arial,
                     sans-serif;
+                font-size: 14px;
+                line-height: 1.45;
+                -webkit-font-smoothing: antialiased;
+                text-rendering: optimizeLegibility;
             }
 
             #root {
-                min-height: 100vh;
                 width: 100%;
-                background-color: #ffffff !important;
+                min-height: 100vh;
+                margin: 0;
+                padding: 0;
             }
 
+            #root > * {
+                min-width: 0;
+            }
+
+            img,
+            svg,
+            video,
+            iframe,
+            canvas {
+                max-width: 100%;
+            }
+
+            img,
+            video,
+            iframe {
+                height: auto;
+            }
+
+            button,
+            input,
+            select,
+            textarea {
+                font: inherit;
+                max-width: 100%;
+            }
+
+            button {
+                cursor: pointer;
+                touch-action: manipulation;
+            }
+
+            a {
+                color: inherit;
+                text-decoration: none;
+            }
+
+            ::-webkit-scrollbar {
+                width: 8px;
+                height: 8px;
+            }
+
+            ::-webkit-scrollbar-thumb {
+                background: #cbd5e1;
+                border-radius: 999px;
+            }
+
+            ::-webkit-scrollbar-track {
+                background: transparent;
+            }
+
+            /* Responsive app shell */
+            :where(
+                .app,
+                .main,
+                .dashboard,
+                .content,
+                .container,
+                .page,
+                main,
+                section,
+                header,
+                footer,
+                aside,
+                nav
+            ) {
+                max-width: 100vw;
+                min-width: 0;
+            }
+
+            :where(.dashboard, .main, .content, .page, main) {
+                width: 100%;
+                margin-left: auto;
+                margin-right: auto;
+                padding: clamp(8px, 2vw, 18px);
+            }
+
+            /* Dashboard / cards */
+            :where(
+                .card,
+                .panel,
+                .widget,
+                .box,
+                .summary-card,
+                .dashboard-card,
+                .run-panel,
+                .transactions,
+                .journal,
+                .toolbox,
+                .chart-panel,
+                .settings-panel,
+                .bot-panel
+            ) {
+                background: linear-gradient(180deg, #ffffff, #fbfdff);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                box-shadow: var(--shadow);
+                padding: 14px;
+                min-width: 0;
+                overflow: hidden;
+                animation: aiFadeIn 0.25s ease both;
+                transition:
+                    transform 0.18s ease,
+                    box-shadow 0.18s ease,
+                    border-color 0.18s ease;
+            }
+
+            :where(
+                .card,
+                .panel,
+                .widget,
+                .dashboard-card,
+                .summary-card
+            ):hover {
+                transform: translateY(-2px);
+                box-shadow: var(--shadow-lg);
+                border-color: #dbeafe;
+            }
+
+            /* Improved dashboard grid if these classes exist */
+            :where(.dashboard, .dashboard-grid, .main-dashboard) {
+                display: grid;
+                gap: 12px;
+                grid-template-columns: 1fr;
+                align-items: start;
+            }
+
+            @media (min-width: 768px) {
+                :where(.dashboard, .dashboard-grid, .main-dashboard) {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+            }
+
+            @media (min-width: 1280px) {
+                :where(.dashboard, .dashboard-grid, .main-dashboard) {
+                    grid-template-columns: repeat(12, minmax(0, 1fr));
+                }
+
+                :where(.dashboard, .dashboard-grid, .main-dashboard) > * {
+                    grid-column: span 12;
+                }
+
+                :where(.dashboard, .dashboard-grid, .main-dashboard)
+                    > :where(.sidebar, .toolbox, .left-panel) {
+                    grid-column: span 3;
+                }
+
+                :where(.dashboard, .dashboard-grid, .main-dashboard)
+                    > :where(.main-panel, .chart-panel, .workspace, .blockly-panel) {
+                    grid-column: span 6;
+                }
+
+                :where(.dashboard, .dashboard-grid, .main-dashboard)
+                    > :where(.run-panel, .summary-panel, .right-panel, .transactions, .journal) {
+                    grid-column: span 3;
+                }
+            }
+
+            /* Header / toolbar */
+            :where(.header, .topbar, .toolbar, .navbar, nav) {
+                width: 100%;
+                min-width: 0;
+                display: flex;
+                flex-wrap: wrap;
+                align-items: center;
+                gap: 8px;
+                padding: 10px 12px;
+                background: rgba(255, 255, 255, 0.88);
+                backdrop-filter: blur(10px);
+                -webkit-backdrop-filter: blur(10px);
+                border-bottom: 1px solid rgba(229, 231, 235, 0.9);
+                position: sticky;
+                top: 0;
+                z-index: 50;
+                animation: aiFadeIn 0.2s ease both;
+            }
+
+            /* Blockly / chart / canvas responsiveness */
+            :where(
+                .blocklyDiv,
+                .injectionDiv,
+                .chart-container,
+                .chart,
+                .trading-chart,
+                .chart-wrapper
+            ) {
+                max-width: 100%;
+                min-width: 0;
+            }
+
+            .injectionDiv {
+                width: 100%;
+                min-height: 320px;
+                height: auto;
+                border-radius: 12px;
+                overflow: auto;
+            }
+
+            .blocklyToolboxDiv,
+            .blocklyTree,
+            .flyout,
+            .toolbox {
+                max-width: 100%;
+                overflow: auto;
+            }
+
+            canvas {
+                display: block;
+                max-width: 100%;
+            }
+
+            .chart-container canvas,
+            .trading-chart canvas,
+            .chart canvas {
+                width: 100%;
+                height: 100%;
+                min-height: 280px;
+            }
+
+            /* Tables */
+            table {
+                width: 100%;
+                max-width: 100%;
+                border-collapse: collapse;
+                display: block;
+                overflow-x: auto;
+                border-radius: 12px;
+            }
+
+            th,
+            td {
+                padding: 8px 10px;
+                border-bottom: 1px solid var(--border);
+                white-space: nowrap;
+                font-size: 13px;
+            }
+
+            tr:hover td {
+                background: #f9fafb;
+            }
+
+            /* Inputs */
+            input,
+            select,
+            textarea {
+                border-radius: 10px;
+                border: 1px solid #d1d5db;
+                background: #ffffff;
+                color: #111827;
+                padding: 8px 10px;
+                outline: none;
+                transition:
+                    border-color 0.15s ease,
+                    box-shadow 0.15s ease;
+            }
+
+            input:focus,
+            select:focus,
+            textarea:focus {
+                border-color: var(--accent);
+                box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+            }
+
+            /* Buttons */
+            button,
+            .btn {
+                border-radius: 10px;
+                transition:
+                    transform 0.15s ease,
+                    opacity 0.15s ease,
+                    box-shadow 0.15s ease;
+            }
+
+            button:hover,
+            .btn:hover {
+                transform: translateY(-1px);
+            }
+
+            button:active,
+            .btn:active {
+                transform: translateY(0) scale(0.99);
+            }
+
+            /* AI bot mount */
             #ai-bot-root {
                 position: fixed;
+                inset: auto;
                 z-index: 2147483647;
+                pointer-events: none;
+            }
+
+            #ai-bot-root > * {
+                pointer-events: auto;
+            }
+
+            /* Animations */
+            @keyframes aiFadeIn {
+                from {
+                    opacity: 0;
+                }
+                to {
+                    opacity: 1;
+                }
+            }
+
+            @keyframes aiSlideUp {
+                from {
+                    opacity: 0;
+                    transform: translateY(16px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            @keyframes aiPulse {
+                0% {
+                    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.3);
+                }
+                100% {
+                    box-shadow: 0 0 0 18px rgba(37, 99, 235, 0);
+                }
+            }
+
+            /* Mobile optimizations */
+            @media (max-width: 767px) {
+                body {
+                    font-size: 13px;
+                }
+
+                :where(.dashboard, .main, .content, .page, main) {
+                    padding: 8px;
+                }
+
+                :where(
+                    .card,
+                    .panel,
+                    .widget,
+                    .box,
+                    .summary-card,
+                    .dashboard-card
+                ) {
+                    padding: 10px;
+                    border-radius: 12px;
+                }
+
+                table th,
+                table td {
+                    padding: 6px 8px;
+                    font-size: 12px;
+                }
+
+                .injectionDiv {
+                    min-height: 260px;
+                }
+            }
+
+            /* Reduced motion */
+            @media (prefers-reduced-motion: reduce) {
+                *,
+                *::before,
+                *::after {
+                    animation: none !important;
+                    transition: none !important;
+                }
             }
         </style>
     </head>
