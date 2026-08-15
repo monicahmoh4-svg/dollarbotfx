@@ -15,7 +15,8 @@ if (!globalWindow.__aiBotMounted__) {
             document.body.appendChild(container);
         }
 
-        createRoot(container).render(<AIBotRoot />);
+        const root = createRoot(container);
+        root.render(<AIBotRoot />);
     };
 
     if (document.readyState === 'loading') {
