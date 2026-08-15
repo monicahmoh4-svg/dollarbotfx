@@ -2,9 +2,15 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
+
+        <!--
+            ROOT FIX:
+            This viewport configuration is required to stop mobile/desktop
+            browsers from rendering the app in a zoomed-out or oversized mode.
+        -->
         <meta
             name="viewport"
-            content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
         />
 
         <!-- Force light theme baseline -->
@@ -14,41 +20,29 @@
         <title>DollarBotFX</title>
 
         <style>
-            :root {
-                --bg: #ffffff;
-                --text: #111827;
-                --muted: #6b7280;
-                --border: #e5e7eb;
-                --card: #ffffff;
-                --accent: #2563eb;
-                --accent-2: #7c3aed;
-                --success: #16a34a;
-                --danger: #dc2626;
-                --warning: #d97706;
-                --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-                --shadow-lg: 0 18px 50px rgba(15, 23, 42, 0.14);
-                --radius: 14px;
-                --radius-lg: 18px;
-            }
-
-            * {
-                box-sizing: border-box;
-            }
+            /* ============================================================= */
+            /* ROOT ZOOM / FIT FIX                                           */
+            /* ============================================================= */
 
             html {
-                font-size: 100% !important;
-                -webkit-text-size-adjust: 100%;
-                text-size-adjust: 100%;
+                zoom: 1 !important;
+                -webkit-text-size-adjust: 100% !important;
+                text-size-adjust: 100% !important;
+                font-size: 16px !important;
+                scroll-behavior: smooth;
             }
 
             body {
-                margin: 0;
-                padding: 0;
-                width: 100%;
+                margin: 0 !important;
+                padding: 0 !important;
+                width: 100vw !important;
+                min-width: 100vw !important;
+                max-width: 100vw !important;
                 min-height: 100vh;
-                overflow-x: hidden;
-                background-color: var(--bg) !important;
-                color: var(--text) !important;
+                min-height: 100dvh;
+                overflow-x: hidden !important;
+                background-color: #ffffff !important;
+                color: #111827 !important;
                 font-family:
                     -apple-system,
                     BlinkMacSystemFont,
@@ -64,22 +58,54 @@
             }
 
             #root {
-                width: 100%;
+                width: 100vw !important;
+                min-width: 100vw !important;
+                max-width: 100vw !important;
                 min-height: 100vh;
-                margin: 0;
-                padding: 0;
+                min-height: 100dvh;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow-x: hidden !important;
+                overflow-y: auto !important;
+                background-color: #ffffff !important;
+                position: relative;
             }
 
             #root > * {
+                width: 100% !important;
+                max-width: 100vw !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                min-width: 0 !important;
+            }
+
+            /*
+                Prevent any inner fixed-width panel, Blockly container,
+                chart container, canvas, SVG, table, or inline-styled element
+                from forcing horizontal overflow.
+            */
+            #root * {
+                box-sizing: border-box;
                 min-width: 0;
+                max-width: 100%;
+            }
+
+            #root [style*="width:"],
+            #root [style*="width: "] {
+                max-width: 100vw !important;
+            }
+
+            #root [style*="height:"],
+            #root [style*="height: "] {
+                max-height: 100dvh;
             }
 
             img,
-            svg,
             video,
             iframe,
+            svg,
             canvas {
-                max-width: 100%;
+                max-width: 100% !important;
             }
 
             img,
@@ -88,39 +114,14 @@
                 height: auto;
             }
 
-            button,
-            input,
-            select,
-            textarea {
-                font: inherit;
-                max-width: 100%;
+            canvas {
+                display: block;
             }
 
-            button {
-                cursor: pointer;
-                touch-action: manipulation;
-            }
+            /* ============================================================= */
+            /* GLOBAL RESPONSIVE APP SHELL                                   */
+            /* ============================================================= */
 
-            a {
-                color: inherit;
-                text-decoration: none;
-            }
-
-            ::-webkit-scrollbar {
-                width: 8px;
-                height: 8px;
-            }
-
-            ::-webkit-scrollbar-thumb {
-                background: #cbd5e1;
-                border-radius: 999px;
-            }
-
-            ::-webkit-scrollbar-track {
-                background: transparent;
-            }
-
-            /* Responsive app shell */
             :where(
                 .app,
                 .main,
@@ -135,18 +136,22 @@
                 aside,
                 nav
             ) {
-                max-width: 100vw;
-                min-width: 0;
+                width: 100% !important;
+                max-width: 100vw !important;
+                min-width: 0 !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
             }
 
             :where(.dashboard, .main, .content, .page, main) {
-                width: 100%;
-                margin-left: auto;
-                margin-right: auto;
-                padding: clamp(8px, 2vw, 18px);
+                padding: clamp(8px, 2vw, 18px) !important;
+                overflow-x: hidden;
             }
 
-            /* Dashboard / cards */
+            /* ============================================================= */
+            /* DASHBOARD / PANEL UI IMPROVEMENT                              */
+            /* ============================================================= */
+
             :where(
                 .card,
                 .panel,
@@ -163,9 +168,9 @@
                 .bot-panel
             ) {
                 background: linear-gradient(180deg, #ffffff, #fbfdff);
-                border: 1px solid var(--border);
-                border-radius: var(--radius);
-                box-shadow: var(--shadow);
+                border: 1px solid #e5e7eb;
+                border-radius: 14px;
+                box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
                 padding: 14px;
                 min-width: 0;
                 overflow: hidden;
@@ -184,7 +189,7 @@
                 .summary-card
             ):hover {
                 transform: translateY(-2px);
-                box-shadow: var(--shadow-lg);
+                box-shadow: 0 18px 50px rgba(15, 23, 42, 0.14);
                 border-color: #dbeafe;
             }
 
@@ -194,6 +199,7 @@
                 gap: 12px;
                 grid-template-columns: 1fr;
                 align-items: start;
+                width: 100% !important;
             }
 
             @media (min-width: 768px) {
@@ -222,15 +228,25 @@
                 }
 
                 :where(.dashboard, .dashboard-grid, .main-dashboard)
-                    > :where(.run-panel, .summary-panel, .right-panel, .transactions, .journal) {
+                    > :where(
+                        .run-panel,
+                        .summary-panel,
+                        .right-panel,
+                        .transactions,
+                        .journal
+                    ) {
                     grid-column: span 3;
                 }
             }
 
-            /* Header / toolbar */
+            /* ============================================================= */
+            /* HEADER / TOOLBAR                                              */
+            /* ============================================================= */
+
             :where(.header, .topbar, .toolbar, .navbar, nav) {
-                width: 100%;
-                min-width: 0;
+                width: 100% !important;
+                max-width: 100vw !important;
+                min-width: 0 !important;
                 display: flex;
                 flex-wrap: wrap;
                 align-items: center;
@@ -246,25 +262,31 @@
                 animation: aiFadeIn 0.2s ease both;
             }
 
-            /* Blockly / chart / canvas responsiveness */
+            /* ============================================================= */
+            /* BLOCKLY / CHART / CANVAS FIT FIX                              */
+            /* ============================================================= */
+
             :where(
                 .blocklyDiv,
                 .injectionDiv,
+                .blocklyArea,
                 .chart-container,
                 .chart,
                 .trading-chart,
                 .chart-wrapper
             ) {
-                max-width: 100%;
-                min-width: 0;
-            }
-
-            .injectionDiv {
-                width: 100%;
-                min-height: 320px;
-                height: auto;
+                width: 100% !important;
+                max-width: 100vw !important;
+                min-width: 0 !important;
                 border-radius: 12px;
                 overflow: auto;
+            }
+
+            .blocklyDiv,
+            .injectionDiv,
+            .blocklyArea {
+                height: min(75vh, 900px) !important;
+                min-height: 320px;
             }
 
             .blocklyToolboxDiv,
@@ -275,23 +297,26 @@
                 overflow: auto;
             }
 
-            canvas {
-                display: block;
+            .blocklySvg {
                 max-width: 100%;
+                height: auto;
             }
 
             .chart-container canvas,
             .trading-chart canvas,
             .chart canvas {
-                width: 100%;
-                height: 100%;
+                width: 100% !important;
+                height: 100% !important;
                 min-height: 280px;
             }
 
-            /* Tables */
+            /* ============================================================= */
+            /* TABLES                                                        */
+            /* ============================================================= */
+
             table {
-                width: 100%;
-                max-width: 100%;
+                width: 100% !important;
+                max-width: 100% !important;
                 border-collapse: collapse;
                 display: block;
                 overflow-x: auto;
@@ -301,7 +326,7 @@
             th,
             td {
                 padding: 8px 10px;
-                border-bottom: 1px solid var(--border);
+                border-bottom: 1px solid #e5e7eb;
                 white-space: nowrap;
                 font-size: 13px;
             }
@@ -310,7 +335,10 @@
                 background: #f9fafb;
             }
 
-            /* Inputs */
+            /* ============================================================= */
+            /* INPUTS / BUTTONS                                              */
+            /* ============================================================= */
+
             input,
             select,
             textarea {
@@ -320,6 +348,7 @@
                 color: #111827;
                 padding: 8px 10px;
                 outline: none;
+                max-width: 100%;
                 transition:
                     border-color 0.15s ease,
                     box-shadow 0.15s ease;
@@ -328,11 +357,10 @@
             input:focus,
             select:focus,
             textarea:focus {
-                border-color: var(--accent);
+                border-color: #2563eb;
                 box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
             }
 
-            /* Buttons */
             button,
             .btn {
                 border-radius: 10px;
@@ -352,10 +380,32 @@
                 transform: translateY(0) scale(0.99);
             }
 
-            /* AI bot mount */
+            /* ============================================================= */
+            /* SCROLLBAR                                                     */
+            /* ============================================================= */
+
+            ::-webkit-scrollbar {
+                width: 8px;
+                height: 8px;
+            }
+
+            ::-webkit-scrollbar-thumb {
+                background: #cbd5e1;
+                border-radius: 999px;
+            }
+
+            ::-webkit-scrollbar-track {
+                background: transparent;
+            }
+
+            /* ============================================================= */
+            /* AI BOT FLOATING MOUNT                                         */
+            /* ============================================================= */
+
             #ai-bot-root {
                 position: fixed;
-                inset: auto;
+                right: max(16px, env(safe-area-inset-right));
+                bottom: max(16px, env(safe-area-inset-bottom));
                 z-index: 2147483647;
                 pointer-events: none;
             }
@@ -364,7 +414,10 @@
                 pointer-events: auto;
             }
 
-            /* Animations */
+            /* ============================================================= */
+            /* ANIMATIONS                                                    */
+            /* ============================================================= */
+
             @keyframes aiFadeIn {
                 from {
                     opacity: 0;
@@ -394,14 +447,17 @@
                 }
             }
 
-            /* Mobile optimizations */
+            /* ============================================================= */
+            /* MOBILE FIT                                                    */
+            /* ============================================================= */
+
             @media (max-width: 767px) {
                 body {
                     font-size: 13px;
                 }
 
                 :where(.dashboard, .main, .content, .page, main) {
-                    padding: 8px;
+                    padding: 8px !important;
                 }
 
                 :where(
@@ -422,12 +478,18 @@
                     font-size: 12px;
                 }
 
-                .injectionDiv {
+                .blocklyDiv,
+                .injectionDiv,
+                .blocklyArea {
+                    height: min(65vh, 700px) !important;
                     min-height: 260px;
                 }
             }
 
-            /* Reduced motion */
+            /* ============================================================= */
+            /* ACCESSIBILITY                                                 */
+            /* ============================================================= */
+
             @media (prefers-reduced-motion: reduce) {
                 *,
                 *::before,
@@ -437,6 +499,47 @@
                 }
             }
         </style>
+
+        <!--
+            ROOT FIT SCRIPT:
+            This forces the document zoom and root width to normalize
+            immediately on load and on resize.
+        -->
+        <script>
+            (function () {
+                function normalizeAppFit() {
+                    var documentElement = document.documentElement;
+
+                    if (documentElement) {
+                        documentElement.style.setProperty('zoom', '1');
+                        documentElement.style.setProperty(
+                            '-webkit-text-size-adjust',
+                            '100%'
+                        );
+                        documentElement.style.setProperty('text-size-adjust', '100%');
+
+                        if (window.innerWidth < 768) {
+                            documentElement.style.fontSize = '14px';
+                        } else {
+                            documentElement.style.fontSize = '16px';
+                        }
+                    }
+
+                    var root = document.getElementById('root');
+
+                    if (root) {
+                        root.style.width = '100%';
+                        root.style.maxWidth = '100vw';
+                        root.style.margin = '0';
+                        root.style.padding = '0';
+                    }
+                }
+
+                window.addEventListener('DOMContentLoaded', normalizeAppFit);
+                window.addEventListener('load', normalizeAppFit);
+                window.addEventListener('resize', normalizeAppFit);
+            })();
+        </script>
     </head>
 
     <body>
@@ -449,7 +552,55 @@
         <!-- Main application entry -->
         <script type="module" src="/src/main.tsx"></script>
 
-        <!-- AI Bot launcher / popup / autonomous trading overlay -->
+        <!-- AI Bot launcher / floating button / popup -->
         <script type="module" src="/src/ai/install-ai-bot.tsx"></script>
+
+        <!--
+            AI BUTTON FALLBACK:
+            If the React AI button fails to mount, this guarantees that a
+            floating AI button is still visible.
+        -->
+        <script>
+            window.addEventListener('load', function () {
+                setTimeout(function () {
+                    var aiMount = document.getElementById('ai-bot-root');
+
+                    if (!aiMount) {
+                        return;
+                    }
+
+                    if (aiMount.childElementCount === 0) {
+                        var fallbackButton = document.createElement('button');
+
+                        fallbackButton.textContent = 'AI Bot';
+                        fallbackButton.type = 'button';
+
+                        fallbackButton.style.position = 'fixed';
+                        fallbackButton.style.right = '16px';
+                        fallbackButton.style.bottom = '16px';
+                        fallbackButton.style.zIndex = '2147483647';
+                        fallbackButton.style.border = 'none';
+                        fallbackButton.style.borderRadius = '999px';
+                        fallbackButton.style.padding = '12px 16px';
+                        fallbackButton.style.background =
+                            'linear-gradient(135deg, #2563eb, #7c3aed)';
+                        fallbackButton.style.color = '#ffffff';
+                        fallbackButton.style.fontWeight = '900';
+                        fallbackButton.style.fontSize = '14px';
+                        fallbackButton.style.boxShadow =
+                            '0 12px 30px rgba(37, 99, 235, 0.35)';
+                        fallbackButton.style.cursor = 'pointer';
+
+                        fallbackButton.onclick = function () {
+                            alert(
+                                'AI Bot UI is not mounted yet. Please ensure src/ai/install-ai-bot.tsx and the AI engine files exist in the repository.'
+                            );
+                        };
+
+                        aiMount.appendChild(fallbackButton);
+                    }
+                }, 3000);
+            });
+        </script>
     </body>
 </html>
