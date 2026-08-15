@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useStore } from './useStore';
 
 const useThemeSwitcher = () => {
@@ -24,6 +24,14 @@ const useThemeSwitcher = () => {
         },
         [setDarkMode]
     );
+
+    // Ensure the app defaults to Light Theme instead of inheriting a Dark default from the OS
+    useEffect(() => {
+        const savedTheme = localStorage.getItem('theme');
+        if (!savedTheme) {
+            setTheme('light');
+        }
+    }, [setTheme]);
 
     const toggleTheme = useCallback(() => {
         const isCurrentlyDark = document.querySelector('body')?.classList.contains('theme--dark');
