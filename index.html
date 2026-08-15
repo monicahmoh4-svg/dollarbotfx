@@ -1,606 +1,186 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="auto">
     <head>
         <meta charset="UTF-8" />
+        <link rel="icon" type="image/svg+xml" href="/deriv-logo.svg" />
 
-        <!--
-            ROOT FIX:
-            This viewport configuration is required to stop mobile/desktop
-            browsers from rendering the app in a zoomed-out or oversized mode.
-        -->
+        <!-- CRITICAL: Viewport for proper mobile/desktop scaling -->
         <meta
             name="viewport"
-            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+            content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover"
         />
 
-        <!-- Force light theme baseline -->
-        <meta name="color-scheme" content="light" />
-        <meta name="theme-color" content="#ffffff" />
+        <!-- PWA Manifest -->
+        <link rel="manifest" href="/manifest.json" />
 
-        <title>DollarBotFX</title>
+        <!-- PWA Meta Tags -->
+        <meta name="theme-color" content="#ff444f" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="apple-mobile-web-app-title" content="DollarBotFX" />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="msapplication-TileColor" content="#ff444f" />
+        <meta name="msapplication-tap-highlight" content="no" />
+
+        <!-- Apple Touch Icons -->
+        <link rel="apple-touch-icon" href="/assets/icons/pwa/icon-152x152.png" />
+        <link rel="apple-touch-icon" sizes="152x152" href="/assets/icons/pwa/icon-152x152.png" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/pwa/icon-192x192.png" />
+
+        <meta name="title" content="Build a trading bot without coding | DollarBotFX." />
+        <meta
+            name="description"
+            content="Import your current bot or learn how to create a trading bot from scratch with our detailed guides, FAQs, and tutorials. Start with a quick strategy!"
+        />
+        <meta property="og:title" content="DollarBotFX" />
+        <meta
+            property="og:description"
+            content="Import your current bot or learn how to create a trading bot from scratch with our detailed guides, FAQs, and tutorials. Start with a quick strategy!"
+        />
+
+        <title>Build a trading bot without coding | DollarBotFX.</title>
 
         <style>
-            /* ============================================================= */
-            /* ROOT ZOOM / FIT FIX                                           */
-            /* ============================================================= */
-
-            html {
-                zoom: 1 !important;
-                -webkit-text-size-adjust: 100% !important;
-                text-size-adjust: 100% !important;
-                font-size: 16px !important;
-                scroll-behavior: smooth;
+            /* 
+               CRITICAL LAYOUT FIX: 
+               Deriv Bot uses a rem-based layout where 1rem = 10px.
+               DO NOT change this to 100% or 16px, or the entire 
+               dashboard, Blockly workspace, and panels will double 
+               in size and overflow the screen!
+            */
+            :root {
+                font-size: 62.5%;
             }
 
+            /* FORCE LIGHT THEME */
             body {
-                margin: 0 !important;
-                padding: 0 !important;
-                width: 100vw !important;
-                min-width: 100vw !important;
-                max-width: 100vw !important;
-                min-height: 100vh;
-                min-height: 100dvh;
-                overflow-x: hidden !important;
+                color-scheme: light !important;
+                background-color: #ffffff !important;
+            }
+
+            body.theme--dark {
+                /* Override any accidental dark theme injection */
+                --core-color-primary: #ff444f !important;
                 background-color: #ffffff !important;
                 color: #111827 !important;
-                font-family:
-                    -apple-system,
-                    BlinkMacSystemFont,
-                    "Segoe UI",
-                    Roboto,
-                    "Helvetica Neue",
-                    Arial,
-                    sans-serif;
-                font-size: 14px;
-                line-height: 1.45;
-                -webkit-font-smoothing: antialiased;
-                text-rendering: optimizeLegibility;
             }
 
+            /* Ensure the main root doesn't overflow horizontally */
             #root {
-                width: 100vw !important;
-                min-width: 100vw !important;
-                max-width: 100vw !important;
-                min-height: 100vh;
-                min-height: 100dvh;
-                margin: 0 !important;
-                padding: 0 !important;
-                overflow-x: hidden !important;
-                overflow-y: auto !important;
-                background-color: #ffffff !important;
-                position: relative;
-            }
-
-            #root > * {
-                width: 100% !important;
-                max-width: 100vw !important;
-                margin-left: 0 !important;
-                margin-right: 0 !important;
-                min-width: 0 !important;
-            }
-
-            /*
-                Prevent any inner fixed-width panel, Blockly container,
-                chart container, canvas, SVG, table, or inline-styled element
-                from forcing horizontal overflow.
-            */
-            #root * {
-                box-sizing: border-box;
-                min-width: 0;
-                max-width: 100%;
-            }
-
-            #root [style*="width:"],
-            #root [style*="width: "] {
-                max-width: 100vw !important;
-            }
-
-            #root [style*="height:"],
-            #root [style*="height: "] {
-                max-height: 100dvh;
-            }
-
-            img,
-            video,
-            iframe,
-            svg,
-            canvas {
-                max-width: 100% !important;
-            }
-
-            img,
-            video,
-            iframe {
-                height: auto;
-            }
-
-            canvas {
-                display: block;
-            }
-
-            /* ============================================================= */
-            /* GLOBAL RESPONSIVE APP SHELL                                   */
-            /* ============================================================= */
-
-            :where(
-                .app,
-                .main,
-                .dashboard,
-                .content,
-                .container,
-                .page,
-                main,
-                section,
-                header,
-                footer,
-                aside,
-                nav
-            ) {
-                width: 100% !important;
-                max-width: 100vw !important;
-                min-width: 0 !important;
-                margin-left: auto !important;
-                margin-right: auto !important;
-            }
-
-            :where(.dashboard, .main, .content, .page, main) {
-                padding: clamp(8px, 2vw, 18px) !important;
+                max-width: 100vw;
                 overflow-x: hidden;
             }
 
-            /* ============================================================= */
-            /* DASHBOARD / PANEL UI IMPROVEMENT                              */
-            /* ============================================================= */
-
-            :where(
-                .card,
-                .panel,
-                .widget,
-                .box,
-                .summary-card,
-                .dashboard-card,
-                .run-panel,
-                .transactions,
-                .journal,
-                .toolbox,
-                .chart-panel,
-                .settings-panel,
-                .bot-panel
-            ) {
-                background: linear-gradient(180deg, #ffffff, #fbfdff);
-                border: 1px solid #e5e7eb;
-                border-radius: 14px;
-                box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-                padding: 14px;
-                min-width: 0;
-                overflow: hidden;
-                animation: aiFadeIn 0.25s ease both;
-                transition:
-                    transform 0.18s ease,
-                    box-shadow 0.18s ease,
-                    border-color 0.18s ease;
-            }
-
-            :where(
-                .card,
-                .panel,
-                .widget,
-                .dashboard-card,
-                .summary-card
-            ):hover {
-                transform: translateY(-2px);
-                box-shadow: 0 18px 50px rgba(15, 23, 42, 0.14);
-                border-color: #dbeafe;
-            }
-
-            /* Improved dashboard grid if these classes exist */
-            :where(.dashboard, .dashboard-grid, .main-dashboard) {
-                display: grid;
-                gap: 12px;
-                grid-template-columns: 1fr;
-                align-items: start;
-                width: 100% !important;
-            }
-
-            @media (min-width: 768px) {
-                :where(.dashboard, .dashboard-grid, .main-dashboard) {
-                    grid-template-columns: repeat(2, minmax(0, 1fr));
-                }
-            }
-
-            @media (min-width: 1280px) {
-                :where(.dashboard, .dashboard-grid, .main-dashboard) {
-                    grid-template-columns: repeat(12, minmax(0, 1fr));
-                }
-
-                :where(.dashboard, .dashboard-grid, .main-dashboard) > * {
-                    grid-column: span 12;
-                }
-
-                :where(.dashboard, .dashboard-grid, .main-dashboard)
-                    > :where(.sidebar, .toolbox, .left-panel) {
-                    grid-column: span 3;
-                }
-
-                :where(.dashboard, .dashboard-grid, .main-dashboard)
-                    > :where(.main-panel, .chart-panel, .workspace, .blockly-panel) {
-                    grid-column: span 6;
-                }
-
-                :where(.dashboard, .dashboard-grid, .main-dashboard)
-                    > :where(
-                        .run-panel,
-                        .summary-panel,
-                        .right-panel,
-                        .transactions,
-                        .journal
-                    ) {
-                    grid-column: span 3;
-                }
-            }
-
-            /* ============================================================= */
-            /* HEADER / TOOLBAR                                              */
-            /* ============================================================= */
-
-            :where(.header, .topbar, .toolbar, .navbar, nav) {
-                width: 100% !important;
-                max-width: 100vw !important;
-                min-width: 0 !important;
-                display: flex;
-                flex-wrap: wrap;
-                align-items: center;
-                gap: 8px;
-                padding: 10px 12px;
-                background: rgba(255, 255, 255, 0.88);
-                backdrop-filter: blur(10px);
-                -webkit-backdrop-filter: blur(10px);
-                border-bottom: 1px solid rgba(229, 231, 235, 0.9);
-                position: sticky;
-                top: 0;
-                z-index: 50;
-                animation: aiFadeIn 0.2s ease both;
-            }
-
-            /* ============================================================= */
-            /* BLOCKLY / CHART / CANVAS FIT FIX                              */
-            /* ============================================================= */
-
-            :where(
-                .blocklyDiv,
-                .injectionDiv,
-                .blocklyArea,
-                .chart-container,
-                .chart,
-                .trading-chart,
-                .chart-wrapper
-            ) {
-                width: 100% !important;
-                max-width: 100vw !important;
-                min-width: 0 !important;
-                border-radius: 12px;
-                overflow: auto;
-            }
-
-            .blocklyDiv,
-            .injectionDiv,
-            .blocklyArea {
-                height: min(75vh, 900px) !important;
-                min-height: 320px;
-            }
-
-            .blocklyToolboxDiv,
-            .blocklyTree,
-            .flyout,
-            .toolbox {
-                max-width: 100%;
-                overflow: auto;
-            }
-
-            .blocklySvg {
-                max-width: 100%;
-                height: auto;
-            }
-
-            .chart-container canvas,
-            .trading-chart canvas,
-            .chart canvas {
-                width: 100% !important;
-                height: 100% !important;
-                min-height: 280px;
-            }
-
-            /* ============================================================= */
-            /* TABLES                                                        */
-            /* ============================================================= */
-
-            table {
-                width: 100% !important;
-                max-width: 100% !important;
-                border-collapse: collapse;
-                display: block;
-                overflow-x: auto;
-                border-radius: 12px;
-            }
-
-            th,
-            td {
-                padding: 8px 10px;
-                border-bottom: 1px solid #e5e7eb;
-                white-space: nowrap;
-                font-size: 13px;
-            }
-
-            tr:hover td {
-                background: #f9fafb;
-            }
-
-            /* ============================================================= */
-            /* INPUTS / BUTTONS                                              */
-            /* ============================================================= */
-
-            input,
-            select,
-            textarea {
-                border-radius: 10px;
-                border: 1px solid #d1d5db;
-                background: #ffffff;
-                color: #111827;
-                padding: 8px 10px;
-                outline: none;
-                max-width: 100%;
-                transition:
-                    border-color 0.15s ease,
-                    box-shadow 0.15s ease;
-            }
-
-            input:focus,
-            select:focus,
-            textarea:focus {
-                border-color: #2563eb;
-                box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-            }
-
-            button,
-            .btn {
-                border-radius: 10px;
-                transition:
-                    transform 0.15s ease,
-                    opacity 0.15s ease,
-                    box-shadow 0.15s ease;
-            }
-
-            button:hover,
-            .btn:hover {
-                transform: translateY(-1px);
-            }
-
-            button:active,
-            .btn:active {
-                transform: translateY(0) scale(0.99);
-            }
-
-            /* ============================================================= */
-            /* SCROLLBAR                                                     */
-            /* ============================================================= */
-
-            ::-webkit-scrollbar {
-                width: 8px;
-                height: 8px;
-            }
-
-            ::-webkit-scrollbar-thumb {
-                background: #cbd5e1;
-                border-radius: 999px;
-            }
-
-            ::-webkit-scrollbar-track {
-                background: transparent;
-            }
-
-            /* ============================================================= */
-            /* AI BOT FLOATING MOUNT                                         */
-            /* ============================================================= */
-
+            /* 
+               AI BOT CONTAINER ISOLATION:
+               Lock the AI mount point to standard 16px so the AI 
+               modal and button don't inherit the tiny 10px base 
+               from the Deriv Bot layout.
+            */
             #ai-bot-root {
                 position: fixed;
-                right: max(16px, env(safe-area-inset-right));
-                bottom: max(16px, env(safe-area-inset-bottom));
-                z-index: 2147483647;
+                z-index: 99999;
                 pointer-events: none;
+                font-size: 16px !important;
+                line-height: 1.4 !important;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
             }
 
             #ai-bot-root > * {
                 pointer-events: auto;
             }
-
-            /* ============================================================= */
-            /* ANIMATIONS                                                    */
-            /* ============================================================= */
-
-            @keyframes aiFadeIn {
-                from {
-                    opacity: 0;
-                }
-                to {
-                    opacity: 1;
-                }
-            }
-
-            @keyframes aiSlideUp {
-                from {
-                    opacity: 0;
-                    transform: translateY(16px);
-                }
-                to {
-                    opacity: 1;
-                    transform: translateY(0);
-                }
-            }
-
-            @keyframes aiPulse {
-                0% {
-                    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.3);
-                }
-                100% {
-                    box-shadow: 0 0 0 18px rgba(37, 99, 235, 0);
-                }
-            }
-
-            /* ============================================================= */
-            /* MOBILE FIT                                                    */
-            /* ============================================================= */
-
-            @media (max-width: 767px) {
-                body {
-                    font-size: 13px;
-                }
-
-                :where(.dashboard, .main, .content, .page, main) {
-                    padding: 8px !important;
-                }
-
-                :where(
-                    .card,
-                    .panel,
-                    .widget,
-                    .box,
-                    .summary-card,
-                    .dashboard-card
-                ) {
-                    padding: 10px;
-                    border-radius: 12px;
-                }
-
-                table th,
-                table td {
-                    padding: 6px 8px;
-                    font-size: 12px;
-                }
-
-                .blocklyDiv,
-                .injectionDiv,
-                .blocklyArea {
-                    height: min(65vh, 700px) !important;
-                    min-height: 260px;
-                }
-            }
-
-            /* ============================================================= */
-            /* ACCESSIBILITY                                                 */
-            /* ============================================================= */
-
-            @media (prefers-reduced-motion: reduce) {
-                *,
-                *::before,
-                *::after {
-                    animation: none !important;
-                    transition: none !important;
-                }
-            }
         </style>
-
-        <!--
-            ROOT FIT SCRIPT:
-            This forces the document zoom and root width to normalize
-            immediately on load and on resize.
-        -->
-        <script>
-            (function () {
-                function normalizeAppFit() {
-                    var documentElement = document.documentElement;
-
-                    if (documentElement) {
-                        documentElement.style.setProperty('zoom', '1');
-                        documentElement.style.setProperty(
-                            '-webkit-text-size-adjust',
-                            '100%'
-                        );
-                        documentElement.style.setProperty('text-size-adjust', '100%');
-
-                        if (window.innerWidth < 768) {
-                            documentElement.style.fontSize = '14px';
-                        } else {
-                            documentElement.style.fontSize = '16px';
-                        }
-                    }
-
-                    var root = document.getElementById('root');
-
-                    if (root) {
-                        root.style.width = '100%';
-                        root.style.maxWidth = '100vw';
-                        root.style.margin = '0';
-                        root.style.padding = '0';
-                    }
-                }
-
-                window.addEventListener('DOMContentLoaded', normalizeAppFit);
-                window.addEventListener('load', normalizeAppFit);
-                window.addEventListener('resize', normalizeAppFit);
-            })();
-        </script>
     </head>
 
-    <body>
-        <!-- Main React app mount point -->
+    <body class="body theme theme--light">
+        <div id="modal_root" class="modal-root"></div>
+        <div id="popup_root" class="popup-root"></div>
         <div id="root"></div>
 
-        <!-- AI Bot mount point -->
+        <!-- AI Bot Mount Point -->
         <div id="ai-bot-root"></div>
 
         <!-- Main application entry -->
         <script type="module" src="/src/main.tsx"></script>
 
-        <!-- AI Bot launcher / floating button / popup -->
+        <!-- AI Bot launcher script -->
         <script type="module" src="/src/ai/install-ai-bot.tsx"></script>
 
-        <!--
-            AI BUTTON FALLBACK:
-            If the React AI button fails to mount, this guarantees that a
-            floating AI button is still visible.
-        -->
+        <!-- LiveChat script -->
+        <script type="text/javascript" defer>
+            window.__lc = window.__lc || {};
+            window.__lc.license = 12049137;
+            window.__lc.asyncInit = true;
+            (function(n,t,c){
+                function i(n){
+                    return e._h ? e._h.apply(null,n) : e._q.push(n);
+                }
+                var e = {
+                    _q: [],
+                    _h: null,
+                    _v: '2.0',
+                    on: function(){i(['on',c.call(arguments)]);},
+                    once: function(){i(['once',c.call(arguments)]);},
+                    off: function(){i(['off',c.call(arguments)]);},
+                    get: function(){
+                        if(!e._h) throw new Error("[LiveChatWidget] You can't use getters before load.");
+                        return i(['get',c.call(arguments)]);
+                    },
+                    call: function(){i(['call',c.call(arguments)]);},
+                    init: function(){
+                        setTimeout(()=>{
+                            var n=t.createElement('script');
+                            ((n.async=!0),
+                            (n.type='text/javascript'),
+                            (n.src='https://cdn.livechatinc.com/tracking.js'),
+                            t.head.appendChild(n));
+                        },3000);
+                    },
+                };
+                if(!n.__lc.asyncInit){e.init();}
+                n.LiveChatWidget=e;
+            }(window,document));
+        </script>
+
+        <!-- Browser Service Worker Prevention -->
         <script>
-            window.addEventListener('load', function () {
-                setTimeout(function () {
-                    var aiMount = document.getElementById('ai-bot-root');
+            const userAgent = navigator.userAgent.toLowerCase();
+            const isFirefox = userAgent.includes('firefox');
+            const isSafari = userAgent.includes('safari') && !userAgent.includes('chrome');
+            const shouldSkipSW = isFirefox || isSafari;
+            if (shouldSkipSW) {
+                const browserName = isFirefox ? 'Firefox' : 'Safari';
+                console.log(
+                    `[HTML] ${browserName} detected - preventing service worker registration to avoid chunk loading issues`
+                );
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker
+                        .getRegistrations()
+                        .then(registrations => {
+                            registrations.forEach(registration => {
+                                console.log(`[HTML] Unregistering existing SW for ${browserName}:`, registration.scope);
+                                registration.unregister();
+                            });
+                        })
+                        .catch(error => {
+                            console.error('[HTML] Failed to cleanup service workers:', error);
+                        });
+                }
+            }
 
-                    if (!aiMount) {
-                        return;
-                    }
-
-                    if (aiMount.childElementCount === 0) {
-                        var fallbackButton = document.createElement('button');
-
-                        fallbackButton.textContent = 'AI Bot';
-                        fallbackButton.type = 'button';
-
-                        fallbackButton.style.position = 'fixed';
-                        fallbackButton.style.right = '16px';
-                        fallbackButton.style.bottom = '16px';
-                        fallbackButton.style.zIndex = '2147483647';
-                        fallbackButton.style.border = 'none';
-                        fallbackButton.style.borderRadius = '999px';
-                        fallbackButton.style.padding = '12px 16px';
-                        fallbackButton.style.background =
-                            'linear-gradient(135deg, #2563eb, #7c3aed)';
-                        fallbackButton.style.color = '#ffffff';
-                        fallbackButton.style.fontWeight = '900';
-                        fallbackButton.style.fontSize = '14px';
-                        fallbackButton.style.boxShadow =
-                            '0 12px 30px rgba(37, 99, 235, 0.35)';
-                        fallbackButton.style.cursor = 'pointer';
-
-                        fallbackButton.onclick = function () {
-                            alert(
-                                'AI Bot UI is not mounted yet. Please ensure src/ai/install-ai-bot.tsx and the AI engine files exist in the repository.'
-                            );
-                        };
-
-                        aiMount.appendChild(fallbackButton);
-                    }
-                }, 3000);
+            console.log('[HTML] Online status:', navigator.onLine);
+            window.addEventListener('online', () => {
+                console.log('[HTML] Back online');
             });
+            window.addEventListener('offline', () => {
+                console.log('[HTML] Gone offline');
+            });
+
+            if ('serviceWorker' in navigator && !shouldSkipSW) {
+                navigator.serviceWorker.addEventListener('message', event => {
+                    console.log('[HTML] Message from service worker:', event.data);
+                });
+            }
         </script>
     </body>
 </html>
