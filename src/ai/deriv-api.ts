@@ -15,6 +15,31 @@ export type DerivActiveSymbol = {
     pip?: number;
 };
 
+export type DerivContractDurationRange = {
+    value: number;
+    unit: string;
+};
+
+export type DerivContractSpec = {
+    contractType: string;
+    minDuration: DerivContractDurationRange | null;
+    maxDuration: DerivContractDurationRange | null;
+};
+
+function parseDuration(raw: unknown): DerivContractDurationRange | null {
+    if (typeof raw !== 'string') {
+        return null;
+    }
+
+    const match = raw.trim().match(/^(\d+)\s*([a-zA-Z]+)$/);
+
+    if (!match) {
+        return null;
+    }
+
+    return { value: Number(match[1]), unit: match[2] };
+}
+
 type Waiter = {
     resolve: (value: any) => void;
     reject: (error: Error) => void;
@@ -263,6 +288,33 @@ export class DerivAPI extends EventTarget {
             buy: proposalId,
             price,
         });
+    }
+
+    /**
+     * Not every contract type is actually offered on every symbol, and the
+     * valid duration range differs per contract/symbol (e.g. a forex
+     * Rise/Fall may only be offered in minutes, while a synthetic index
+     * offers ticks). Blindly guessing a duration and contract type — as
+     * this bot used to — means Deriv silently rejects the `proposal` call
+     * for anything that doesn't match, which looked like "nothing ever
+     * trades" from the outside. This fetches the real, current list of
+     * contracts Deriv actually offers for a symbol, so the engine can pick
+     * a duration that is guaranteed valid instead of guessing.
+     */
+    async contractsFor(symbol: string, currency = 'USD'): Promise<DerivContractSpec[]> {
+        const response = await this.send({
+            contracts_for: symbol,
+            currency,
+            product_type: 'basic',
+        });
+
+        const available = response?.contracts_for?.available ?? [];
+
+        return available.map((item: any) => ({
+            contractType: item.contract_type,
+            minDuration: parseDuration(item.min_contract_duration),
+            maxDuration: parseDuration(item.max_contract_duration),
+        }));
     }
 
     close() {
