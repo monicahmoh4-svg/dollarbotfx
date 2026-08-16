@@ -489,9 +489,14 @@ function AIBotModal({
                     fixed-odds coin flip by design — Deriv's synthetic indices use an audited RNG,
                     so this bot only enters those when the recent sample is a statistically
                     significant outlier versus the theoretical distribution, which will be rare —
-                    that is expected behaviour, not a fault. Accumulator contracts are not yet
-                    supported by this bot (different payout/exit mechanics from the timed
-                    contracts below).
+                    that is expected behaviour, not a fault. The same honesty applies to Rise/Fall:
+                    a real trading edge on any market is genuinely hard to find, so long stretches
+                    with zero trades are normal and correct, not a malfunction — check the
+                    Execution Funnel below to see exactly why. Every trade now prices against
+                    Deriv's real, current contract list for that exact symbol before entering, so
+                    it won't silently fail on a duration or contract type that symbol doesn't
+                    offer. Accumulator contracts are not yet supported by this bot (different
+                    payout/exit mechanics from the timed contracts below).
                 </div>
 
                 <div
@@ -1013,6 +1018,44 @@ function AIBotModal({
                     <div className="ai-stat-card">
                         <div className="ai-stat-label">Scans Run</div>
                         <div className="ai-stat-value">{state.stats.scanCount}</div>
+                    </div>
+                </div>
+
+                <div className="ai-section-title">Execution Funnel (this session)</div>
+                <div className="ai-hint" style={{ marginTop: -6, marginBottom: 8 }}>
+                    Shows exactly where signals are (or aren&apos;t) turning into trades — use this
+                    to see why a trade did or didn&apos;t happen, instead of guessing.
+                </div>
+
+                <div className="ai-stats">
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Signals Found</div>
+                        <div className="ai-stat-value">{state.stats.signalsFound}</div>
+                    </div>
+
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Prices Requested</div>
+                        <div className="ai-stat-value">{state.stats.proposalsRequested}</div>
+                    </div>
+
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Rejected by Broker</div>
+                        <div className="ai-stat-value">{state.stats.proposalsRejectedByBroker}</div>
+                    </div>
+
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Below Edge Threshold</div>
+                        <div className="ai-stat-value">{state.stats.skippedBelowEdge}</div>
+                    </div>
+
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Contract Unavailable</div>
+                        <div className="ai-stat-value">{state.stats.skippedContractUnavailable}</div>
+                    </div>
+
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Trades Opened</div>
+                        <div className="ai-stat-value">{state.stats.tradesOpened}</div>
                     </div>
                 </div>
 
