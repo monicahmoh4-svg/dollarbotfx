@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { observer } from 'mobx-react-lite';
+import AIBotRoot from '@/components/AIBotRoot';
 import ErrorBoundary from '@/components/error-component/error-boundary';
 import ErrorComponent from '@/components/error-component/error-component';
 import ChunkLoader from '@/components/loader/chunk-loader';
@@ -72,6 +73,7 @@ const AppRoot = () => {
             <ErrorBoundary root_store={store}>
                 <ErrorComponentWrapper />
                 <AppContent />
+                <AIBotRoot />
             </ErrorBoundary>
         </Suspense>
     );
