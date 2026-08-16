@@ -1,8 +1,30 @@
 import { DerivAPI, DerivActiveSymbol, DerivTick } from './deriv-api';
-import { analyzeQuotes, AnalysisResult } from './analysis';
+import {
+    analyzeMarket,
+    AnalysisResult,
+    ContractType,
+    TradeCategory,
+    pipToDecimals,
+    lastDigitOf,
+} from './analysis';
 
 export type AIBotMode = 'paper' | 'live';
 export type DurationUnit = 't' | 's' | 'm';
+
+export const TRADE_CATEGORIES: { value: TradeCategory; label: string }[] = [
+    { value: 'rise_fall', label: 'Rise / Fall' },
+    { value: 'even_odd', label: 'Digits: Even / Odd' },
+    { value: 'over_under', label: 'Digits: Over / Under' },
+    { value: 'matches_differs', label: 'Digits: Matches / Differs' },
+];
+
+export const MARKETS: { value: string; label: string }[] = [
+    { value: 'synthetic_index', label: 'Synthetic Indices' },
+    { value: 'forex', label: 'Forex' },
+    { value: 'indices', label: 'Stock Indices' },
+    { value: 'commodities', label: 'Commodities' },
+    { value: 'cryptocurrency', label: 'Cryptocurrencies' },
+];
 
 export type AIBotSettings = {
     mode: AIBotMode;
@@ -28,6 +50,8 @@ export type AIBotSettings = {
     scanIntervalMs: number;
     scanBatchDelayMs: number;
     cooldownMs: number;
+    enabledMarkets: string[];
+    tradeCategories: TradeCategory[];
 };
 
 export type AIBotStats = {
@@ -50,9 +74,13 @@ export type AIBotLog = {
 type BaseTrade = {
     id: string;
     symbol: string;
-    direction: 'CALL' | 'PUT';
+    category: TradeCategory;
+    contractType: ContractType;
+    barrier: number | null;
+    direction: 'CALL' | 'PUT' | null;
     stake: number;
     entry: number;
+    decimals: number;
     createdAt: number;
     mode: AIBotMode;
 };
@@ -97,10 +125,64 @@ export const DEFAULT_AI_SETTINGS: AIBotSettings = {
     scanIntervalMs: 7000,
     scanBatchDelayMs: 350,
     cooldownMs: 20000,
+    enabledMarkets: ['synthetic_index'],
+    tradeCategories: ['rise_fall'],
 };
 
 function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isDigitContractWin(contractType: ContractType, barrier: number | null, digit: number): boolean {
+    switch (contractType) {
+        case 'DIGITEVEN':
+            return digit % 2 === 0;
+        case 'DIGITODD':
+            return digit % 2 === 1;
+        case 'DIGITOVER':
+            return barrier !== null && digit > barrier;
+        case 'DIGITUNDER':
+            return barrier !== null && digit < barrier;
+        case 'DIGITMATCH':
+            return barrier !== null && digit === barrier;
+        case 'DIGITDIFF':
+            return barrier !== null && digit !== barrier;
+        default:
+            return false;
+    }
+}
+
+function buildProposalPayload(
+    symbol: string,
+    currency: string,
+    stake: number,
+    analysis: AnalysisResult,
+    settings: AIBotSettings
+): { payload: Record<string, unknown>; duration: number; durationUnit: DurationUnit } {
+    const isDigit = analysis.category !== 'rise_fall';
+
+    // Digit-family contracts on Deriv are only offered for short tick
+    // durations (1-10 ticks). Rise/fall respects whatever duration unit the
+    // user configured.
+    const duration = isDigit ? Math.min(10, Math.max(1, Math.round(settings.duration))) : settings.duration;
+    const durationUnit: DurationUnit = isDigit ? 't' : settings.durationUnit;
+
+    const payload: Record<string, unknown> = {
+        amount: stake,
+        basis: 'stake',
+        contract_type: analysis.contractType,
+        currency,
+        duration,
+        duration_unit: durationUnit,
+        symbol,
+        product_type: 'basic',
+    };
+
+    if (analysis.barrier !== null && analysis.barrier !== undefined) {
+        payload.barrier = String(analysis.barrier);
+    }
+
+    return { payload, duration, durationUnit };
 }
 
 class AIBotEngine extends EventTarget {
@@ -150,6 +232,14 @@ class AIBotEngine extends EventTarget {
             this.settings = {
                 ...DEFAULT_AI_SETTINGS,
                 ...saved,
+                enabledMarkets:
+                    Array.isArray(saved.enabledMarkets) && saved.enabledMarkets.length
+                        ? saved.enabledMarkets
+                        : DEFAULT_AI_SETTINGS.enabledMarkets,
+                tradeCategories:
+                    Array.isArray(saved.tradeCategories) && saved.tradeCategories.length
+                        ? saved.tradeCategories
+                        : DEFAULT_AI_SETTINGS.tradeCategories,
                 apiToken: '',
             };
         } catch {
@@ -176,6 +266,7 @@ class AIBotEngine extends EventTarget {
             scanning: this.scanning,
             connected: this.connected,
             authorized: this.authorized,
+            symbolCount: this.activeSymbols.length,
         };
     }
 
@@ -190,7 +281,7 @@ class AIBotEngine extends EventTarget {
             message,
         });
 
-        this.logs = this.logs.slice(0, 120);
+        this.logs = this.logs.slice(0, 150);
         this.emit();
     }
 
@@ -207,6 +298,14 @@ class AIBotEngine extends EventTarget {
     async start(patch: Partial<AIBotSettings> = {}) {
         this.updateSettings(patch);
         this.stop(false);
+
+        if (!this.settings.tradeCategories.length) {
+            this.settings.tradeCategories = ['rise_fall'];
+        }
+
+        if (!this.settings.enabledMarkets.length) {
+            this.settings.enabledMarkets = ['synthetic_index'];
+        }
 
         this.api = new DerivAPI(this.settings.appId || '1089');
 
@@ -229,7 +328,7 @@ class AIBotEngine extends EventTarget {
                 try {
                     await this.api.authorize(this.settings.apiToken);
                     this.authorized = true;
-                    this.log('success', 'Live trading authorized. Use extreme caution.');
+                    this.log('success', 'Live trading authorized. Real money is at risk from this point on.');
                 } catch (error: any) {
                     this.settings.mode = 'paper';
                     this.authorized = false;
@@ -245,14 +344,22 @@ class AIBotEngine extends EventTarget {
 
             this.activeSymbols = symbols.filter(
                 symbol =>
-                    symbol.market === 'synthetic_index' &&
-                    !symbol.is_trading_suspended
+                    this.settings.enabledMarkets.includes(symbol.market) &&
+                    !symbol.is_trading_suspended &&
+                    (symbol.exchange_is_open === undefined || symbol.exchange_is_open === 1)
             );
 
             this.log(
                 'info',
-                `Loaded ${this.activeSymbols.length} synthetic index markets.`
+                `Loaded ${this.activeSymbols.length} tradable markets from: ${this.settings.enabledMarkets.join(', ')}.`
             );
+
+            if (!this.activeSymbols.length) {
+                this.log(
+                    'warn',
+                    'No tradable symbols matched the selected markets right now (some may be closed, e.g. forex on weekends).'
+                );
+            }
         } catch (error: any) {
             this.log('error', `Could not load active symbols: ${error.message}`);
         }
@@ -264,7 +371,12 @@ class AIBotEngine extends EventTarget {
             void this.scan();
         }, this.settings.scanIntervalMs);
 
-        this.log('success', `AI bot started in ${this.settings.mode.toUpperCase()} mode.`);
+        this.log(
+            'success',
+            `AI bot started in ${this.settings.mode.toUpperCase()} mode | categories: ${this.settings.tradeCategories.join(
+                ', '
+            )}.`
+        );
         void this.scan();
         this.emit();
     }
@@ -296,19 +408,13 @@ class AIBotEngine extends EventTarget {
     private limitsHit(): boolean {
         this.resetDailyIfNeeded();
 
-        if (
-            this.settings.dailyLossLimit > 0 &&
-            this.stats.dailyNet <= -this.settings.dailyLossLimit
-        ) {
+        if (this.settings.dailyLossLimit > 0 && this.stats.dailyNet <= -this.settings.dailyLossLimit) {
             this.log('warn', 'Daily loss limit reached. Bot stopped.');
             this.stop(false);
             return true;
         }
 
-        if (
-            this.settings.takeProfit > 0 &&
-            this.stats.dailyNet >= this.settings.takeProfit
-        ) {
+        if (this.settings.takeProfit > 0 && this.stats.dailyNet >= this.settings.takeProfit) {
             this.log('success', 'Daily take profit reached. Bot stopped.');
             this.stop(false);
             return true;
@@ -362,45 +468,12 @@ class AIBotEngine extends EventTarget {
         return true;
     }
 
-    private isFavorable(analysis: AnalysisResult): boolean {
-        if (!analysis.direction) {
-            return false;
-        }
-
-        if (analysis.confidence < this.settings.minConfidence) {
-            return false;
-        }
-
-        if (
-            this.settings.maxVolatility > 0 &&
-            analysis.volatility > this.settings.maxVolatility
-        ) {
-            return false;
-        }
-
-        const assumedPayoutRatio = 1.95;
-        const projectedEdge = analysis.confidence * assumedPayoutRatio - 1;
-
-        if (
-            this.settings.requireProfitProjection &&
-            projectedEdge < this.settings.minProjectedEdge
-        ) {
-            return false;
-        }
-
-        return true;
-    }
-
     private calculateStake(): number {
         const base = Number(this.settings.stake) || 0.35;
         let stake = base;
 
         if (this.settings.martingaleEnabled) {
-            const steps = Math.min(
-                this.stats.lossStreak,
-                Math.max(0, this.settings.maxMartingaleSteps)
-            );
-
+            const steps = Math.min(this.stats.lossStreak, Math.max(0, this.settings.maxMartingaleSteps));
             const multiplier = Math.max(1.01, this.settings.martingaleMultiplier);
             stake = base * Math.pow(multiplier, steps);
         }
@@ -433,20 +506,35 @@ class AIBotEngine extends EventTarget {
                 }
 
                 try {
-                    const ticks = await this.api.getTickHistory(symbol.symbol, 90);
+                    const ticks = await this.api.getTickHistory(symbol.symbol, 300);
                     const quotes = ticks.map(tick => tick.quote);
-                    const analysis = analyzeQuotes(quotes);
+                    const decimals = pipToDecimals(symbol.pip);
 
-                    if (this.isFavorable(analysis)) {
-                        this.log(
-                            'info',
-                            `${symbol.display_name || symbol.symbol}: ${analysis.direction} | conf ${(
-                                analysis.confidence * 100
-                            ).toFixed(1)}% | ${analysis.reason}`
+                    const candidates = this.settings.tradeCategories
+                        .map(category => analyzeMarket(category, quotes, decimals))
+                        .filter(result => result.contractType && result.confidence >= this.settings.minConfidence)
+                        .filter(
+                            result =>
+                                result.category !== 'rise_fall' ||
+                                this.settings.maxVolatility <= 0 ||
+                                result.volatility <= this.settings.maxVolatility
                         );
 
-                        await this.executeTrade(symbol.symbol, quotes, analysis);
+                    if (!candidates.length) {
+                        continue;
                     }
+
+                    candidates.sort((a, b) => b.confidence - a.confidence);
+                    const best = candidates[0];
+
+                    this.log(
+                        'info',
+                        `${symbol.display_name || symbol.symbol}: ${best.contractType}${
+                            best.barrier !== null ? `(${best.barrier})` : ''
+                        } | conf ${(best.confidence * 100).toFixed(1)}% | ${best.reason}`
+                    );
+
+                    await this.executeTrade(symbol, quotes, decimals, best);
                 } catch (error: any) {
                     this.log('warn', `Scan failed for ${symbol.symbol}: ${error.message}`);
                 }
@@ -460,11 +548,12 @@ class AIBotEngine extends EventTarget {
     }
 
     private async executeTrade(
-        symbol: string,
+        symbol: DerivActiveSymbol,
         quotes: number[],
+        decimals: number,
         analysis: AnalysisResult
     ) {
-        if (!this.api || !analysis.direction) {
+        if (!this.api || !analysis.contractType) {
             return;
         }
 
@@ -475,10 +564,46 @@ class AIBotEngine extends EventTarget {
             return;
         }
 
-        if (this.settings.mode === 'live' && this.authorized) {
-            await this.executeLiveTrade(symbol, entry, stake, analysis);
-        } else {
-            await this.executePaperTrade(symbol, entry, stake, analysis);
+        const { payload, duration, durationUnit } = buildProposalPayload(
+            symbol.symbol,
+            this.settings.currency,
+            stake,
+            analysis,
+            this.settings
+        );
+
+        try {
+            const proposalResponse = await this.api.requestProposal(payload);
+            const proposal = proposalResponse?.proposal;
+
+            if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
+                this.log('warn', `Proposal unavailable for ${symbol.symbol} ${analysis.contractType}.`);
+                return;
+            }
+
+            const askPrice = Number(proposal.ask_price);
+            const payout = Number(proposal.payout);
+            const payoutRatio = payout / askPrice;
+            const breakEven = askPrice / payout;
+            const projectedEdge = analysis.confidence - breakEven;
+
+            if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
+                this.log(
+                    'warn',
+                    `Skipping ${symbol.symbol} ${analysis.contractType}: projected edge ${(
+                        projectedEdge * 100
+                    ).toFixed(2)}% is below the minimum required.`
+                );
+                return;
+            }
+
+            if (this.settings.mode === 'live' && this.authorized) {
+                await this.executeLiveTrade(symbol.symbol, entry, stake, decimals, analysis, proposal);
+            } else {
+                await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payoutRatio, duration, durationUnit);
+            }
+        } catch (error: any) {
+            this.log('warn', `Proposal request failed for ${symbol.symbol}: ${error.message}`);
         }
     }
 
@@ -486,50 +611,16 @@ class AIBotEngine extends EventTarget {
         symbol: string,
         entry: number,
         stake: number,
-        analysis: AnalysisResult
+        decimals: number,
+        analysis: AnalysisResult,
+        proposal: any
     ) {
-        if (!this.api || !analysis.direction) {
+        if (!this.api || !analysis.contractType) {
             return;
         }
 
         try {
-            const proposalResponse = await this.api.send({
-                proposal: 1,
-                amount: stake,
-                basis: 'stake',
-                contract_type: analysis.direction,
-                currency: this.settings.currency,
-                duration: this.settings.duration,
-                duration_unit: this.settings.durationUnit,
-                symbol,
-                product_type: 'basic',
-            });
-
-            const proposal = proposalResponse?.proposal;
-
-            if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
-                this.log('warn', `Live proposal failed for ${symbol}.`);
-                return;
-            }
-
-            const breakEven = Number(proposal.ask_price) / Number(proposal.payout);
-
-            if (
-                this.settings.requireProfitProjection &&
-                analysis.confidence <= breakEven + this.settings.minProjectedEdge
-            ) {
-                this.log(
-                    'warn',
-                    `Skipping live trade on ${symbol}: edge too small after payout.`
-                );
-                return;
-            }
-
-            const buyResponse = await this.api.send({
-                buy: proposal.id,
-                price: proposal.ask_price,
-            });
-
+            const buyResponse = await this.api.buyProposal(proposal.id, proposal.ask_price);
             const contractId = buyResponse?.buy?.contract_id;
 
             if (!contractId) {
@@ -540,9 +631,13 @@ class AIBotEngine extends EventTarget {
             const trade: LiveTrade = {
                 id: String(contractId),
                 symbol,
+                category: analysis.category,
+                contractType: analysis.contractType,
+                barrier: analysis.barrier,
                 direction: analysis.direction,
                 stake,
                 entry: Number(proposal.spot || entry),
+                decimals,
                 createdAt: Date.now(),
                 mode: 'live',
                 contractId: String(contractId),
@@ -558,7 +653,9 @@ class AIBotEngine extends EventTarget {
 
             this.log(
                 'success',
-                `LIVE ${analysis.direction} opened on ${symbol} stake=${stake} contract=${contractId}`
+                `LIVE ${analysis.contractType}${
+                    analysis.barrier !== null ? `(${analysis.barrier})` : ''
+                } opened on ${symbol} stake=${stake} contract=${contractId}`
             );
 
             this.emit();
@@ -571,9 +668,13 @@ class AIBotEngine extends EventTarget {
         symbol: string,
         entry: number,
         stake: number,
-        analysis: AnalysisResult
+        decimals: number,
+        analysis: AnalysisResult,
+        payoutRatio: number,
+        duration: number,
+        durationUnit: DurationUnit
     ) {
-        if (!this.api || !analysis.direction) {
+        if (!this.api || !analysis.contractType) {
             return;
         }
 
@@ -582,24 +683,24 @@ class AIBotEngine extends EventTarget {
         const trade: PaperTrade = {
             id,
             symbol,
+            category: analysis.category,
+            contractType: analysis.contractType,
+            barrier: analysis.barrier,
             direction: analysis.direction,
             stake,
             entry,
+            decimals,
             createdAt: Date.now(),
             mode: 'paper',
-            duration: this.settings.duration,
-            durationUnit: this.settings.durationUnit,
-            payoutRatio: 1.95,
+            duration,
+            durationUnit,
+            payoutRatio,
         };
 
         if (trade.durationUnit === 't') {
             trade.remainingTicks = Math.max(1, Number(trade.duration) || 1);
         } else {
-            const ms =
-                trade.durationUnit === 'm'
-                    ? Number(trade.duration) * 60000
-                    : Number(trade.duration) * 1000;
-
+            const ms = trade.durationUnit === 'm' ? Number(trade.duration) * 60000 : Number(trade.duration) * 1000;
             trade.expiresAt = Date.now() + ms;
         }
 
@@ -607,7 +708,9 @@ class AIBotEngine extends EventTarget {
 
         this.log(
             'info',
-            `PAPER ${analysis.direction} opened on ${symbol} stake=${stake} entry=${entry}`
+            `PAPER ${analysis.contractType}${
+                analysis.barrier !== null ? `(${analysis.barrier})` : ''
+            } opened on ${symbol} stake=${stake} entry=${entry}`
         );
 
         await this.monitorPaperTrade(trade);
@@ -622,7 +725,7 @@ class AIBotEngine extends EventTarget {
         try {
             await this.api.subscribeTicks(trade.symbol);
         } catch {
-            // If subscription fails, timeout will settle trade safely.
+            // If subscription fails, the safety timeout below will settle the trade.
         }
 
         const unsubscribe = this.api.addTickListener((tick: DerivTick) => {
@@ -654,17 +757,16 @@ class AIBotEngine extends EventTarget {
             }
 
             const exit = tick.quote;
-            let win = false;
+            let win: boolean;
 
-            if (trade.direction === 'CALL') {
-                win = exit > trade.entry;
+            if (trade.category === 'rise_fall') {
+                win = trade.direction === 'CALL' ? exit > trade.entry : exit < trade.entry;
             } else {
-                win = exit < trade.entry;
+                const digit = lastDigitOf(exit, trade.decimals);
+                win = isDigitContractWin(trade.contractType, trade.barrier, digit);
             }
 
-            const profit = win
-                ? trade.stake * (trade.payoutRatio - 1)
-                : -trade.stake;
+            const profit = win ? trade.stake * (trade.payoutRatio - 1) : -trade.stake;
 
             this.settleTrade(trade.symbol, win, profit, 'paper-expiry');
             unsubscribe();
@@ -674,9 +776,7 @@ class AIBotEngine extends EventTarget {
         this.paperUnsubscribes.set(trade.id, unsubscribe);
 
         const safetyTimeout =
-            trade.durationUnit === 't'
-                ? 120000
-                : Math.max(5000, (trade.expiresAt ?? Date.now()) - Date.now() + 30000);
+            trade.durationUnit === 't' ? 120000 : Math.max(5000, (trade.expiresAt ?? Date.now()) - Date.now() + 30000);
 
         setTimeout(() => {
             const current = this.openTrades.get(trade.symbol);
@@ -708,12 +808,7 @@ class AIBotEngine extends EventTarget {
         }
     }
 
-    private settleTrade(
-        symbol: string,
-        win: boolean,
-        profit: number,
-        reason: string
-    ) {
+    private settleTrade(symbol: string, win: boolean, profit: number, reason: string) {
         const trade = this.openTrades.get(symbol);
 
         if (!trade) {
@@ -762,9 +857,9 @@ class AIBotEngine extends EventTarget {
 
         this.log(
             win ? 'success' : 'warn',
-            `${trade.mode.toUpperCase()} ${trade.direction} ${win ? 'won' : 'lost'} on ${symbol} | P/L ${profit.toFixed(
-                2
-            )} | ${reason}`
+            `${trade.mode.toUpperCase()} ${trade.contractType}${
+                trade.barrier !== null ? `(${trade.barrier})` : ''
+            } ${win ? 'won' : 'lost'} on ${symbol} | P/L ${profit.toFixed(2)} | ${reason}`
         );
 
         this.limitsHit();
