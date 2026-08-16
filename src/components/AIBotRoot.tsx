@@ -51,7 +51,32 @@ export default function AIBotRoot() {
 
     return (
         <>
+            {/* aiFadeIn / aiSlideUp / aiPulse are referenced by this component and by
+                AIBotModal, but were never actually defined anywhere in the app — so
+                every "animation" on the bot UI was silently a no-op. Defined once
+                here since this component is always mounted (see app-root.tsx). */}
             <style>{`
+                @keyframes aiFadeIn {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+
+                @keyframes aiSlideUp {
+                    from { opacity: 0; transform: translateY(16px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+
+                @keyframes aiPulse {
+                    0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.45); }
+                    70% { box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); }
+                    100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+                }
+
+                @keyframes aiScanPulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.35; }
+                }
+
                 .ai-fab:hover {
                     transform: translateY(-2px) scale(1.03);
                     box-shadow: 0 18px 40px rgba(37, 99, 235, 0.42);
@@ -63,6 +88,10 @@ export default function AIBotRoot() {
 
                 .ai-fab-running {
                     animation: aiPulse 2s infinite;
+                }
+
+                .ai-fab-scanning-dot {
+                    animation: aiScanPulse 1s infinite;
                 }
 
                 @media (max-width: 600px) {
@@ -81,6 +110,7 @@ export default function AIBotRoot() {
                 aria-label="Open AI Bot settings"
             >
                 <span
+                    className={state.scanning ? 'ai-fab-scanning-dot' : ''}
                     style={{
                         ...dotStyle,
                         background: state.running ? '#4ade80' : '#d1d5db',
@@ -93,7 +123,7 @@ export default function AIBotRoot() {
                 AI Bot
 
                 <span style={chipStyle}>
-                    {state.running ? 'ON' : 'OFF'}
+                    {state.scanning ? 'SCANNING' : state.running ? 'ON' : 'OFF'}
                 </span>
 
                 <span
