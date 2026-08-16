@@ -1,172 +1,57 @@
 <!doctype html>
-<html lang="en" dir="auto">
+<html lang="en" dir="auto" class="light">
     <head>
+        <!-- Google Tag Manager -->
+        <script>
+            (function (w, d, s, l, i) {
+                w[l] = w[l] || [];
+                w[l].push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+                var f = d.getElementsByTagName(s)[0],
+                    j = d.createElement(s),
+                    dl = l != 'dataLayer' ? '&l=' + l : '';
+                j.async = true;
+                j.src = 'https://www.googletagmanager.com/gtm.js?id=' + i + dl;
+                f.parentNode.insertBefore(j, f);
+            })(window, document, 'script', 'dataLayer', 'GTM-KV9538TF');
+        </script>
+        <!-- End Google Tag Manager -->
+
         <meta charset="UTF-8" />
-        <link rel="icon" type="image/svg+xml" href="/deriv-logo.svg" />
-
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover"
-        />
-
-        <!-- PWA Manifest -->
-        <link rel="manifest" href="/manifest.json" />
-
-        <!-- PWA Meta Tags -->
-        <meta name="theme-color" content="#ff444f" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="DollarBotFX" />
-        <meta name="mobile-web-app-capable" content="yes" />
-        <meta name="msapplication-TileColor" content="#ff444f" />
-        <meta name="msapplication-tap-highlight" content="no" />
-
-        <!-- Apple Touch Icons -->
-        <link rel="apple-touch-icon" href="/assets/icons/pwa/icon-152x152.png" />
-        <link rel="apple-touch-icon" sizes="152x152" href="/assets/icons/pwa/icon-152x152.png" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/pwa/icon-192x192.png" />
-
-        <meta name="title" content="Build a trading bot without coding | DollarBotFX." />
+        <link rel="icon" type="image/svg+xml" href="<%= assetPrefix %>/deriv-logo.svg" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+        <meta name="title" content="Automate Your Trades | Deriv Bot" />
         <meta
             name="description"
             content="Import your current bot or learn how to create a trading bot from scratch with our detailed guides, FAQs, and tutorials. Start with a quick strategy!"
         />
-        <meta property="og:title" content="DollarBotFX" />
+        <meta property="og:title" content="Deriv Bot" />
         <meta
             property="og:description"
             content="Import your current bot or learn how to create a trading bot from scratch with our detailed guides, FAQs, and tutorials. Start with a quick strategy!"
         />
-
-        <title>Build a trading bot without coding | DollarBotFX.</title>
-
+        <title>Automate Your Trades | Deriv Bot</title>
         <style>
-            /* 
-               CRITICAL LAYOUT FIX: 
-               Deriv Bot uses a rem-based layout where 1rem = 10px.
-               DO NOT change this to 100% or 16px or the whole app
-               will double in size and overflow the screen.
-            */
             :root {
                 font-size: 62.5%;
             }
-
-            /* FORCE LIGHT THEME */
-            body {
-                color-scheme: light !important;
-                background-color: #ffffff !important;
-            }
-
-            body.theme--dark {
-                background-color: #ffffff !important;
-                color: #111827 !important;
-            }
-
-            #root {
-                max-width: 100vw;
-                overflow-x: hidden;
-            }
-
-            /* AI BOT CONTAINER ISOLATION */
-            #ai-bot-root {
-                position: fixed;
-                z-index: 99999;
-                pointer-events: none;
-                font-size: 16px !important;
-                line-height: 1.4 !important;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
-            }
-
-            #ai-bot-root > * {
-                pointer-events: auto;
-            }
         </style>
-
-        <!--
-            CRITICAL FIX FOR "Sorry for the interruption":
-            1. Unregisters ALL stale service workers from previous deploys.
-            2. Deletes ALL caches so old JS chunks can never be served.
-            3. Blocks the PWA service worker from re-registering.
-            4. Auto-reloads ONCE if a chunk-loading error is ever detected.
-            This runs before the app modules load.
-        -->
-        <script>
-            (function () {
-                // 1 + 2: Remove stale service workers and caches immediately.
-                if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker
-                        .getRegistrations()
-                        .then(function (registrations) {
-                            registrations.forEach(function (registration) {
-                                registration.unregister();
-                            });
-                        })
-                        .catch(function () {});
-                }
-
-                if ('caches' in window) {
-                    caches
-                        .keys()
-                        .then(function (keys) {
-                            keys.forEach(function (key) {
-                                caches.delete(key);
-                            });
-                        })
-                        .catch(function () {});
-                }
-
-                // 3: Block re-registration so stale shells can never return.
-                if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker.register = function () {
-                        console.log('[HTML] Service worker registration blocked for stability.');
-                        return Promise.resolve(null);
-                    };
-                }
-
-                // 4: Self-heal if a stale chunk ever slips through.
-                window.addEventListener('error', function (event) {
-                    var msg = String((event && event.message) || '');
-                    var isChunkError =
-                        msg.indexOf('Loading chunk') !== -1 ||
-                        msg.indexOf('ChunkLoadError') !== -1 ||
-                        msg.indexOf('Failed to fetch dynamically imported module') !== -1 ||
-                        msg.indexOf('error loading dynamically imported module') !== -1 ||
-                        msg.indexOf('Unable to preload CSS') !== -1;
-
-                    if (isChunkError) {
-                        try {
-                            if (!sessionStorage.getItem('dbfx_chunk_reload_done')) {
-                                sessionStorage.setItem('dbfx_chunk_reload_done', '1');
-                                window.location.reload();
-                            }
-                        } catch (e) {}
-                    }
-                });
-
-                window.addEventListener('load', function () {
-                    setTimeout(function () {
-                        try {
-                            sessionStorage.removeItem('dbfx_chunk_reload_done');
-                        } catch (e) {}
-                    }, 5000);
-                });
-            })();
-        </script>
     </head>
 
     <body class="body theme theme--light">
+        <!-- Google Tag Manager (noscript) -->
+        <noscript
+            ><iframe
+                src="https://www.googletagmanager.com/ns.html?id=GTM-KV9538TF"
+                height="0"
+                width="0"
+                style="display: none; visibility: hidden"
+            ></iframe
+        ></noscript>
+        <!-- End Google Tag Manager (noscript) -->
+
         <div id="modal_root" class="modal-root"></div>
         <div id="popup_root" class="popup-root"></div>
         <div id="root"></div>
-
-        <!-- AI Bot Mount Point -->
-        <div id="ai-bot-root"></div>
-
-        <!-- Main application entry -->
-        <script type="module" src="/src/main.tsx"></script>
-
-        <!-- AI Bot launcher script -->
-        <script type="module" src="/src/ai/install-ai-bot.tsx"></script>
-
         <!-- LiveChat script -->
         <script type="text/javascript" defer>
             window.__lc = window.__lc || {};
@@ -190,7 +75,7 @@
                         i(['off', c.call(arguments)]);
                     },
                     get: function () {
-                        if (!e._h) throw new Error("[LiveChatWidget] You can't use getters before load.");
+                        if (!e._h) throw new Error('[LiveChatWidget] You can’t use getters before load.');
                         return i(['get', c.call(arguments)]);
                     },
                     call: function () {
@@ -199,18 +84,16 @@
                     init: function () {
                         setTimeout(() => {
                             var n = t.createElement('script');
-                            (n.async = !0),
-                            (n.type = 'text/javascript'),
-                            (n.src = 'https://cdn.livechatinc.com/tracking.js'),
-                            t.head.appendChild(n);
+                            ((n.async = !0),
+                                (n.type = 'text/javascript'),
+                                (n.src = 'https://cdn.livechatinc.com/tracking.js'),
+                                t.head.appendChild(n));
                         }, 3000);
                     },
                 };
-                if (!n.__lc.asyncInit) {
-                    e.init();
-                }
-                n.LiveChatWidget = e;
-            })(window, document);
+                (!n.__lc.asyncInit && e.init(), (n.LiveChatWidget = n.LiveChatWidget || e));
+            })(window, document, [].slice);
         </script>
+        <!-- End LiveChat script -->
     </body>
 </html>
