@@ -1,4 +1,4 @@
-import { DerivAPI, DerivActiveSymbol, DerivTick } from './deriv-api';
+import { DerivAPI, DerivActiveSymbol, DerivContractSpec, DerivTick } from './deriv-api';
 import {
     analyzeMarket,
     AnalysisResult,
@@ -67,6 +67,11 @@ export type AIBotStats = {
     tradesOpened: number;
     lastScanAt: number | null;
     lastScanSummary: string;
+    signalsFound: number;
+    proposalsRequested: number;
+    proposalsRejectedByBroker: number;
+    skippedBelowEdge: number;
+    skippedContractUnavailable: number;
 };
 
 export type AIBotLog = {
@@ -156,28 +161,62 @@ function isDigitContractWin(contractType: ContractType, barrier: number | null, 
     }
 }
 
+/**
+ * Picks a duration that Deriv will actually accept for this specific
+ * contract on this specific symbol. Previously the bot always sent the
+ * user's configured duration/unit (or a hardcoded 1-10 ticks for digits)
+ * regardless of what that symbol actually supports — e.g. some forex or
+ * stock-index Rise/Fall contracts aren't offered in ticks at all. Deriv
+ * would then reject the whole `proposal` request, so the trade silently
+ * never happened. When we have real contract specs for this symbol, prefer
+ * the user's setting if it's within the allowed range; otherwise fall back
+ * to the contract's own minimum duration, which is guaranteed valid.
+ */
+function resolveDuration(
+    desiredValue: number,
+    desiredUnit: DurationUnit,
+    spec: DerivContractSpec | undefined
+): { value: number; unit: DurationUnit } {
+    if (!spec || !spec.minDuration) {
+        return { value: desiredValue, unit: desiredUnit };
+    }
+
+    const min = spec.minDuration;
+    const max = spec.maxDuration && spec.maxDuration.unit === min.unit ? spec.maxDuration : min;
+
+    if (min.unit === desiredUnit) {
+        const value = Math.min(Math.max(desiredValue, min.value), Math.max(max.value, min.value));
+        return { value, unit: desiredUnit };
+    }
+
+    return { value: min.value, unit: (min.unit as DurationUnit) ?? desiredUnit };
+}
+
 function buildProposalPayload(
     symbol: string,
     currency: string,
     stake: number,
     analysis: AnalysisResult,
-    settings: AIBotSettings
+    settings: AIBotSettings,
+    spec: DerivContractSpec | undefined
 ): { payload: Record<string, unknown>; duration: number; durationUnit: DurationUnit } {
     const isDigit = analysis.category !== 'rise_fall';
 
     // Digit-family contracts on Deriv are only offered for short tick
     // durations (1-10 ticks). Rise/fall respects whatever duration unit the
-    // user configured.
-    const duration = isDigit ? Math.min(10, Math.max(1, Math.round(settings.duration))) : settings.duration;
-    const durationUnit: DurationUnit = isDigit ? 't' : settings.durationUnit;
+    // user configured, subject to what the symbol actually supports.
+    const desiredValue = isDigit ? Math.min(10, Math.max(1, Math.round(settings.duration))) : settings.duration;
+    const desiredUnit: DurationUnit = isDigit ? 't' : settings.durationUnit;
+
+    const resolved = resolveDuration(desiredValue, desiredUnit, spec);
 
     const payload: Record<string, unknown> = {
         amount: stake,
         basis: 'stake',
         contract_type: analysis.contractType,
         currency,
-        duration,
-        duration_unit: durationUnit,
+        duration: resolved.value,
+        duration_unit: resolved.unit,
         symbol,
         product_type: 'basic',
     };
@@ -186,7 +225,7 @@ function buildProposalPayload(
         payload.barrier = String(analysis.barrier);
     }
 
-    return { payload, duration, durationUnit };
+    return { payload, duration: resolved.value, durationUnit: resolved.unit };
 }
 
 class AIBotEngine extends EventTarget {
@@ -213,7 +252,14 @@ class AIBotEngine extends EventTarget {
         tradesOpened: 0,
         lastScanAt: null,
         lastScanSummary: 'Not scanned yet.',
+        signalsFound: 0,
+        proposalsRequested: 0,
+        proposalsRejectedByBroker: 0,
+        skippedBelowEdge: 0,
+        skippedContractUnavailable: 0,
     };
+
+    private contractsCache = new Map<string, Map<ContractType, DerivContractSpec>>();
 
     private activeSymbols: DerivActiveSymbol[] = [];
     private openTrades = new Map<string, OpenTrade>();
@@ -306,6 +352,7 @@ class AIBotEngine extends EventTarget {
     async start(patch: Partial<AIBotSettings> = {}) {
         this.updateSettings(patch);
         this.stop(false);
+        this.contractsCache.clear();
 
         if (!this.settings.tradeCategories.length) {
             this.settings.tradeCategories = ['rise_fall'];
@@ -618,6 +665,33 @@ class AIBotEngine extends EventTarget {
         }
     }
 
+    private async getContractSpecs(symbol: string): Promise<Map<ContractType, DerivContractSpec> | null> {
+        if (!this.api) {
+            return null;
+        }
+
+        const cached = this.contractsCache.get(symbol);
+
+        if (cached) {
+            return cached;
+        }
+
+        try {
+            const specs = await this.api.contractsFor(symbol, this.settings.currency || 'USD');
+            const map = new Map<ContractType, DerivContractSpec>();
+
+            specs.forEach(spec => {
+                map.set(spec.contractType as ContractType, spec);
+            });
+
+            this.contractsCache.set(symbol, map);
+            return map;
+        } catch (error: any) {
+            this.log('warn', `Could not load contract list for ${symbol}: ${error.message}. Will attempt with configured defaults.`);
+            return null;
+        }
+    }
+
     private async executeTrade(
         symbol: DerivActiveSymbol,
         quotes: number[],
@@ -628,10 +702,24 @@ class AIBotEngine extends EventTarget {
             return;
         }
 
+        this.stats.signalsFound += 1;
+
         const stake = this.calculateStake();
         const entry = quotes[quotes.length - 1] ?? 0;
 
         if (!entry) {
+            return;
+        }
+
+        const specs = await this.getContractSpecs(symbol.symbol);
+        const spec = specs?.get(analysis.contractType);
+
+        if (specs && !spec) {
+            this.stats.skippedContractUnavailable += 1;
+            this.log(
+                'warn',
+                `${symbol.symbol}: ${analysis.contractType} is not offered on this symbol right now. Skipping.`
+            );
             return;
         }
 
@@ -640,15 +728,24 @@ class AIBotEngine extends EventTarget {
             this.settings.currency,
             stake,
             analysis,
-            this.settings
+            this.settings,
+            spec
         );
+
+        this.stats.proposalsRequested += 1;
 
         try {
             const proposalResponse = await this.api.requestProposal(payload);
             const proposal = proposalResponse?.proposal;
 
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
-                this.log('warn', `Proposal unavailable for ${symbol.symbol} ${analysis.contractType}.`);
+                this.stats.proposalsRejectedByBroker += 1;
+                this.log(
+                    'warn',
+                    `${symbol.symbol} ${analysis.contractType}${
+                        analysis.barrier !== null ? `(${analysis.barrier})` : ''
+                    }: broker returned no priceable proposal (duration ${duration}${durationUnit}). Skipping.`
+                );
                 return;
             }
 
@@ -658,12 +755,26 @@ class AIBotEngine extends EventTarget {
             const breakEven = askPrice / payout;
             const projectedEdge = analysis.confidence - breakEven;
 
+            this.log(
+                'info',
+                `${symbol.symbol} ${analysis.contractType}${
+                    analysis.barrier !== null ? `(${analysis.barrier})` : ''
+                }: priced ${askPrice.toFixed(2)} -> payout ${payout.toFixed(2)} (breakeven ${(
+                    breakEven * 100
+                ).toFixed(1)}%, our confidence ${(analysis.confidence * 100).toFixed(1)}%, edge ${(
+                    projectedEdge * 100
+                ).toFixed(2)}%).`
+            );
+
             if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
+                this.stats.skippedBelowEdge += 1;
                 this.log(
                     'warn',
                     `Skipping ${symbol.symbol} ${analysis.contractType}: projected edge ${(
                         projectedEdge * 100
-                    ).toFixed(2)}% is below the minimum required.`
+                    ).toFixed(2)}% is below the minimum required (${(this.settings.minProjectedEdge * 100).toFixed(
+                        2
+                    )}%).`
                 );
                 return;
             }
@@ -674,7 +785,11 @@ class AIBotEngine extends EventTarget {
                 await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payoutRatio, duration, durationUnit);
             }
         } catch (error: any) {
-            this.log('warn', `Proposal request failed for ${symbol.symbol}: ${error.message}`);
+            this.stats.proposalsRejectedByBroker += 1;
+            this.log(
+                'warn',
+                `Proposal request failed for ${symbol.symbol} ${analysis.contractType} (duration ${duration}${durationUnit}): ${error.message}`
+            );
         }
     }
 
