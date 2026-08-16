@@ -4,7 +4,6 @@
         <meta charset="UTF-8" />
         <link rel="icon" type="image/svg+xml" href="/deriv-logo.svg" />
 
-        <!-- CRITICAL: Viewport for proper mobile/desktop scaling -->
         <meta
             name="viewport"
             content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover"
@@ -44,9 +43,8 @@
             /* 
                CRITICAL LAYOUT FIX: 
                Deriv Bot uses a rem-based layout where 1rem = 10px.
-               DO NOT change this to 100% or 16px, or the entire 
-               dashboard, Blockly workspace, and panels will double 
-               in size and overflow the screen!
+               DO NOT change this to 100% or 16px or the whole app
+               will double in size and overflow the screen.
             */
             :root {
                 font-size: 62.5%;
@@ -59,24 +57,16 @@
             }
 
             body.theme--dark {
-                /* Override any accidental dark theme injection */
-                --core-color-primary: #ff444f !important;
                 background-color: #ffffff !important;
                 color: #111827 !important;
             }
 
-            /* Ensure the main root doesn't overflow horizontally */
             #root {
                 max-width: 100vw;
                 overflow-x: hidden;
             }
 
-            /* 
-               AI BOT CONTAINER ISOLATION:
-               Lock the AI mount point to standard 16px so the AI 
-               modal and button don't inherit the tiny 10px base 
-               from the Deriv Bot layout.
-            */
+            /* AI BOT CONTAINER ISOLATION */
             #ai-bot-root {
                 position: fixed;
                 z-index: 99999;
@@ -90,6 +80,77 @@
                 pointer-events: auto;
             }
         </style>
+
+        <!--
+            CRITICAL FIX FOR "Sorry for the interruption":
+            1. Unregisters ALL stale service workers from previous deploys.
+            2. Deletes ALL caches so old JS chunks can never be served.
+            3. Blocks the PWA service worker from re-registering.
+            4. Auto-reloads ONCE if a chunk-loading error is ever detected.
+            This runs before the app modules load.
+        -->
+        <script>
+            (function () {
+                // 1 + 2: Remove stale service workers and caches immediately.
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker
+                        .getRegistrations()
+                        .then(function (registrations) {
+                            registrations.forEach(function (registration) {
+                                registration.unregister();
+                            });
+                        })
+                        .catch(function () {});
+                }
+
+                if ('caches' in window) {
+                    caches
+                        .keys()
+                        .then(function (keys) {
+                            keys.forEach(function (key) {
+                                caches.delete(key);
+                            });
+                        })
+                        .catch(function () {});
+                }
+
+                // 3: Block re-registration so stale shells can never return.
+                if ('serviceWorker' in navigator) {
+                    navigator.serviceWorker.register = function () {
+                        console.log('[HTML] Service worker registration blocked for stability.');
+                        return Promise.resolve(null);
+                    };
+                }
+
+                // 4: Self-heal if a stale chunk ever slips through.
+                window.addEventListener('error', function (event) {
+                    var msg = String((event && event.message) || '');
+                    var isChunkError =
+                        msg.indexOf('Loading chunk') !== -1 ||
+                        msg.indexOf('ChunkLoadError') !== -1 ||
+                        msg.indexOf('Failed to fetch dynamically imported module') !== -1 ||
+                        msg.indexOf('error loading dynamically imported module') !== -1 ||
+                        msg.indexOf('Unable to preload CSS') !== -1;
+
+                    if (isChunkError) {
+                        try {
+                            if (!sessionStorage.getItem('dbfx_chunk_reload_done')) {
+                                sessionStorage.setItem('dbfx_chunk_reload_done', '1');
+                                window.location.reload();
+                            }
+                        } catch (e) {}
+                    }
+                });
+
+                window.addEventListener('load', function () {
+                    setTimeout(function () {
+                        try {
+                            sessionStorage.removeItem('dbfx_chunk_reload_done');
+                        } catch (e) {}
+                    }, 5000);
+                });
+            })();
+        </script>
     </head>
 
     <body class="body theme theme--light">
@@ -111,76 +172,45 @@
             window.__lc = window.__lc || {};
             window.__lc.license = 12049137;
             window.__lc.asyncInit = true;
-            (function(n,t,c){
-                function i(n){
-                    return e._h ? e._h.apply(null,n) : e._q.push(n);
+            (function (n, t, c) {
+                function i(n) {
+                    return e._h ? e._h.apply(null, n) : e._q.push(n);
                 }
                 var e = {
                     _q: [],
                     _h: null,
                     _v: '2.0',
-                    on: function(){i(['on',c.call(arguments)]);},
-                    once: function(){i(['once',c.call(arguments)]);},
-                    off: function(){i(['off',c.call(arguments)]);},
-                    get: function(){
-                        if(!e._h) throw new Error("[LiveChatWidget] You can't use getters before load.");
-                        return i(['get',c.call(arguments)]);
+                    on: function () {
+                        i(['on', c.call(arguments)]);
                     },
-                    call: function(){i(['call',c.call(arguments)]);},
-                    init: function(){
-                        setTimeout(()=>{
-                            var n=t.createElement('script');
-                            ((n.async=!0),
-                            (n.type='text/javascript'),
-                            (n.src='https://cdn.livechatinc.com/tracking.js'),
-                            t.head.appendChild(n));
-                        },3000);
+                    once: function () {
+                        i(['once', c.call(arguments)]);
+                    },
+                    off: function () {
+                        i(['off', c.call(arguments)]);
+                    },
+                    get: function () {
+                        if (!e._h) throw new Error("[LiveChatWidget] You can't use getters before load.");
+                        return i(['get', c.call(arguments)]);
+                    },
+                    call: function () {
+                        i(['call', c.call(arguments)]);
+                    },
+                    init: function () {
+                        setTimeout(() => {
+                            var n = t.createElement('script');
+                            (n.async = !0),
+                            (n.type = 'text/javascript'),
+                            (n.src = 'https://cdn.livechatinc.com/tracking.js'),
+                            t.head.appendChild(n);
+                        }, 3000);
                     },
                 };
-                if(!n.__lc.asyncInit){e.init();}
-                n.LiveChatWidget=e;
-            }(window,document));
-        </script>
-
-        <!-- Browser Service Worker Prevention -->
-        <script>
-            const userAgent = navigator.userAgent.toLowerCase();
-            const isFirefox = userAgent.includes('firefox');
-            const isSafari = userAgent.includes('safari') && !userAgent.includes('chrome');
-            const shouldSkipSW = isFirefox || isSafari;
-            if (shouldSkipSW) {
-                const browserName = isFirefox ? 'Firefox' : 'Safari';
-                console.log(
-                    `[HTML] ${browserName} detected - preventing service worker registration to avoid chunk loading issues`
-                );
-                if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker
-                        .getRegistrations()
-                        .then(registrations => {
-                            registrations.forEach(registration => {
-                                console.log(`[HTML] Unregistering existing SW for ${browserName}:`, registration.scope);
-                                registration.unregister();
-                            });
-                        })
-                        .catch(error => {
-                            console.error('[HTML] Failed to cleanup service workers:', error);
-                        });
+                if (!n.__lc.asyncInit) {
+                    e.init();
                 }
-            }
-
-            console.log('[HTML] Online status:', navigator.onLine);
-            window.addEventListener('online', () => {
-                console.log('[HTML] Back online');
-            });
-            window.addEventListener('offline', () => {
-                console.log('[HTML] Gone offline');
-            });
-
-            if ('serviceWorker' in navigator && !shouldSkipSW) {
-                navigator.serviceWorker.addEventListener('message', event => {
-                    console.log('[HTML] Message from service worker:', event.data);
-                });
-            }
+                n.LiveChatWidget = e;
+            })(window, document);
         </script>
     </body>
 </html>
