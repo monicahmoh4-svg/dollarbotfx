@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { observer } from 'mobx-react-lite';
 import { useAIBot } from '../hooks/useAIBot';
+import { useStore } from '../hooks/useStore';
 import type { AIBotSettings } from '../ai/engine';
 import { MARKETS, TRADE_CATEGORIES } from '../ai/engine';
 import type { TradeCategory } from '../ai/analysis';
@@ -282,6 +284,88 @@ const styles = `
         color: #111827;
     }
 
+    .ai-session-card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 12px;
+        line-height: 1.5;
+        margin-bottom: 12px;
+        border: 1px solid;
+    }
+
+    .ai-session-card-ok {
+        background: #f0fdf4;
+        border-color: #86efac;
+        color: #14532d;
+    }
+
+    .ai-session-card-warn {
+        background: #fef2f2;
+        border-color: #fca5a5;
+        color: #7f1d1d;
+    }
+
+    .ai-session-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 900;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11px;
+        background: rgba(255, 255, 255, 0.6);
+    }
+
+    .ai-activity-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #374151;
+        margin-bottom: 8px;
+    }
+
+    .ai-scan-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: #d1d5db;
+    }
+
+    .ai-scan-dot-active {
+        background: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+        animation: aiPulse 1.4s infinite;
+    }
+
+    .ai-trades-list {
+        margin-top: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .ai-trade-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #1e3a8a;
+    }
+
     @media (max-width: 767px) {
         .ai-title {
             font-size: 18px;
@@ -302,7 +386,7 @@ function toNumber(value: string, fallback: number): number {
     return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-export default function AIBotModal({
+function AIBotModal({
     open,
     onClose,
 }: {
@@ -310,14 +394,32 @@ export default function AIBotModal({
     onClose: () => void;
 }) {
     const { state, start, stop } = useAIBot();
+    const store = useStore();
+    const client = store?.client;
+
+    // The app already has its own authenticated Deriv session once the
+    // user is logged in (client store / api_base). Rather than making the
+    // person copy-paste a separate API token into this modal, we read that
+    // session directly so Live mode "just works" as long as they're logged
+    // in — matching how the rest of the app already trades.
+    const isLoggedIn = Boolean(client?.is_logged_in && client?.loginid);
+    const sessionToken = isLoggedIn && client?.getToken ? client.getToken() : '';
+    const sessionCurrency = (isLoggedIn && client?.currency) || '';
+    const sessionLoginId = isLoggedIn ? client?.loginid : '';
+    const isVirtualAccount = Boolean(client?.is_virtual);
+
     const [form, setForm] = useState<AIBotSettings>(state.settings);
 
     useEffect(() => {
         if (open) {
-            setForm(state.settings);
+            setForm(previous => ({
+                ...state.settings,
+                apiToken: state.settings.apiToken || sessionToken || previous.apiToken || '',
+                currency: state.settings.currency || sessionCurrency || previous.currency || 'USD',
+            }));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
+    }, [open, sessionToken, sessionCurrency]);
 
     if (!open) {
         return null;
@@ -382,14 +484,38 @@ export default function AIBotModal({
                 <div className="ai-banner">
                     Risk warning: no algorithm can guarantee profits, and autonomous trading can
                     lose money quickly, especially with Martingale staking. This bot defaults to
-                    paper (simulated) trading — switch to Live only with a Deriv API token that has
-                    trade permission, and only with money you can afford to lose. Digit contracts
-                    (even/odd, over/under, matches/differs) are close to a fixed-odds coin flip by
-                    design — Deriv's synthetic indices use an audited RNG, so this bot only enters
-                    those when the recent sample is a statistically significant outlier versus the
-                    theoretical distribution, which will be rare. Accumulator contracts are not yet
-                    supported by this bot (different payout/exit mechanics from the timed contracts
-                    below) — ask your developer to add them as a follow-up if you need them.
+                    paper (simulated) trading — only switch to Live with money you can afford to
+                    lose. Digit contracts (even/odd, over/under, matches/differs) are close to a
+                    fixed-odds coin flip by design — Deriv's synthetic indices use an audited RNG,
+                    so this bot only enters those when the recent sample is a statistically
+                    significant outlier versus the theoretical distribution, which will be rare —
+                    that is expected behaviour, not a fault. Accumulator contracts are not yet
+                    supported by this bot (different payout/exit mechanics from the timed
+                    contracts below).
+                </div>
+
+                <div
+                    className={`ai-session-card ${isLoggedIn ? 'ai-session-card-ok' : 'ai-session-card-warn'}`}
+                >
+                    <div>
+                        {isLoggedIn ? (
+                            <>
+                                Logged in as <strong>{sessionLoginId}</strong>
+                                {sessionCurrency ? ` (${sessionCurrency})` : ''}. This session will
+                                be used automatically for Live trading — no separate token needed.
+                            </>
+                        ) : (
+                            <>
+                                You are not logged into a Deriv account in this app right now.
+                                Paper mode works without logging in, but Live trading needs you to
+                                log in first (or paste an API token below).
+                            </>
+                        )}
+                    </div>
+
+                    <span className="ai-session-badge">
+                        {isLoggedIn ? (isVirtualAccount ? 'DEMO ACCOUNT' : 'REAL ACCOUNT') : 'NOT LOGGED IN'}
+                    </span>
                 </div>
 
                 <div className="ai-section-title">Markets</div>
@@ -453,7 +579,9 @@ export default function AIBotModal({
                             }
                         >
                             <option value="paper">Paper / Simulation</option>
-                            <option value="live">Live Trading</option>
+                            <option value="live" disabled={!isLoggedIn && !form.apiToken}>
+                                Live Trading{!isLoggedIn && !form.apiToken ? ' (log in or add a token first)' : ''}
+                            </option>
                         </select>
                     </div>
 
@@ -467,11 +595,15 @@ export default function AIBotModal({
                     </div>
 
                     <div className="ai-field">
-                        <label>Deriv API Token</label>
+                        <label>Deriv API Token {isLoggedIn ? '(auto-filled from your login)' : ''}</label>
                         <input
                             className="ai-input"
                             type="password"
-                            placeholder="Required only for live mode"
+                            placeholder={
+                                isLoggedIn
+                                    ? 'Using your logged-in session — override only if needed'
+                                    : 'Required for Live mode if you are not logged in'
+                            }
                             value={form.apiToken}
                             onChange={e => set({ apiToken: e.target.value })}
                         />
@@ -786,8 +918,48 @@ export default function AIBotModal({
                         Connected: {state.connected ? 'Yes' : 'No'}
                         <br />
                         Authorized: {state.authorized ? 'Yes' : 'No'}
+                        {state.settings.mode === 'paper' && (
+                            <span style={{ color: '#9ca3af' }}> (only needed for Live mode)</span>
+                        )}
                     </div>
                 </div>
+
+                <div className="ai-activity-row">
+                    <span className={`ai-scan-dot ${state.scanning ? 'ai-scan-dot-active' : ''}`} />
+                    {state.scanning
+                        ? 'Scanning markets right now…'
+                        : state.running
+                          ? 'Idle between scans — next scan will start automatically.'
+                          : 'Bot is stopped.'}
+                    {' · '}
+                    {state.symbolCount} symbol(s) tracked · {state.stats.scanCount} scan(s) run
+                    {state.stats.lastScanAt
+                        ? ` · last scan ${new Date(state.stats.lastScanAt).toLocaleTimeString()}`
+                        : ''}
+                </div>
+
+                {state.running && (
+                    <div className="ai-hint" style={{ marginBottom: 10 }}>
+                        {state.stats.lastScanSummary}
+                    </div>
+                )}
+
+                {state.openTrades.length > 0 && (
+                    <div className="ai-trades-list">
+                        {state.openTrades.map(trade => (
+                            <div key={trade.id} className="ai-trade-row">
+                                <span>
+                                    {trade.symbol} · {trade.contractType}
+                                    {trade.barrier !== null ? `(${trade.barrier})` : ''}
+                                    {trade.direction ? ` ${trade.direction}` : ''}
+                                </span>
+                                <span>
+                                    stake {trade.stake} · {trade.mode.toUpperCase()}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                )}
 
                 <div className="ai-stats">
                     <div className="ai-stat-card">
@@ -828,6 +1000,20 @@ export default function AIBotModal({
                         <div className="ai-stat-label">Open Trades</div>
                         <div className="ai-stat-value">{state.stats.open}</div>
                     </div>
+
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Win Rate</div>
+                        <div className="ai-stat-value">
+                            {state.stats.wins + state.stats.losses > 0
+                                ? `${((state.stats.wins / (state.stats.wins + state.stats.losses)) * 100).toFixed(0)}%`
+                                : '—'}
+                        </div>
+                    </div>
+
+                    <div className="ai-stat-card">
+                        <div className="ai-stat-label">Scans Run</div>
+                        <div className="ai-stat-value">{state.stats.scanCount}</div>
+                    </div>
                 </div>
 
                 <div className="ai-logs">
@@ -858,3 +1044,5 @@ export default function AIBotModal({
         </div>
     );
 }
+
+export default observer(AIBotModal);
