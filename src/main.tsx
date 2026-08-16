@@ -1,32 +1,39 @@
-import { configure } from 'mobx';
 import ReactDOM from 'react-dom/client';
 import { AuthWrapper } from './app/AuthWrapper';
-// Removed AnalyticsInitializer import - analytics dependency removed
-// See migrate-docs/ANALYTICS_IMPLEMENTATION_GUIDE.md for re-implementation
-import {
-    applyBrandFontFromConfig,
-    applyDocumentTitle,
-    applyFaviconFromLogo,
-    applyPrimaryColorFromConfig,
-} from './utils/document-branding';
-import { performVersionCheck } from './utils/version-check';
+import { AnalyticsInitializer } from './utils/analytics';
+import { registerPWA } from './utils/pwa-utils';
+import { AIBotControlPanel } from './ai/AIBotControlPanel';
 import './styles/index.scss';
 
-// Configure MobX to handle multiple instances in production builds
-configure({ isolateGlobalState: true });
+// Initialize analytics
+AnalyticsInitializer();
 
-// Perform version check FIRST - before any other operations
-performVersionCheck();
+// Register PWA service worker
+registerPWA()
+    .then(registration => {
+        if (registration) {
+            console.log('PWA service worker registered successfully for Chrome');
+        } else {
+            console.log('PWA service worker disabled for non-Chrome browser');
+        }
+    })
+    .catch(error => {
+        console.error('PWA service worker registration failed:', error);
+    });
 
-// Apply deploy-time document branding (tab title, favicon, web font, and primary color).
-applyDocumentTitle();
-applyFaviconFromLogo();
-applyBrandFontFromConfig();
-applyPrimaryColorFromConfig();
+// --- 1. MOUNT MAIN APP ---
+// This mounts the core Deriv Bot dashboard, charts, and authentication wrapper.
+const rootElement = document.getElementById('root');
+if (rootElement) {
+    ReactDOM.createRoot(rootElement).render(<AuthWrapper />);
+}
 
-// Removed AnalyticsInitializer() call - analytics dependency removed
-
-// App Builder preview branding (incl. PREVIEW_READY handshake) is handled by the
-// src/preview/ listener, mounted from app-content only in the preview deployment
-// (NEXT_PUBLIC_APP_BUILD === 'true') and stripped from standalone partner deploys.
-ReactDOM.createRoot(document.getElementById('root')!).render(<AuthWrapper />);
+// --- 2. MOUNT AI BOT CONTROL PANEL ---
+// We render the AI Bot in a completely separate React root. 
+// This is critical for safety: it prevents the AI bot's rapid UI updates from 
+// interfering with the main app's MobX stores, React Context, Error Boundaries, 
+// and routing providers. It ensures the AI bot operates as an isolated overlay.
+const aiBotContainer = document.createElement('div');
+aiBotContainer.id = 'ai-bot-control-root';
+document.body.appendChild(aiBotContainer);
+ReactDOM.createRoot(aiBotContainer).render(<AIBotControlPanel />);
