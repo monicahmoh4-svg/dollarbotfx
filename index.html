@@ -50,32 +50,6 @@
                 max-width: 100vw;
                 overflow-x: hidden;
             }
-
-            #ai-bot-root {
-                position: fixed;
-                z-index: 99999;
-                pointer-events: none;
-                font-size: 16px !important;
-                line-height: 1.4 !important;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
-            }
-
-            #ai-bot-root > * {
-                pointer-events: auto;
-            }
-
-            #free-bots-root {
-                position: fixed;
-                z-index: 99998;
-                pointer-events: none;
-                font-size: 16px !important;
-                line-height: 1.4 !important;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
-            }
-
-            #free-bots-root > * {
-                pointer-events: auto;
-            }
         </style>
         <script>
             (function () {
@@ -140,20 +114,22 @@
         <div id="popup_root" class="popup-root"></div>
         <div id="root"></div>
 
-        <!-- AI Bot Mount Point -->
-        <div id="ai-bot-root"></div>
+        <!--
+            NOTE: Do not add extra `<script type="module" src="/src/...">` tags here.
+            Rsbuild only compiles the entry declared in rsbuild.config.ts
+            (source.entry -> ./src/main.tsx) and automatically injects the correct
+            bundled/hashed <script> tags into <head> at build time. Any other raw
+            `/src/*.tsx` script tag added directly to this file will work in `npm run dev`
+            (which compiles TSX on the fly) but does NOT exist in the production `dist/`
+            output, will 404 in production, and — combined with vercel.json's SPA
+            catch-all rewrite — will get served index.html's own markup back as if it
+            were a JS module. That corrupts the already-running app bundle and is what
+            was causing "Cannot read properties of undefined (reading 'call')".
 
-        <!-- Free Bots Mount Point -->
-        <div id="free-bots-root"></div>
-
-        <!-- Main application entry -->
-        <script type="module" src="/src/main.tsx"></script>
-
-        <!-- AI Bot launcher script -->
-        <script type="module" src="/src/ai/install-ai-bot.tsx"></script>
-
-        <!-- Free Bots launcher script -->
-        <script type="module" src="/src/components/free-bots/install-free-bots.tsx"></script>
+            To add new mounted UI (e.g. the AI Bot / Free Bots widgets), import and
+            render the component from inside the existing React tree (e.g. in
+            src/app/app-content.jsx) instead of adding a new script tag here.
+        -->
 
         <!-- LiveChat script -->
         <script type="text/javascript" defer>
