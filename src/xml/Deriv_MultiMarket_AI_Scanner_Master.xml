@@ -1,0 +1,1786 @@
+<xml xmlns="https://developers.google.com/blockly/xml" id="workspace_blocks" style="position:absolute; top:0; left:0; width:100%; height:100%;">
+
+  <block type="trade" id="trade_main" x="0" y="0">
+    <field name="MARKET_LIST">synthetic_index</field>
+    <field name="SUBMARKET_LIST">v100</field>
+    <field name="SYMBOL_LIST">R_100</field>
+    <field name="TRADETYPECAT_LIST">callput</field>
+    <field name="TRADETYPE_LIST">risefall</field>
+    <field name="TYPE_LIST">both</field>
+    <field name="CANDLEINTERVAL_LIST">60</field>
+    <field name="TIME_MACHINE_ENABLED">FALSE</field>
+    <field name="RESTART_ON_ERROR">TRUE</field>
+
+    <statement name="INITIALIZATION">
+      <block type="procedures_callnoreturn" id="init_call">
+        <mutation name="InitializeStrategy"/>
+      </block>
+    </statement>
+
+    <statement name="SUBMARKET">
+      <block type="tradeOptions" id="trade_options">
+        <field name="DURATIONTYPE_LIST">m</field>
+        <value name="DURATION">
+          <shadow type="math_number" id="duration_shadow">
+            <field name="NUM">5</field>
+          </shadow>
+        </value>
+        <value name="AMOUNT">
+          <block type="procedures_callreturn" id="stake_call">
+            <mutation name="GetStake"/>
+          </block>
+        </value>
+        <value name="CURRENCY">
+          <shadow type="text" id="currency_shadow">
+            <field name="TEXT">USD</field>
+          </shadow>
+        </value>
+      </block>
+    </statement>
+  </block>
+
+  <block type="before_purchase" id="before_purchase">
+    <statement name="BEFOREPURCHASE_STACK">
+      <block type="procedures_callnoreturn" id="bp_daily_call">
+        <mutation name="UpdateDailyState"/>
+        <next>
+          <block type="controls_if" id="bp_can_if">
+            <mutation else="1"/>
+            <value name="IF0">
+              <block type="procedures_callreturn" id="bp_can_call">
+                <mutation name="CanTrade"/>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="procedures_callnoreturn" id="bp_eval_call">
+                <mutation name="EvaluateCurrentMarket"/>
+                <next>
+                  <block type="controls_if" id="bp_signal_if">
+                    <mutation elseif="1" else="1"/>
+
+                    <value name="IF0">
+                      <block type="logic_operation" id="bp_buy_and">
+                        <field name="OP">AND</field>
+                        <value name="A">
+                          <block type="logic_compare" id="bp_buy_dir_cmp">
+                            <field name="OP">EQ</field>
+                            <value name="A">
+                              <block type="variables_get" id="bp_dir_get1">
+                                <field name="VAR">SIGNAL_DIRECTION</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_number" id="bp_buy_dir_num">
+                                <field name="NUM">1</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="procedures_callreturn" id="bp_score_call1">
+                            <mutation name="ScoreThresholdsMet"/>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+
+                    <statement name="DO0">
+                      <block type="variables_set" id="bp_pre_balance_call">
+                        <field name="VAR">PRE_TRADE_BALANCE</field>
+                        <value name="VALUE">
+                          <block type="balance" id="bp_balance1">
+                            <field name="BALANCE">balance</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="bp_risk_call">
+                            <field name="VAR">RISK_AMOUNT</field>
+                            <value name="VALUE">
+                              <block type="procedures_callreturn" id="bp_stake_call">
+                                <mutation name="GetStake"/>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="purchase" id="bp_purchase_call">
+                                <field name="PURCHASE_LIST">CALL</field>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </statement>
+
+                    <value name="IF1">
+                      <block type="logic_operation" id="bp_sell_and">
+                        <field name="OP">AND</field>
+                        <value name="A">
+                          <block type="logic_compare" id="bp_sell_dir_cmp">
+                            <field name="OP">EQ</field>
+                            <value name="A">
+                              <block type="variables_get" id="bp_dir_get2">
+                                <field name="VAR">SIGNAL_DIRECTION</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_number" id="bp_sell_dir_num">
+                                <field name="NUM">-1</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="procedures_callreturn" id="bp_score_call2">
+                            <mutation name="ScoreThresholdsMet"/>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+
+                    <statement name="DO1">
+                      <block type="variables_set" id="bp_pre_balance_put">
+                        <field name="VAR">PRE_TRADE_BALANCE</field>
+                        <value name="VALUE">
+                          <block type="balance" id="bp_balance2">
+                            <field name="BALANCE">balance</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="bp_risk_put">
+                            <field name="VAR">RISK_AMOUNT</field>
+                            <value name="VALUE">
+                              <block type="procedures_callreturn" id="bp_stake_put">
+                                <mutation name="GetStake"/>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="purchase" id="bp_purchase_put">
+                                <field name="PURCHASE_LIST">PUT</field>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </statement>
+
+                    <statement name="ELSE">
+                      <block type="notify" id="bp_reject_signal_notify">
+                        <field name="NOTIFICATION_TYPE">warn</field>
+                        <value name="MESSAGE">
+                          <block type="text" id="bp_reject_signal_text">
+                            <field name="TEXT">Signal rejected: confidence/component thresholds not met.</field>
+                          </block>
+                        </value>
+                      </block>
+                    </statement>
+
+                  </block>
+                </next>
+              </block>
+            </statement>
+
+            <statement name="ELSE">
+              <block type="notify" id="bp_reject_risk_notify">
+                <field name="NOTIFICATION_TYPE">warn</field>
+                <value name="MESSAGE">
+                  <block type="text" id="bp_reject_risk_text">
+                    <field name="TEXT">Trade rejected: risk/state rules prevented entry.</field>
+                  </block>
+                </value>
+              </block>
+            </statement>
+
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="during_purchase" id="during_purchase">
+    <statement name="DURING_PURCHASE_STACK">
+      <block type="controls_if" id="dp_if">
+        <value name="IF0">
+          <block type="procedures_callreturn" id="dp_exit_call">
+            <mutation name="ShouldExitTrade"/>
+          </block>
+        </value>
+        <statement name="DO0">
+          <block type="sell_at_market" id="dp_sell">
+            <field name="SELL_LIST">SELL</field>
+          </block>
+        </statement>
+      </block>
+    </statement>
+  </block>
+
+  <block type="trade_again" id="trade_again">
+    <statement name="TRADEAGAIN_STACK">
+      <block type="procedures_callnoreturn" id="ta_update_call">
+        <mutation name="UpdateTradeStats"/>
+      </block>
+    </statement>
+  </block>
+
+  <block type="procedures_defnoreturn" id="def_init_strategy">
+    <field name="NAME">InitializeStrategy</field>
+    <statement name="STACK">
+      <block type="variables_set" id="init_day_key">
+        <field name="VAR">DAY_KEY</field>
+        <value name="VALUE">
+          <block type="math_number" id="init_day_key_num">
+            <field name="NUM">0</field>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="init_day_start_balance">
+            <field name="VAR">DAY_START_BALANCE</field>
+            <value name="VALUE">
+              <block type="math_number" id="init_day_start_balance_num">
+                <field name="NUM">0</field>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="init_daily_loss">
+                <field name="VAR">DAILY_LOSS</field>
+                <value name="VALUE">
+                  <block type="math_number" id="init_daily_loss_num">
+                    <field name="NUM">0</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="init_trades_today">
+                    <field name="VAR">TRADES_TODAY</field>
+                    <value name="VALUE">
+                      <block type="math_number" id="init_trades_today_num">
+                        <field name="NUM">0</field>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="init_consecutive_losses">
+                        <field name="VAR">CONSECUTIVE_LOSSES</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="init_consecutive_losses_num">
+                            <field name="NUM">0</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="init_cooldown_until">
+                            <field name="VAR">COOLDOWN_UNTIL</field>
+                            <value name="VALUE">
+                              <block type="math_number" id="init_cooldown_until_num">
+                                <field name="NUM">0</field>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="init_last_trade_epoch">
+                                <field name="VAR">LAST_TRADE_EPOCH</field>
+                                <value name="VALUE">
+                                  <block type="math_number" id="init_last_trade_epoch_num">
+                                    <field name="NUM">0</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="init_pre_trade_balance">
+                                    <field name="VAR">PRE_TRADE_BALANCE</field>
+                                    <value name="VALUE">
+                                      <block type="math_number" id="init_pre_trade_balance_num">
+                                        <field name="NUM">0</field>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="variables_set" id="init_risk_amount">
+                                        <field name="VAR">RISK_AMOUNT</field>
+                                        <value name="VALUE">
+                                          <block type="math_number" id="init_risk_amount_num">
+                                            <field name="NUM">0</field>
+                                          </block>
+                                        </value>
+                                        <next>
+                                          <block type="variables_set" id="init_total_trades">
+                                            <field name="VAR">TOTAL_TRADES</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="init_total_trades_num">
+                                                <field name="NUM">0</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="init_wins">
+                                                <field name="VAR">WINS</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="init_wins_num">
+                                                    <field name="NUM">0</field>
+                                                  </block>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="init_win_rate">
+                                                    <field name="VAR">WIN_RATE</field>
+                                                    <value name="VALUE">
+                                                      <block type="math_number" id="init_win_rate_num">
+                                                        <field name="NUM">100</field>
+                                                      </block>
+                                                    </value>
+                                                    <next>
+                                                      <block type="variables_set" id="init_performance_pause">
+                                                        <field name="VAR">PERFORMANCE_PAUSE</field>
+                                                        <value name="VALUE">
+                                                          <block type="logic_boolean" id="init_performance_pause_bool">
+                                                            <field name="BOOL">FALSE</field>
+                                                          </block>
+                                                        </value>
+                                                        <next>
+                                                          <block type="variables_set" id="init_signal_direction">
+                                                            <field name="VAR">SIGNAL_DIRECTION</field>
+                                                            <value name="VALUE">
+                                                              <block type="math_number" id="init_signal_direction_num">
+                                                                <field name="NUM">0</field>
+                                                              </block>
+                                                            </value>
+                                                          </block>
+                                                        </next>
+                                                      </block>
+                                                    </next>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </next>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="procedures_defreturn" id="def_get_stake">
+    <field name="NAME">GetStake</field>
+    <value name="RETURN">
+      <block type="math_constrain" id="stake_constrain">
+        <value name="VALUE">
+          <block type="math_arithmetic" id="stake_calc">
+            <field name="OP">MULTIPLY</field>
+            <value name="A">
+              <block type="math_arithmetic" id="stake_pct">
+                <field name="OP">DIVIDE</field>
+                <value name="A">
+                  <block type="balance" id="stake_balance">
+                    <field name="BALANCE">balance</field>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="math_number" id="stake_100">
+                    <field name="NUM">100</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <value name="B">
+              <block type="math_number" id="risk_pct">
+                <field name="NUM">1</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <value name="LOW">
+          <block type="math_number" id="min_stake">
+            <field name="NUM">0.35</field>
+          </block>
+        </value>
+        <value name="HIGH">
+          <block type="balance" id="max_stake_balance">
+            <field name="BALANCE">balance</field>
+          </block>
+        </value>
+      </block>
+    </value>
+  </block>
+
+  <block type="procedures_defnoreturn" id="def_update_daily_state">
+    <field name="NAME">UpdateDailyState</field>
+    <statement name="STACK">
+      <block type="variables_set" id="uds_set_current_key">
+        <field name="VAR">CURRENT_DAY_KEY</field>
+        <value name="VALUE">
+          <block type="math_round" id="uds_round_day">
+            <field name="OP">ROUNDDOWN</field>
+            <value name="NUM">
+              <block type="math_arithmetic" id="uds_day_div">
+                <field name="OP">DIVIDE</field>
+                <value name="A">
+                  <block type="epoch" id="uds_epoch"/>
+                </value>
+                <value name="B">
+                  <block type="math_number" id="uds_seconds_day">
+                    <field name="NUM">86400</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="controls_if" id="uds_day_if">
+            <value name="IF0">
+              <block type="logic_compare" id="uds_day_cmp">
+                <field name="OP">NEQ</field>
+                <value name="A">
+                  <block type="variables_get" id="uds_get_day_key">
+                    <field name="VAR">DAY_KEY</field>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="variables_get" id="uds_get_current_day_key">
+                    <field name="VAR">CURRENT_DAY_KEY</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="variables_set" id="uds_set_day_key">
+                <field name="VAR">DAY_KEY</field>
+                <value name="VALUE">
+                  <block type="variables_get" id="uds_get_current_day_key2">
+                    <field name="VAR">CURRENT_DAY_KEY</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="uds_set_day_start_balance">
+                    <field name="VAR">DAY_START_BALANCE</field>
+                    <value name="VALUE">
+                      <block type="balance" id="uds_balance">
+                        <field name="BALANCE">balance</field>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="uds_reset_daily_loss">
+                        <field name="VAR">DAILY_LOSS</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="uds_reset_daily_loss_num">
+                            <field name="NUM">0</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="uds_reset_trades_today">
+                            <field name="VAR">TRADES_TODAY</field>
+                            <value name="VALUE">
+                              <block type="math_number" id="uds_reset_trades_today_num">
+                                <field name="NUM">0</field>
+                              </block>
+                            </value>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </statement>
+            <next>
+              <block type="controls_if" id="uds_cooldown_reset_if">
+                <value name="IF0">
+                  <block type="logic_operation" id="uds_cooldown_reset_and">
+                    <field name="OP">AND</field>
+                    <value name="A">
+                      <block type="logic_compare" id="uds_consec_gte">
+                        <field name="OP">GTE</field>
+                        <value name="A">
+                          <block type="variables_get" id="uds_get_consec">
+                            <field name="VAR">CONSECUTIVE_LOSSES</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_number" id="uds_max_consec">
+                            <field name="NUM">3</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="logic_compare" id="uds_epoch_gte_cooldown">
+                        <field name="OP">GTE</field>
+                        <value name="A">
+                          <block type="epoch" id="uds_epoch2"/>
+                        </value>
+                        <value name="B">
+                          <block type="variables_get" id="uds_get_cooldown_until">
+                            <field name="VAR">COOLDOWN_UNTIL</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <statement name="DO0">
+                  <block type="variables_set" id="uds_reset_consec">
+                    <field name="VAR">CONSECUTIVE_LOSSES</field>
+                    <value name="VALUE">
+                      <block type="math_number" id="uds_reset_consec_num">
+                        <field name="NUM">0</field>
+                      </block>
+                    </value>
+                  </block>
+                </statement>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="procedures_defreturn" id="def_can_trade">
+    <field name="NAME">CanTrade</field>
+    <statement name="STACK">
+      <block type="procedures_callnoreturn" id="ct_daily_call">
+        <mutation name="UpdateDailyState"/>
+        <next>
+          <block type="variables_set" id="ct_can_set">
+            <field name="VAR">CAN_TRADE</field>
+            <value name="VALUE">
+              <block type="logic_boolean" id="ct_can_true">
+                <field name="BOOL">TRUE</field>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="ct_allowed_set">
+                <field name="VAR">ALLOWED_TRADES</field>
+                <value name="VALUE">
+                  <block type="math_number" id="ct_allowed_num">
+                    <field name="NUM">10</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="controls_if" id="ct_perf_if">
+                    <mutation else="1"/>
+                    <value name="IF0">
+                      <block type="logic_compare" id="ct_total_trades_gte">
+                        <field name="OP">GTE</field>
+                        <value name="A">
+                          <block type="variables_get" id="ct_get_total_trades">
+                            <field name="VAR">TOTAL_TRADES</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_number" id="ct_lookback_num">
+                            <field name="NUM">50</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <statement name="DO0">
+                      <block type="variables_set" id="ct_set_win_rate">
+                        <field name="VAR">WIN_RATE</field>
+                        <value name="VALUE">
+                          <block type="math_arithmetic" id="ct_win_rate_calc">
+                            <field name="OP">MULTIPLY</field>
+                            <value name="A">
+                              <block type="math_arithmetic" id="ct_win_rate_div">
+                                <field name="OP">DIVIDE</field>
+                                <value name="A">
+                                  <block type="variables_get" id="ct_get_wins">
+                                    <field name="VAR">WINS</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="ct_get_total_trades2">
+                                    <field name="VAR">TOTAL_TRADES</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_number" id="ct_win_rate_100">
+                                <field name="NUM">100</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="controls_if" id="ct_pause_if">
+                            <mutation else="1"/>
+                            <value name="IF0">
+                              <block type="logic_compare" id="ct_pause_cmp">
+                                <field name="OP">LT</field>
+                                <value name="A">
+                                  <block type="variables_get" id="ct_get_win_rate_pause">
+                                    <field name="VAR">WIN_RATE</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="ct_pause_threshold">
+                                    <field name="NUM">50</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <statement name="DO0">
+                              <block type="variables_set" id="ct_set_pause_true">
+                                <field name="VAR">PERFORMANCE_PAUSE</field>
+                                <value name="VALUE">
+                                  <block type="logic_boolean" id="ct_pause_true_bool">
+                                    <field name="BOOL">TRUE</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="ct_set_can_false_pause">
+                                    <field name="VAR">CAN_TRADE</field>
+                                    <value name="VALUE">
+                                      <block type="logic_boolean" id="ct_can_false_pause_bool">
+                                        <field name="BOOL">FALSE</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </next>
+                              </block>
+                            </statement>
+                            <statement name="ELSE">
+                              <block type="variables_set" id="ct_set_pause_false">
+                                <field name="VAR">PERFORMANCE_PAUSE</field>
+                                <value name="VALUE">
+                                  <block type="logic_boolean" id="ct_pause_false_bool">
+                                    <field name="BOOL">FALSE</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="controls_if" id="ct_reduce_if">
+                                    <value name="IF0">
+                                      <block type="logic_compare" id="ct_reduce_cmp">
+                                        <field name="OP">LT</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="ct_get_win_rate_reduce">
+                                            <field name="VAR">WIN_RATE</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="ct_reduce_threshold">
+                                            <field name="NUM">55</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <statement name="DO0">
+                                      <block type="variables_set" id="ct_set_allowed_reduced">
+                                        <field name="VAR">ALLOWED_TRADES</field>
+                                        <value name="VALUE">
+                                          <block type="math_number" id="ct_allowed_reduced_num">
+                                            <field name="NUM">5</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </statement>
+                                  </block>
+                                </next>
+                              </block>
+                            </statement>
+                          </block>
+                        </next>
+                      </block>
+                    </statement>
+                    <statement name="ELSE">
+                      <block type="variables_set" id="ct_set_pause_false_small_sample">
+                        <field name="VAR">PERFORMANCE_PAUSE</field>
+                        <value name="VALUE">
+                          <block type="logic_boolean" id="ct_pause_false_small_bool">
+                            <field name="BOOL">FALSE</field>
+                          </block>
+                        </value>
+                      </block>
+                    </statement>
+                    <next>
+                      <block type="controls_if" id="ct_daily_dd_if">
+                        <value name="IF0">
+                          <block type="logic_compare" id="ct_daily_dd_cmp">
+                            <field name="OP">GTE</field>
+                            <value name="A">
+                              <block type="variables_get" id="ct_get_daily_loss">
+                                <field name="VAR">DAILY_LOSS</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_arithmetic" id="ct_daily_dd_limit">
+                                <field name="OP">DIVIDE</field>
+                                <value name="A">
+                                  <block type="math_arithmetic" id="ct_daily_dd_mult">
+                                    <field name="OP">MULTIPLY</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="ct_get_day_start_balance">
+                                        <field name="VAR">DAY_START_BALANCE</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="math_number" id="ct_daily_dd_pct">
+                                        <field name="NUM">5</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="ct_daily_dd_100">
+                                    <field name="NUM">100</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <statement name="DO0">
+                          <block type="variables_set" id="ct_set_can_false_dd">
+                            <field name="VAR">CAN_TRADE</field>
+                            <value name="VALUE">
+                              <block type="logic_boolean" id="ct_can_false_dd_bool">
+                                <field name="BOOL">FALSE</field>
+                              </block>
+                            </value>
+                          </block>
+                        </statement>
+                        <next>
+                          <block type="controls_if" id="ct_trades_if">
+                            <value name="IF0">
+                              <block type="logic_compare" id="ct_trades_cmp">
+                                <field name="OP">GTE</field>
+                                <value name="A">
+                                  <block type="variables_get" id="ct_get_trades_today">
+                                    <field name="VAR">TRADES_TODAY</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="ct_get_allowed_trades">
+                                    <field name="VAR">ALLOWED_TRADES</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <statement name="DO0">
+                              <block type="variables_set" id="ct_set_can_false_trades">
+                                <field name="VAR">CAN_TRADE</field>
+                                <value name="VALUE">
+                                  <block type="logic_boolean" id="ct_can_false_trades_bool">
+                                    <field name="BOOL">FALSE</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </statement>
+                            <next>
+                              <block type="controls_if" id="ct_cooldown_if">
+                                <value name="IF0">
+                                  <block type="logic_compare" id="ct_cooldown_cmp">
+                                    <field name="OP">LT</field>
+                                    <value name="A">
+                                      <block type="epoch" id="ct_epoch_cooldown"/>
+                                    </value>
+                                    <value name="B">
+                                      <block type="variables_get" id="ct_get_cooldown_until">
+                                        <field name="VAR">COOLDOWN_UNTIL</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <statement name="DO0">
+                                  <block type="variables_set" id="ct_set_can_false_cooldown">
+                                    <field name="VAR">CAN_TRADE</field>
+                                    <value name="VALUE">
+                                      <block type="logic_boolean" id="ct_can_false_cooldown_bool">
+                                        <field name="BOOL">FALSE</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </statement>
+                                <next>
+                                  <block type="controls_if" id="ct_spacing_if">
+                                    <value name="IF0">
+                                      <block type="logic_operation" id="ct_spacing_and">
+                                        <field name="OP">AND</field>
+                                        <value name="A">
+                                          <block type="logic_compare" id="ct_last_trade_gt">
+                                            <field name="OP">GT</field>
+                                            <value name="A">
+                                              <block type="variables_get" id="ct_get_last_trade">
+                                                <field name="VAR">LAST_TRADE_EPOCH</field>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="math_number" id="ct_last_trade_zero">
+                                                <field name="NUM">0</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="logic_compare" id="ct_spacing_cmp">
+                                            <field name="OP">LT</field>
+                                            <value name="A">
+                                              <block type="math_arithmetic" id="ct_spacing_minus">
+                                                <field name="OP">MINUS</field>
+                                                <value name="A">
+                                                  <block type="epoch" id="ct_epoch_spacing"/>
+                                                </value>
+                                                <value name="B">
+                                                  <block type="variables_get" id="ct_get_last_trade2">
+                                                    <field name="VAR">LAST_TRADE_EPOCH</field>
+                                                  </block>
+                                                </value>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="math_number" id="ct_spacing_seconds">
+                                                <field name="NUM">900</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <statement name="DO0">
+                                      <block type="variables_set" id="ct_set_can_false_spacing">
+                                        <field name="VAR">CAN_TRADE</field>
+                                        <value name="VALUE">
+                                          <block type="logic_boolean" id="ct_can_false_spacing_bool">
+                                            <field name="BOOL">FALSE</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </statement>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <value name="RETURN">
+      <block type="variables_get" id="ct_return">
+        <field name="VAR">CAN_TRADE</field>
+      </block>
+    </value>
+  </block>
+
+  <block type="procedures_defreturn" id="def_score_thresholds_met">
+    <field name="NAME">ScoreThresholdsMet</field>
+    <value name="RETURN">
+      <block type="logic_operation" id="score_root_and">
+        <field name="OP">AND</field>
+        <value name="A">
+          <block type="logic_compare" id="score_conf_cmp">
+            <field name="OP">GTE</field>
+            <value name="A">
+              <block type="variables_get" id="score_get_conf">
+                <field name="VAR">CONFIDENCE</field>
+              </block>
+            </value>
+            <value name="B">
+              <block type="math_number" id="score_conf_min">
+                <field name="NUM">85</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <value name="B">
+          <block type="logic_operation" id="score_second_and">
+            <field name="OP">AND</field>
+            <value name="A">
+              <block type="logic_compare" id="score_trend_cmp">
+                <field name="OP">GTE</field>
+                <value name="A">
+                  <block type="variables_get" id="score_get_trend">
+                    <field name="VAR">TREND_SCORE</field>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="math_number" id="score_trend_min">
+                    <field name="NUM">80</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <value name="B">
+              <block type="logic_operation" id="score_third_and">
+                <field name="OP">AND</field>
+                <value name="A">
+                  <block type="logic_compare" id="score_momentum_cmp">
+                    <field name="OP">GTE</field>
+                    <value name="A">
+                      <block type="variables_get" id="score_get_momentum">
+                        <field name="VAR">MOMENTUM_SCORE</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_number" id="score_momentum_min">
+                        <field name="NUM">80</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <value name="B">
+                  <block type="logic_operation" id="score_fourth_and">
+                    <field name="OP">AND</field>
+                    <value name="A">
+                      <block type="logic_compare" id="score_vol_cmp">
+                        <field name="OP">GTE</field>
+                        <value name="A">
+                          <block type="variables_get" id="score_get_vol">
+                            <field name="VAR">VOLATILITY_SCORE</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_number" id="score_vol_min">
+                            <field name="NUM">75</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="logic_compare" id="score_structure_cmp">
+                        <field name="OP">GTE</field>
+                        <value name="A">
+                          <block type="variables_get" id="score_get_structure">
+                            <field name="VAR">STRUCTURE_SCORE</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_number" id="score_structure_min">
+                            <field name="NUM">80</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+              </block>
+            </value>
+          </block>
+        </value>
+      </block>
+    </value>
+  </block>
+
+  <block type="procedures_defnoreturn" id="def_evaluate_current_market">
+    <field name="NAME">EvaluateCurrentMarket</field>
+    <statement name="STACK">
+      <block type="variables_set" id="ev_set_ema20">
+        <field name="VAR">EMA20</field>
+        <value name="VALUE">
+          <block type="ema" id="ev_ema20">
+            <value name="INPUT">
+              <block type="ohlc_values" id="ev_close_ema20">
+                <field name="CANDLETYPE_LIST">close</field>
+                <field name="CANDLEINTERVAL_LIST">60</field>
+                <value name="COUNT">
+                  <block type="math_number" id="ev_count_ema20">
+                    <field name="NUM">300</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <value name="PERIOD">
+              <block type="math_number" id="ev_period_ema20">
+                <field name="NUM">20</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="ev_set_ema50">
+            <field name="VAR">EMA50</field>
+            <value name="VALUE">
+              <block type="ema" id="ev_ema50">
+                <value name="INPUT">
+                  <block type="ohlc_values" id="ev_close_ema50">
+                    <field name="CANDLETYPE_LIST">close</field>
+                    <field name="CANDLEINTERVAL_LIST">60</field>
+                    <value name="COUNT">
+                      <block type="math_number" id="ev_count_ema50">
+                        <field name="NUM">300</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <value name="PERIOD">
+                  <block type="math_number" id="ev_period_ema50">
+                    <field name="NUM">50</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="ev_set_ema200">
+                <field name="VAR">EMA200</field>
+                <value name="VALUE">
+                  <block type="ema" id="ev_ema200">
+                    <value name="INPUT">
+                      <block type="ohlc_values" id="ev_close_ema200">
+                        <field name="CANDLETYPE_LIST">close</field>
+                        <field name="CANDLEINTERVAL_LIST">60</field>
+                        <value name="COUNT">
+                          <block type="math_number" id="ev_count_ema200">
+                            <field name="NUM">300</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <value name="PERIOD">
+                      <block type="math_number" id="ev_period_ema200">
+                        <field name="NUM">200</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="ev_set_rsi">
+                    <field name="VAR">RSI14</field>
+                    <value name="VALUE">
+                      <block type="rsi" id="ev_rsi14">
+                        <value name="INPUT">
+                          <block type="ohlc_values" id="ev_close_rsi">
+                            <field name="CANDLETYPE_LIST">close</field>
+                            <field name="CANDLEINTERVAL_LIST">60</field>
+                            <value name="COUNT">
+                              <block type="math_number" id="ev_count_rsi">
+                                <field name="NUM">300</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <value name="PERIOD">
+                          <block type="math_number" id="ev_period_rsi">
+                            <field name="NUM">14</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="ev_set_bull_trend">
+                        <field name="VAR">BULL_TREND</field>
+                        <value name="VALUE">
+                          <block type="logic_operation" id="ev_bull_and">
+                            <field name="OP">AND</field>
+                            <value name="A">
+                              <block type="logic_compare" id="ev_ema20_gt_ema50">
+                                <field name="OP">GT</field>
+                                <value name="A">
+                                  <block type="variables_get" id="ev_get_ema20">
+                                    <field name="VAR">EMA20</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="ev_get_ema50">
+                                    <field name="VAR">EMA50</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="logic_compare" id="ev_ema50_gt_ema200">
+                                <field name="OP">GT</field>
+                                <value name="A">
+                                  <block type="variables_get" id="ev_get_ema50_b">
+                                    <field name="VAR">EMA50</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="variables_get" id="ev_get_ema200">
+                                    <field name="VAR">EMA200</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="ev_set_bear_trend">
+                            <field name="VAR">BEAR_TREND</field>
+                            <value name="VALUE">
+                              <block type="logic_operation" id="ev_bear_and">
+                                <field name="OP">AND</field>
+                                <value name="A">
+                                  <block type="logic_compare" id="ev_ema20_lt_ema50">
+                                    <field name="OP">LT</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="ev_get_ema20_b">
+                                        <field name="VAR">EMA20</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="variables_get" id="ev_get_ema50_bear">
+                                        <field name="VAR">EMA50</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="logic_compare" id="ev_ema50_lt_ema200">
+                                    <field name="OP">LT</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="ev_get_ema50_bear_b">
+                                        <field name="VAR">EMA50</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="variables_get" id="ev_get_ema200_bear">
+                                        <field name="VAR">EMA200</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="ev_set_rsi_buy">
+                                <field name="VAR">RSI_BUY_ZONE</field>
+                                <value name="VALUE">
+                                  <block type="logic_operation" id="ev_rsi_buy_and">
+                                    <field name="OP">AND</field>
+                                    <value name="A">
+                                      <block type="logic_compare" id="ev_rsi_gte_55">
+                                        <field name="OP">GTE</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="ev_get_rsi_buy">
+                                            <field name="VAR">RSI14</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="ev_rsi_55">
+                                            <field name="NUM">55</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="logic_compare" id="ev_rsi_lte_70">
+                                        <field name="OP">LTE</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="ev_get_rsi_buy_b">
+                                            <field name="VAR">RSI14</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="ev_rsi_70">
+                                            <field name="NUM">70</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="ev_set_rsi_sell">
+                                    <field name="VAR">RSI_SELL_ZONE</field>
+                                    <value name="VALUE">
+                                      <block type="logic_operation" id="ev_rsi_sell_and">
+                                        <field name="OP">AND</field>
+                                        <value name="A">
+                                          <block type="logic_compare" id="ev_rsi_gte_30">
+                                            <field name="OP">GTE</field>
+                                            <value name="A">
+                                              <block type="variables_get" id="ev_get_rsi_sell">
+                                                <field name="VAR">RSI14</field>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="math_number" id="ev_rsi_30">
+                                                <field name="NUM">30</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="logic_compare" id="ev_rsi_lte_45">
+                                            <field name="OP">LTE</field>
+                                            <value name="A">
+                                              <block type="variables_get" id="ev_get_rsi_sell_b">
+                                                <field name="VAR">RSI14</field>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="math_number" id="ev_rsi_45">
+                                                <field name="NUM">45</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="controls_if" id="ev_signal_if">
+                                        <mutation elseif="1" else="1"/>
+
+                                        <value name="IF0">
+                                          <block type="logic_operation" id="ev_buy_and">
+                                            <field name="OP">AND</field>
+                                            <value name="A">
+                                              <block type="variables_get" id="ev_get_bull_trend">
+                                                <field name="VAR">BULL_TREND</field>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="variables_get" id="ev_get_rsi_buy_zone">
+                                                <field name="VAR">RSI_BUY_ZONE</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+
+                                        <statement name="DO0">
+                                          <block type="variables_set" id="ev_buy_set_dir">
+                                            <field name="VAR">SIGNAL_DIRECTION</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="ev_buy_dir_num">
+                                                <field name="NUM">1</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="ev_buy_set_trend">
+                                                <field name="VAR">TREND_SCORE</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="ev_buy_trend_num">
+                                                    <field name="NUM">95</field>
+                                                  </block>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="ev_buy_set_momentum">
+                                                    <field name="VAR">MOMENTUM_SCORE</field>
+                                                    <value name="VALUE">
+                                                      <block type="math_number" id="ev_buy_momentum_num">
+                                                        <field name="NUM">90</field>
+                                                      </block>
+                                                    </value>
+                                                    <next>
+                                                      <block type="variables_set" id="ev_buy_set_vol">
+                                                        <field name="VAR">VOLATILITY_SCORE</field>
+                                                        <value name="VALUE">
+                                                          <block type="math_number" id="ev_buy_vol_num">
+                                                            <field name="NUM">85</field>
+                                                          </block>
+                                                        </value>
+                                                        <next>
+                                                          <block type="variables_set" id="ev_buy_set_structure">
+                                                            <field name="VAR">STRUCTURE_SCORE</field>
+                                                            <value name="VALUE">
+                                                              <block type="math_number" id="ev_buy_structure_num">
+                                                                <field name="NUM">90</field>
+                                                              </block>
+                                                            </value>
+                                                            <next>
+                                                              <block type="variables_set" id="ev_buy_set_conf">
+                                                                <field name="VAR">CONFIDENCE</field>
+                                                                <value name="VALUE">
+                                                                  <block type="math_number" id="ev_buy_conf_num">
+                                                                    <field name="NUM">90</field>
+                                                                  </block>
+                                                                </value>
+                                                              </block>
+                                                            </next>
+                                                          </block>
+                                                        </next>
+                                                      </block>
+                                                    </next>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </statement>
+
+                                        <value name="IF1">
+                                          <block type="logic_operation" id="ev_sell_and">
+                                            <field name="OP">AND</field>
+                                            <value name="A">
+                                              <block type="variables_get" id="ev_get_bear_trend">
+                                                <field name="VAR">BEAR_TREND</field>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="variables_get" id="ev_get_rsi_sell_zone">
+                                                <field name="VAR">RSI_SELL_ZONE</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+
+                                        <statement name="DO1">
+                                          <block type="variables_set" id="ev_sell_set_dir">
+                                            <field name="VAR">SIGNAL_DIRECTION</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="ev_sell_dir_num">
+                                                <field name="NUM">-1</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="ev_sell_set_trend">
+                                                <field name="VAR">TREND_SCORE</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="ev_sell_trend_num">
+                                                    <field name="NUM">95</field>
+                                                  </block>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="ev_sell_set_momentum">
+                                                    <field name="VAR">MOMENTUM_SCORE</field>
+                                                    <value name="VALUE">
+                                                      <block type="math_number" id="ev_sell_momentum_num">
+                                                        <field name="NUM">90</field>
+                                                      </block>
+                                                    </value>
+                                                    <next>
+                                                      <block type="variables_set" id="ev_sell_set_vol">
+                                                        <field name="VAR">VOLATILITY_SCORE</field>
+                                                        <value name="VALUE">
+                                                          <block type="math_number" id="ev_sell_vol_num">
+                                                            <field name="NUM">85</field>
+                                                          </block>
+                                                        </value>
+                                                        <next>
+                                                          <block type="variables_set" id="ev_sell_set_structure">
+                                                            <field name="VAR">STRUCTURE_SCORE</field>
+                                                            <value name="VALUE">
+                                                              <block type="math_number" id="ev_sell_structure_num">
+                                                                <field name="NUM">90</field>
+                                                              </block>
+                                                            </value>
+                                                            <next>
+                                                              <block type="variables_set" id="ev_sell_set_conf">
+                                                                <field name="VAR">CONFIDENCE</field>
+                                                                <value name="VALUE">
+                                                                  <block type="math_number" id="ev_sell_conf_num">
+                                                                    <field name="NUM">90</field>
+                                                                  </block>
+                                                                </value>
+                                                              </block>
+                                                            </next>
+                                                          </block>
+                                                        </next>
+                                                      </block>
+                                                    </next>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </statement>
+
+                                        <statement name="ELSE">
+                                          <block type="variables_set" id="ev_else_set_dir">
+                                            <field name="VAR">SIGNAL_DIRECTION</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="ev_else_dir_num">
+                                                <field name="NUM">0</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="ev_else_set_conf">
+                                                <field name="VAR">CONFIDENCE</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="ev_else_conf_num">
+                                                    <field name="NUM">0</field>
+                                                  </block>
+                                                </value>
+                                                <next>
+                                                  <block type="variables_set" id="ev_else_set_trend">
+                                                    <field name="VAR">TREND_SCORE</field>
+                                                    <value name="VALUE">
+                                                      <block type="math_number" id="ev_else_trend_num">
+                                                        <field name="NUM">0</field>
+                                                      </block>
+                                                    </value>
+                                                    <next>
+                                                      <block type="variables_set" id="ev_else_set_momentum">
+                                                        <field name="VAR">MOMENTUM_SCORE</field>
+                                                        <value name="VALUE">
+                                                          <block type="math_number" id="ev_else_momentum_num">
+                                                            <field name="NUM">0</field>
+                                                          </block>
+                                                        </value>
+                                                        <next>
+                                                          <block type="variables_set" id="ev_else_set_vol">
+                                                            <field name="VAR">VOLATILITY_SCORE</field>
+                                                            <value name="VALUE">
+                                                              <block type="math_number" id="ev_else_vol_num">
+                                                                <field name="NUM">0</field>
+                                                              </block>
+                                                            </value>
+                                                            <next>
+                                                              <block type="variables_set" id="ev_else_set_structure">
+                                                                <field name="VAR">STRUCTURE_SCORE</field>
+                                                                <value name="VALUE">
+                                                                  <block type="math_number" id="ev_else_structure_num">
+                                                                    <field name="NUM">0</field>
+                                                                  </block>
+                                                                </value>
+                                                              </block>
+                                                            </next>
+                                                          </block>
+                                                        </next>
+                                                      </block>
+                                                    </next>
+                                                  </block>
+                                                </next>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </statement>
+
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="procedures_defreturn" id="def_should_exit_trade">
+    <field name="NAME">ShouldExitTrade</field>
+    <value name="RETURN">
+      <block type="logic_operation" id="exit_root_and">
+        <field name="OP">AND</field>
+        <value name="A">
+          <block type="logic_compare" id="exit_risk_gt">
+            <field name="OP">GT</field>
+            <value name="A">
+              <block type="variables_get" id="exit_get_risk">
+                <field name="VAR">RISK_AMOUNT</field>
+              </block>
+            </value>
+            <value name="B">
+              <block type="math_number" id="exit_zero">
+                <field name="NUM">0</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <value name="B">
+          <block type="logic_operation" id="exit_or">
+            <field name="OP">OR</field>
+            <value name="A">
+              <block type="logic_compare" id="exit_tp_cmp">
+                <field name="OP">GTE</field>
+                <value name="A">
+                  <block type="contract_profit" id="exit_contract_profit_tp"/>
+                </value>
+                <value name="B">
+                  <block type="math_arithmetic" id="exit_tp_mult">
+                    <field name="OP">MULTIPLY</field>
+                    <value name="A">
+                      <block type="variables_get" id="exit_get_risk_tp">
+                        <field name="VAR">RISK_AMOUNT</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_number" id="exit_tp_multiplier">
+                        <field name="NUM">2</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+              </block>
+            </value>
+            <value name="B">
+              <block type="logic_compare" id="exit_sl_cmp">
+                <field name="OP">LTE</field>
+                <value name="A">
+                  <block type="contract_profit" id="exit_contract_profit_sl"/>
+                </value>
+                <value name="B">
+                  <block type="math_arithmetic" id="exit_sl_mult">
+                    <field name="OP">MULTIPLY</field>
+                    <value name="A">
+                      <block type="variables_get" id="exit_get_risk_sl">
+                        <field name="VAR">RISK_AMOUNT</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_number" id="exit_sl_multiplier">
+                        <field name="NUM">-1</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+              </block>
+            </value>
+          </block>
+        </value>
+      </block>
+    </value>
+  </block>
+
+  <block type="procedures_defnoreturn" id="def_update_trade_stats">
+    <field name="NAME">UpdateTradeStats</field>
+    <statement name="STACK">
+      <block type="variables_set" id="ut_set_last_profit">
+        <field name="VAR">LAST_PROFIT</field>
+        <value name="VALUE">
+          <block type="math_arithmetic" id="ut_last_profit_calc">
+            <field name="OP">MINUS</field>
+            <value name="A">
+              <block type="balance" id="ut_balance">
+                <field name="BALANCE">balance</field>
+              </block>
+            </value>
+            <value name="B">
+              <block type="variables_get" id="ut_get_pre_balance">
+                <field name="VAR">PRE_TRADE_BALANCE</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="ut_set_last_trade_epoch">
+            <field name="VAR">LAST_TRADE_EPOCH</field>
+            <value name="VALUE">
+              <block type="epoch" id="ut_epoch"/>
+            </value>
+            <next>
+              <block type="variables_set" id="ut_increment_trades_today">
+                <field name="VAR">TRADES_TODAY</field>
+                <value name="VALUE">
+                  <block type="math_arithmetic" id="ut_trades_today_add">
+                    <field name="OP">ADD</field>
+                    <value name="A">
+                      <block type="variables_get" id="ut_get_trades_today">
+                        <field name="VAR">TRADES_TODAY</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="math_number" id="ut_trades_today_one">
+                        <field name="NUM">1</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="ut_increment_total_trades">
+                    <field name="VAR">TOTAL_TRADES</field>
+                    <value name="VALUE">
+                      <block type="math_arithmetic" id="ut_total_trades_add">
+                        <field name="OP">ADD</field>
+                        <value name="A">
+                          <block type="variables_get" id="ut_get_total_trades">
+                            <field name="VAR">TOTAL_TRADES</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_number" id="ut_total_trades_one">
+                            <field name="NUM">1</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="controls_if" id="ut_result_if">
+                        <mutation else="1"/>
+                        <value name="IF0">
+                          <block type="logic_compare" id="ut_profit_cmp">
+                            <field name="OP">GT</field>
+                            <value name="A">
+                              <block type="variables_get" id="ut_get_last_profit_win">
+                                <field name="VAR">LAST_PROFIT</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_number" id="ut_zero_win">
+                                <field name="NUM">0</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <statement name="DO0">
+                          <block type="variables_set" id="ut_increment_wins">
+                            <field name="VAR">WINS</field>
+                            <value name="VALUE">
+                              <block type="math_arithmetic" id="ut_wins_add">
+                                <field name="OP">ADD</field>
+                                <value name="A">
+                                  <block type="variables_get" id="ut_get_wins">
+                                    <field name="VAR">WINS</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="ut_wins_one">
+                                    <field name="NUM">1</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="ut_reset_consecutive">
+                                <field name="VAR">CONSECUTIVE_LOSSES</field>
+                                <value name="VALUE">
+                                  <block type="math_number" id="ut_reset_consecutive_num">
+                                    <field name="NUM">0</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </next>
+                          </block>
+                        </statement>
+                        <statement name="ELSE">
+                          <block type="variables_set" id="ut_add_daily_loss">
+                            <field name="VAR">DAILY_LOSS</field>
+                            <value name="VALUE">
+                              <block type="math_arithmetic" id="ut_daily_loss_add">
+                                <field name="OP">ADD</field>
+                                <value name="A">
+                                  <block type="variables_get" id="ut_get_daily_loss">
+                                    <field name="VAR">DAILY_LOSS</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_arithmetic" id="ut_loss_abs">
+                                    <field name="OP">MULTIPLY</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="ut_get_last_profit_loss">
+                                        <field name="VAR">LAST_PROFIT</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="math_number" id="ut_loss_abs_multiplier">
+                                        <field name="NUM">-1</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="variables_set" id="ut_increment_consecutive">
+                                <field name="VAR">CONSECUTIVE_LOSSES</field>
+                                <value name="VALUE">
+                                  <block type="math_arithmetic" id="ut_consecutive_add">
+                                    <field name="OP">ADD</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="ut_get_consecutive">
+                                        <field name="VAR">CONSECUTIVE_LOSSES</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="math_number" id="ut_consecutive_one">
+                                        <field name="NUM">1</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="controls_if" id="ut_cooldown_if">
+                                    <value name="IF0">
+                                      <block type="logic_compare" id="ut_cooldown_cmp">
+                                        <field name="OP">GTE</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="ut_get_consecutive_cooldown">
+                                            <field name="VAR">CONSECUTIVE_LOSSES</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="ut_max_consecutive">
+                                            <field name="NUM">3</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <statement name="DO0">
+                                      <block type="variables_set" id="ut_set_cooldown">
+                                        <field name="VAR">COOLDOWN_UNTIL</field>
+                                        <value name="VALUE">
+                                          <block type="math_arithmetic" id="ut_cooldown_calc">
+                                            <field name="OP">ADD</field>
+                                            <value name="A">
+                                              <block type="epoch" id="ut_epoch_cooldown"/>
+                                            </value>
+                                            <value name="B">
+                                              <block type="math_number" id="ut_cooldown_seconds">
+                                                <field name="NUM">7200</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </statement>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </statement>
+                        <next>
+                          <block type="variables_set" id="ut_set_win_rate">
+                            <field name="VAR">WIN_RATE</field>
+                            <value name="VALUE">
+                              <block type="math_arithmetic" id="ut_win_rate_calc">
+                                <field name="OP">MULTIPLY</field>
+                                <value name="A">
+                                  <block type="math_arithmetic" id="ut_win_rate_div">
+                                    <field name="OP">DIVIDE</field>
+                                    <value name="A">
+                                      <block type="variables_get" id="ut_get_wins_rate">
+                                        <field name="VAR">WINS</field>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="variables_get" id="ut_get_total_trades_rate">
+                                        <field name="VAR">TOTAL_TRADES</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="ut_win_rate_100">
+                                    <field name="NUM">100</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <next>
+                              <block type="notify" id="ut_notify_result">
+                                <field name="NOTIFICATION_TYPE">success</field>
+                                <value name="MESSAGE">
+                                  <block type="text" id="ut_notify_text">
+                                    <field name="TEXT">Trade completed. Stats updated.</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+</xml>
