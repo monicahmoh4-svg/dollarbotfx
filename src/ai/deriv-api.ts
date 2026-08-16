@@ -12,10 +12,11 @@ export type DerivActiveSymbol = {
     submarket?: string;
     exchange_is_open?: number;
     is_trading_suspended?: number;
+    pip?: number;
 };
 
 type Waiter = {
-    resolve: (value: unknown) => void;
+    resolve: (value: any) => void;
     reject: (error: Error) => void;
     timer: ReturnType<typeof setTimeout>;
 };
@@ -194,16 +195,31 @@ export class DerivAPI extends EventTarget {
         return response?.authorize;
     }
 
+    /**
+     * 'full' (rather than 'brief') is required so each symbol includes its
+     * `pip` value — the engine needs that to correctly compute the last
+     * traded digit for DIGIT-family contracts (even/odd, over/under,
+     * matches/differs). Falls back to 'brief' if 'full' is ever rejected.
+     */
     async activeSymbols(): Promise<DerivActiveSymbol[]> {
-        const response = await this.send({
-            active_symbols: 'brief',
-            product_type: 'basic',
-        });
+        try {
+            const response = await this.send({
+                active_symbols: 'full',
+                product_type: 'basic',
+            });
 
-        return response?.active_symbols ?? [];
+            return response?.active_symbols ?? [];
+        } catch (error) {
+            const response = await this.send({
+                active_symbols: 'brief',
+                product_type: 'basic',
+            });
+
+            return response?.active_symbols ?? [];
+        }
     }
 
-    async getTickHistory(symbol: string, count = 90): Promise<DerivTick[]> {
+    async getTickHistory(symbol: string, count = 300): Promise<DerivTick[]> {
         const response = await this.send({
             ticks_history: symbol,
             adjust_start_time: 1,
@@ -230,6 +246,22 @@ export class DerivAPI extends EventTarget {
             end: 'latest',
             style: 'ticks',
             subscribe: 1,
+        });
+    }
+
+    /** Request a price quote for a contract without buying it. Used both to
+     * price live trades and to give paper trades a realistic payout ratio. */
+    async requestProposal(params: Record<string, unknown>) {
+        return this.send({
+            proposal: 1,
+            ...params,
+        });
+    }
+
+    async buyProposal(proposalId: string, price: number) {
+        return this.send({
+            buy: proposalId,
+            price,
         });
     }
 
