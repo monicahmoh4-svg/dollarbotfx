@@ -2,7 +2,43 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import ErrorComponent from './error-component';
 
-const RELOAD_KEY = 'dbfx_boundary_reload_done';
+const HEAL_KEY = 'dbfx_heal_attempt';
+
+const clearClientCaches = () => {
+    try {
+        if ('caches' in window) {
+            caches
+                .keys()
+                .then(keys => keys.forEach(k => caches.delete(k)))
+                .catch(() => {});
+        }
+    } catch (e) {
+        /* ignore */
+    }
+
+    try {
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker
+                .getRegistrations()
+                .then(regs => regs.forEach(r => r.unregister()))
+                .catch(() => {});
+        }
+    } catch (e) {
+        /* ignore */
+    }
+};
+
+/* True hard refresh: new URL => browser and edge cannot serve cached copies. */
+const hardRefresh = () => {
+    clearClientCaches();
+    try {
+        const url = new URL(window.location.href);
+        url.searchParams.set('cb', String(Date.now()));
+        window.location.replace(url.toString());
+    } catch (e) {
+        window.location.reload();
+    }
+};
 
 class ErrorBoundary extends React.Component {
     constructor(props) {
@@ -23,27 +59,14 @@ class ErrorBoundary extends React.Component {
             /* ignore */
         }
 
-        // SELF-HEAL: most load crashes are stale cached chunks after a redeploy.
-        // Clear caches + service workers and reload exactly once.
+        // SELF-HEAL ONCE: stale chunk / lazy-import mismatches are fixed by a
+        // cache-busted hard redirect (not a plain reload).
         try {
-            if (!sessionStorage.getItem(RELOAD_KEY)) {
-                sessionStorage.setItem(RELOAD_KEY, '1');
+            const attempted = sessionStorage.getItem(HEAL_KEY);
 
-                if ('caches' in window) {
-                    caches
-                        .keys()
-                        .then(keys => keys.forEach(k => caches.delete(k)))
-                        .catch(() => {});
-                }
-
-                if ('serviceWorker' in navigator) {
-                    navigator.serviceWorker
-                        .getRegistrations()
-                        .then(regs => regs.forEach(r => r.unregister()))
-                        .catch(() => {});
-                }
-
-                setTimeout(() => window.location.reload(), 100);
+            if (!attempted) {
+                sessionStorage.setItem(HEAL_KEY, '1');
+                setTimeout(hardRefresh, 100);
             }
         } catch (e) {
             /* ignore */
@@ -52,7 +75,7 @@ class ErrorBoundary extends React.Component {
 
     resetError = () => {
         try {
-            sessionStorage.removeItem(RELOAD_KEY);
+            sessionStorage.removeItem(HEAL_KEY);
         } catch (e) {
             /* ignore */
         }
@@ -64,9 +87,9 @@ class ErrorBoundary extends React.Component {
             return this.props.children;
         }
 
-        // If we are still on the fallback after 5s, allow future self-heal reloads again.
+        // Allow future self-heals again after a while.
         try {
-            setTimeout(() => sessionStorage.removeItem(RELOAD_KEY), 5000);
+            setTimeout(() => sessionStorage.removeItem(HEAL_KEY), 5000);
         } catch (e) {
             /* ignore */
         }
@@ -84,9 +107,12 @@ class ErrorBoundary extends React.Component {
             <ErrorComponent
                 should_show_refresh={true}
                 header="App Error"
-                message={`The application hit a problem while loading.${detail} Use Refresh to reload, or Try Again to retry without reloading.`}
-                redirect_label="Try Again"
-                redirectOnClick={this.resetError}
+                message={`The application hit a problem while loading.${detail} Press Hard Refresh to fetch a clean copy of the app.`}
+                redirect_label="Hard Refresh"
+                redirectOnClick={() => {
+                    this.resetError();
+                    hardRefresh();
+                }}
             />
         );
     }
