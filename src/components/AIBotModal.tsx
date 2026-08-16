@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useAIBot } from '../hooks/useAIBot';
 import type { AIBotSettings } from '../ai/engine';
+import { MARKETS, TRADE_CATEGORIES } from '../ai/engine';
+import type { TradeCategory } from '../ai/analysis';
 
 const styles = `
     .ai-overlay {
@@ -129,6 +131,45 @@ const styles = `
         font-weight: 700;
         color: #374151;
         padding: 10px 0;
+    }
+
+    .ai-checkbox-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .ai-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid #d1d5db;
+        border-radius: 999px;
+        padding: 7px 12px;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+        user-select: none;
+        transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+        color: #374151;
+        background: #fff;
+    }
+
+    .ai-chip input {
+        display: none;
+    }
+
+    .ai-chip-active {
+        border-color: #2563eb;
+        background: #2563eb;
+        color: #ffffff;
+    }
+
+    .ai-hint {
+        font-size: 11px;
+        color: #6b7280;
+        margin-top: 6px;
+        line-height: 1.5;
     }
 
     .ai-actions {
@@ -289,6 +330,28 @@ export default function AIBotModal({
         }));
     };
 
+    const toggleMarket = (value: string) => {
+        setForm(previous => {
+            const has = previous.enabledMarkets.includes(value);
+            const next = has
+                ? previous.enabledMarkets.filter(item => item !== value)
+                : [...previous.enabledMarkets, value];
+
+            return { ...previous, enabledMarkets: next.length ? next : previous.enabledMarkets };
+        });
+    };
+
+    const toggleCategory = (value: TradeCategory) => {
+        setForm(previous => {
+            const has = previous.tradeCategories.includes(value);
+            const next = has
+                ? previous.tradeCategories.filter(item => item !== value)
+                : [...previous.tradeCategories, value];
+
+            return { ...previous, tradeCategories: next.length ? next : previous.tradeCategories };
+        });
+    };
+
     const handleStart = async () => {
         await start(form);
     };
@@ -304,10 +367,10 @@ export default function AIBotModal({
             <div className="ai-modal" onClick={event => event.stopPropagation()}>
                 <div className="ai-header">
                     <div>
-                        <h2 className="ai-title">AI Synthetic Indices Bot</h2>
+                        <h2 className="ai-title">AI Trading Bot</h2>
                         <div className="ai-subtitle">
-                            Scans synthetic markets, analyzes live ticks, and executes only when
-                            your configured confidence and projection rules are met.
+                            Scans your selected Deriv markets, analyzes live ticks, and only trades
+                            when your configured confidence and payout-edge rules are met.
                         </div>
                     </div>
 
@@ -317,9 +380,64 @@ export default function AIBotModal({
                 </div>
 
                 <div className="ai-banner">
-                    Risk warning: autonomous trading can lose money. This bot defaults to paper
-                    trading. Use live mode only with a Deriv API token that has trade permission.
-                    Martingale can rapidly exhaust your balance.
+                    Risk warning: no algorithm can guarantee profits, and autonomous trading can
+                    lose money quickly, especially with Martingale staking. This bot defaults to
+                    paper (simulated) trading — switch to Live only with a Deriv API token that has
+                    trade permission, and only with money you can afford to lose. Digit contracts
+                    (even/odd, over/under, matches/differs) are close to a fixed-odds coin flip by
+                    design — Deriv's synthetic indices use an audited RNG, so this bot only enters
+                    those when the recent sample is a statistically significant outlier versus the
+                    theoretical distribution, which will be rare. Accumulator contracts are not yet
+                    supported by this bot (different payout/exit mechanics from the timed contracts
+                    below) — ask your developer to add them as a follow-up if you need them.
+                </div>
+
+                <div className="ai-section-title">Markets</div>
+
+                <div className="ai-checkbox-group">
+                    {MARKETS.map(market => (
+                        <label
+                            key={market.value}
+                            className={`ai-chip ${form.enabledMarkets.includes(market.value) ? 'ai-chip-active' : ''}`}
+                        >
+                            <input
+                                type="checkbox"
+                                checked={form.enabledMarkets.includes(market.value)}
+                                onChange={() => toggleMarket(market.value)}
+                            />
+                            {market.label}
+                        </label>
+                    ))}
+                </div>
+
+                <div className="ai-hint">
+                    Forex, stock indices and commodities only trade while their exchange is open;
+                    synthetic indices and cryptocurrencies trade continuously.
+                </div>
+
+                <div className="ai-section-title">Trade Categories</div>
+
+                <div className="ai-checkbox-group">
+                    {TRADE_CATEGORIES.map(category => (
+                        <label
+                            key={category.value}
+                            className={`ai-chip ${
+                                form.tradeCategories.includes(category.value) ? 'ai-chip-active' : ''
+                            }`}
+                        >
+                            <input
+                                type="checkbox"
+                                checked={form.tradeCategories.includes(category.value)}
+                                onChange={() => toggleCategory(category.value)}
+                            />
+                            {category.label}
+                        </label>
+                    ))}
+                </div>
+
+                <div className="ai-hint">
+                    When more than one category qualifies on a symbol in the same scan, the bot
+                    takes the one with the highest estimated confidence.
                 </div>
 
                 <div className="ai-section-title">Connection &amp; Execution</div>
@@ -410,6 +528,11 @@ export default function AIBotModal({
                         </select>
                     </div>
 
+                    <div className="ai-hint" style={{ gridColumn: '1 / -1', marginTop: -4 }}>
+                        Digit categories (even/odd, over/under, matches/differs) always trade in
+                        ticks (1-10), regardless of this setting — it only applies to Rise/Fall.
+                    </div>
+
                     <div className="ai-field">
                         <label>Max Concurrent Trades</label>
                         <input
@@ -461,7 +584,7 @@ export default function AIBotModal({
                     </div>
 
                     <div className="ai-field">
-                        <label>Max Volatility</label>
+                        <label>Max Volatility (Rise/Fall only)</label>
                         <input
                             className="ai-input"
                             type="number"
@@ -539,7 +662,7 @@ export default function AIBotModal({
                         <label>Market Symbols Override</label>
                         <input
                             className="ai-input"
-                            placeholder="Blank = all synthetic indices. Example: R_10,R_25,R_50"
+                            placeholder="Blank = all symbols from the selected markets. Example: R_10,R_25,frxEURUSD"
                             value={form.symbolsOverride}
                             onChange={e => set({ symbolsOverride: e.target.value })}
                         />
