@@ -63,6 +63,10 @@ export type AIBotStats = {
     lossStreak: number;
     sessionStart: number;
     day: string;
+    scanCount: number;
+    tradesOpened: number;
+    lastScanAt: number | null;
+    lastScanSummary: string;
 };
 
 export type AIBotLog = {
@@ -205,6 +209,10 @@ class AIBotEngine extends EventTarget {
         lossStreak: 0,
         sessionStart: Date.now(),
         day: new Date().toDateString(),
+        scanCount: 0,
+        tradesOpened: 0,
+        lastScanAt: null,
+        lastScanSummary: 'Not scanned yet.',
     };
 
     private activeSymbols: DerivActiveSymbol[] = [];
@@ -493,55 +501,118 @@ class AIBotEngine extends EventTarget {
         this.scanning = true;
         this.emit();
 
-        try {
-            const symbols = this.getSymbols();
+        const symbols = this.getSymbols();
 
+        // This used to be gated behind canTrade() for every symbol, which
+        // meant that whenever a trade was open, on cooldown, or limits were
+        // briefly hit, the whole scan loop silently did nothing at all —
+        // no ticks fetched, no analysis run, no log line written. From the
+        // outside that looked exactly like "the bot isn't scanning", even
+        // though it was actually working as designed. Analysis now always
+        // runs (so you can see live signal strength every cycle); only the
+        // final trade *execution* step is still gated by canTrade().
+        if (!symbols.length) {
+            this.stats.scanCount += 1;
+            this.stats.lastScanAt = Date.now();
+            this.stats.lastScanSummary =
+                'No tradable symbols matched your Markets selection / Symbol Override / trading hours.';
+
+            this.log(
+                'warn',
+                `Scan #${this.stats.scanCount}: 0 symbols available to scan. Check Markets, Symbol Override, or try again when the market is open.`
+            );
+
+            this.scanning = false;
+            this.emit();
+            return;
+        }
+
+        let scannedSymbols = 0;
+        let tradesThisCycle = 0;
+        let topSeen: { symbol: string; contractType: ContractType; barrier: number | null; confidence: number } | null = null;
+
+        try {
             for (const symbol of symbols) {
                 if (!this.running) {
                     break;
                 }
 
-                if (!this.canTrade(symbol.symbol)) {
-                    continue;
-                }
+                let quotes: number[] = [];
+                let decimals = 2;
 
                 try {
                     const ticks = await this.api.getTickHistory(symbol.symbol, 300);
-                    const quotes = ticks.map(tick => tick.quote);
-                    const decimals = pipToDecimals(symbol.pip);
+                    quotes = ticks.map(tick => tick.quote);
+                    decimals = pipToDecimals(symbol.pip);
+                    scannedSymbols += 1;
+                } catch (error: any) {
+                    this.log('warn', `Could not fetch ticks for ${symbol.symbol}: ${error.message}`);
+                    await sleep(this.settings.scanBatchDelayMs);
+                    continue;
+                }
 
-                    const candidates = this.settings.tradeCategories
-                        .map(category => analyzeMarket(category, quotes, decimals))
-                        .filter(result => result.contractType && result.confidence >= this.settings.minConfidence)
-                        .filter(
-                            result =>
-                                result.category !== 'rise_fall' ||
-                                this.settings.maxVolatility <= 0 ||
-                                result.volatility <= this.settings.maxVolatility
-                        );
+                const results = this.settings.tradeCategories.map(category =>
+                    analyzeMarket(category, quotes, decimals)
+                );
 
-                    if (!candidates.length) {
-                        continue;
+                results.forEach(result => {
+                    if (result.contractType && (!topSeen || result.confidence > topSeen.confidence)) {
+                        topSeen = {
+                            symbol: symbol.display_name || symbol.symbol,
+                            contractType: result.contractType,
+                            barrier: result.barrier,
+                            confidence: result.confidence,
+                        };
                     }
+                });
 
+                const candidates = results
+                    .filter(result => result.contractType && result.confidence >= this.settings.minConfidence)
+                    .filter(
+                        result =>
+                            result.category !== 'rise_fall' ||
+                            this.settings.maxVolatility <= 0 ||
+                            result.volatility <= this.settings.maxVolatility
+                    );
+
+                if (candidates.length && this.canTrade(symbol.symbol)) {
                     candidates.sort((a, b) => b.confidence - a.confidence);
                     const best = candidates[0];
 
                     this.log(
                         'info',
-                        `${symbol.display_name || symbol.symbol}: ${best.contractType}${
+                        `${symbol.display_name || symbol.symbol}: signal ${best.contractType}${
                             best.barrier !== null ? `(${best.barrier})` : ''
                         } | conf ${(best.confidence * 100).toFixed(1)}% | ${best.reason}`
                     );
 
-                    await this.executeTrade(symbol, quotes, decimals, best);
-                } catch (error: any) {
-                    this.log('warn', `Scan failed for ${symbol.symbol}: ${error.message}`);
+                    try {
+                        await this.executeTrade(symbol, quotes, decimals, best);
+                        tradesThisCycle += 1;
+                    } catch (error: any) {
+                        this.log('warn', `Trade execution failed for ${symbol.symbol}: ${error.message}`);
+                    }
                 }
 
                 await sleep(this.settings.scanBatchDelayMs);
             }
         } finally {
+            this.stats.scanCount += 1;
+            this.stats.lastScanAt = Date.now();
+            this.stats.tradesOpened += tradesThisCycle;
+
+            const seen = topSeen as { symbol: string; contractType: ContractType; barrier: number | null; confidence: number } | null;
+
+            const summary = seen
+                ? `strongest signal ${seen.symbol} ${seen.contractType}${
+                      seen.barrier !== null ? `(${seen.barrier})` : ''
+                  } @ ${(seen.confidence * 100).toFixed(1)}% (needs ${(this.settings.minConfidence * 100).toFixed(0)}%+)`
+                : 'no directional signal found on any scanned symbol';
+
+            this.stats.lastScanSummary = `${scannedSymbols} symbol(s) checked, ${tradesThisCycle} trade(s) opened — ${summary}.`;
+
+            this.log('info', `Scan #${this.stats.scanCount} complete: ${this.stats.lastScanSummary}`);
+
             this.scanning = false;
             this.emit();
         }
