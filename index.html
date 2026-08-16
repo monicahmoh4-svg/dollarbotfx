@@ -2,6 +2,8 @@
 <html lang="en" dir="auto">
     <head>
         <meta charset="UTF-8" />
+        <meta http-equiv="Pragma" content="no-cache" />
+        <meta http-equiv="Expires" content="0" />
         <link rel="icon" type="image/svg+xml" href="/deriv-logo.svg" />
         <meta
             name="viewport"
@@ -77,7 +79,7 @@
         </style>
         <script>
             (function () {
-                // Clean stale service workers and caches from previous deploys.
+                // Kill stale service workers and caches from previous deploys.
                 if ('serviceWorker' in navigator) {
                     navigator.serviceWorker
                         .getRegistrations()
@@ -100,12 +102,13 @@
                         .catch(function () {});
                 }
 
-                // Self-heal stale chunk failures.
+                // If a stale-chunk error escapes to window level, hard-refresh once.
                 window.addEventListener('error', function (event) {
                     var msg = String((event && event.message) || '');
                     var isChunkError =
                         msg.indexOf('Loading chunk') !== -1 ||
                         msg.indexOf('ChunkLoadError') !== -1 ||
+                        msg.indexOf("reading 'call'") !== -1 ||
                         msg.indexOf('Failed to fetch dynamically imported module') !== -1 ||
                         msg.indexOf('Unable to preload CSS') !== -1;
 
@@ -113,7 +116,9 @@
                         try {
                             if (!sessionStorage.getItem('dbfx_chunk_reload_done')) {
                                 sessionStorage.setItem('dbfx_chunk_reload_done', '1');
-                                window.location.reload();
+                                var url = new URL(window.location.href);
+                                url.searchParams.set('cb', String(Date.now()));
+                                window.location.replace(url.toString());
                             }
                         } catch (e) {}
                     }
