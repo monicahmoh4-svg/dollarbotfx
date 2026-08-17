@@ -3,6 +3,7 @@ import { observer } from 'mobx-react-lite';
 import AIBotRoot from '@/components/AIBotRoot';
 import ErrorBoundary from '@/components/error-component/error-boundary';
 import ErrorComponent from '@/components/error-component/error-component';
+import FreeBots from '@/components/free-bots/free-bots';
 import ChunkLoader from '@/components/loader/chunk-loader';
 import { api_base } from '@/external/bot-skeleton';
 import { useStore } from '@/hooks/useStore';
@@ -74,6 +75,7 @@ const AppRoot = () => {
                 <ErrorComponentWrapper />
                 <AppContent />
                 <AIBotRoot />
+                <FreeBots />
             </ErrorBoundary>
         </Suspense>
     );
