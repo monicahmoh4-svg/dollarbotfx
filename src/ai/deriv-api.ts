@@ -56,6 +56,7 @@ export class DerivAPI extends EventTarget {
     private connectPromise: Promise<void> | null = null;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private shouldReconnect = true;
+    private lastToken: string | null = null;
 
     authorized = false;
 
@@ -106,7 +107,20 @@ export class DerivAPI extends EventTarget {
         return this.connectPromise;
     }
 
+    /**
+     * A WebSocket authorization only applies to the connection it was sent
+     * on. This bot used to authorize once at start-up and then assume it
+     * stayed authorized — but any dropped connection (network hiccup,
+     * mobile tab backgrounded, Wi-Fi handoff, Deriv-side restart) triggers
+     * the reconnect logic below with a brand-new, unauthorized socket. The
+     * engine's `authorized` flag was never told, so Live mode could sit
+     * there believing it was still authorized while every buy silently
+     * failed. This now re-authorizes automatically on every reconnect and
+     * tells the engine (via events) whether that succeeded, so Live mode
+     * never runs blind.
+     */
     private handleClose() {
+        this.authorized = false;
         this.dispatchEvent(new Event('close'));
 
         if (!this.shouldReconnect) {
@@ -117,9 +131,25 @@ export class DerivAPI extends EventTarget {
             clearTimeout(this.reconnectTimer);
         }
 
-        this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = setTimeout(async () => {
             this.connectPromise = null;
-            void this.connect();
+
+            try {
+                await this.connect();
+                this.dispatchEvent(new Event('reconnected'));
+
+                if (this.lastToken) {
+                    try {
+                        await this.authorize(this.lastToken);
+                        this.dispatchEvent(new Event('reauthorized'));
+                    } catch (error: any) {
+                        this.dispatchEvent(new CustomEvent('reauthorize-failed', { detail: error?.message }));
+                    }
+                }
+            } catch {
+                // connect() failing triggers its own onclose, which schedules
+                // another reconnect attempt — no separate handling needed here.
+            }
         }, 3000);
     }
 
@@ -217,6 +247,7 @@ export class DerivAPI extends EventTarget {
     async authorize(token: string) {
         const response = await this.send({ authorize: token });
         this.authorized = true;
+        this.lastToken = token;
         return response?.authorize;
     }
 
@@ -319,6 +350,7 @@ export class DerivAPI extends EventTarget {
 
     close() {
         this.shouldReconnect = false;
+        this.lastToken = null;
 
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
