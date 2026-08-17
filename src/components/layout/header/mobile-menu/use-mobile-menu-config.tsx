@@ -1,7 +1,8 @@
 import { ComponentProps, ReactNode, useMemo } from 'react';
+import { freeBotsUIStore } from '@/components/free-bots/free-bots-ui-store';
 import useThemeSwitcher from '@/hooks/useThemeSwitcher';
 import RootStore from '@/stores/root-store';
-import { LegacyLogout1pxIcon, LegacyTheme1pxIcon } from '@deriv/quill-icons/Legacy';
+import { LegacyLogout1pxIcon, LegacyTemplatesIcon, LegacyTheme1pxIcon } from '@deriv/quill-icons/Legacy';
 import { useTranslations } from '@deriv-com/translations';
 import { ToggleSwitch } from '@deriv-com/ui';
 
@@ -34,19 +35,19 @@ const useMobileMenuConfig = (
         return [
             [
                 // ========================================
-                // CUSTOM MENU ITEMS PLACEHOLDER
+                // CUSTOM MENU ITEMS
                 // ========================================
                 //
-                // Add your custom menu items here.
-                //
-                // EXAMPLE:
-                // {
-                //     as: 'a',
-                //     label: localize('Your Page'),
-                //     LeftComponent: YourIcon,
-                //     href: '/your-page',
-                // },
-                //
+                // Opens the Free Bots modal (built-in strategy library) via
+                // freeBotsUIStore — the modal itself is mounted once at the
+                // app root (see app-root.tsx) and listens for this.
+                {
+                    as: 'button',
+                    label: localize('Free bots'),
+                    LeftComponent: LegacyTemplatesIcon,
+                    onClick: () => freeBotsUIStore.show(),
+                },
+
                 // For desktop menu items, see:
                 // src/components/layout/header/header-config.tsx
 
