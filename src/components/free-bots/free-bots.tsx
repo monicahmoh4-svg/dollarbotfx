@@ -1,9 +1,16 @@
 // @ts-nocheck
 import React, { useEffect, useRef, useState } from 'react';
+import { useFreeBotsUI } from '@/hooks/useFreeBotsUI';
 
 /* ============================================================= */
 /* FREE BOTS — makes the app's built-in trading strategies        */
 /* visible under a dedicated section and loads them safely.       */
+/*                                                                 */
+/* This used to render its own floating "🎁 Free Bots" pill button */
+/* bottom-left. It's now opened from the nav menu (desktop         */
+/* MenuItems / mobile menu drawer) via freeBotsUIStore, so this    */
+/* component only renders the modal itself — mount it once, e.g.   */
+/* in app-root.tsx, the same way AIBotRoot is mounted.             */
 /* ============================================================= */
 
 const FREE_BOTS = [
@@ -46,30 +53,6 @@ const FREE_BOTS = [
 ];
 
 const styles = `
-    .fb-fab {
-        position: fixed;
-        left: max(16px, env(safe-area-inset-left));
-        bottom: max(16px, env(safe-area-inset-bottom));
-        z-index: 2147483000;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        border: none;
-        border-radius: 999px;
-        padding: 12px 16px;
-        color: #fff;
-        background: linear-gradient(135deg, #059669 0%, #10b981 100%);
-        box-shadow: 0 12px 30px rgba(5, 150, 105, 0.35);
-        font-weight: 900;
-        font-size: 14px;
-        cursor: pointer;
-        transition: transform .18s ease, box-shadow .18s ease;
-        animation: fbSlideUp .3s ease;
-        max-width: calc(100vw - 32px);
-    }
-    .fb-fab:hover { transform: translateY(-2px) scale(1.03); }
-    .fb-fab:active { transform: scale(.98); }
-
     .fb-overlay {
         position: fixed;
         inset: 0;
@@ -154,7 +137,7 @@ const styles = `
     .fb-toast {
         position: fixed;
         left: 50%;
-        bottom: max(84px, env(safe-area-inset-bottom));
+        bottom: max(24px, env(safe-area-inset-bottom));
         transform: translateX(-50%);
         z-index: 2147483002;
         background: #111827;
@@ -217,7 +200,7 @@ function clickEl(el) {
 }
 
 export default function FreeBots() {
-    const [open, setOpen] = useState(false);
+    const { open, hide } = useFreeBotsUI();
     const [busy, setBusy] = useState(null);
     const [toast, setToast] = useState('');
     const toastTimer = useRef(null);
@@ -234,7 +217,7 @@ export default function FreeBots() {
        is loaded exactly as if the user clicked it manually. */
     const useBot = async bot => {
         setBusy(bot.id);
-        setOpen(false);
+        hide();
         await sleep(250);
 
         try {
@@ -298,24 +281,8 @@ export default function FreeBots() {
         <>
             <style>{styles}</style>
 
-            <button type="button" className="fb-fab" onClick={() => setOpen(true)}>
-                <span aria-hidden="true">🎁</span>
-                Free Bots
-                <span
-                    style={{
-                        background: 'rgba(255,255,255,0.16)',
-                        borderRadius: 999,
-                        padding: '3px 8px',
-                        fontSize: 12,
-                        fontWeight: 900,
-                    }}
-                >
-                    {FREE_BOTS.length}
-                </span>
-            </button>
-
             {open && (
-                <div className="fb-overlay" onClick={() => setOpen(false)}>
+                <div className="fb-overlay" onClick={hide}>
                     <div className="fb-panel" onClick={e => e.stopPropagation()}>
                         <div className="fb-header">
                             <div>
@@ -326,7 +293,7 @@ export default function FreeBots() {
                                     using the app's own loader, ready to run.
                                 </div>
                             </div>
-                            <button className="fb-close" onClick={() => setOpen(false)}>
+                            <button className="fb-close" onClick={hide}>
                                 Close
                             </button>
                         </div>
