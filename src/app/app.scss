@@ -31,6 +31,9 @@
     right: 0;
     opacity: 0;
     z-index: -1;
+    // Smooths the backdrop fade in/out — display/z-index switching (below)
+    // is unchanged, this only softens the opacity transition between states.
+    transition: opacity 0.18s ease;
 }
 
 .modal-root:not(:empty) {
@@ -38,6 +41,12 @@
     opacity: 1;
     z-index: 9998;
     touch-action: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .modal-root {
+        transition: none;
+    }
 }
 
 strong {
