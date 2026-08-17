@@ -1,3 +1,23 @@
 .main-body {
     flex-grow: 1;
+    // Gentle one-time fade/rise on initial mount — purely cosmetic, no
+    // effect on layout, scrolling, or any interactive behaviour.
+    animation: dbfxMainBodyIn 0.32s ease both;
+}
+
+@keyframes dbfxMainBodyIn {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .main-body {
+        animation: none;
+    }
 }
