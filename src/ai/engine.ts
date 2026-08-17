@@ -354,6 +354,14 @@ class AIBotEngine extends EventTarget {
         this.stop(false);
         this.contractsCache.clear();
 
+        // Previously a new DerivAPI (and its own WebSocket + reconnect timer)
+        // was created on every start() without closing the last one — so
+        // restarting the bot (e.g. after changing a setting) leaked old
+        // connections that kept reconnecting forever in the background.
+        if (this.api) {
+            this.api.close();
+        }
+
         if (!this.settings.tradeCategories.length) {
             this.settings.tradeCategories = ['rise_fall'];
         }
@@ -363,6 +371,48 @@ class AIBotEngine extends EventTarget {
         }
 
         this.api = new DerivAPI(this.settings.appId || '1089');
+
+        // A WebSocket reconnect after a drop produces a brand-new,
+        // unauthorized connection. Keep the engine's authorized flag (and
+        // Live trading) in sync with what actually re-authorizes, instead of
+        // assuming the original authorization still holds.
+        this.api.addEventListener('close', () => {
+            if (this.authorized) {
+                this.authorized = false;
+                this.log(
+                    'warn',
+                    'Connection to Deriv dropped. Reconnecting automatically — Live trading is paused until re-authorized.'
+                );
+                this.emit();
+            }
+
+            this.connected = false;
+            this.emit();
+        });
+
+        this.api.addEventListener('reconnected', () => {
+            this.connected = true;
+            this.log('info', 'Reconnected to Deriv market data.');
+            this.emit();
+        });
+
+        this.api.addEventListener('reauthorized', () => {
+            this.authorized = true;
+            this.log('success', 'Re-authorized after reconnect. Live trading resumed.');
+            this.emit();
+        });
+
+        this.api.addEventListener('reauthorize-failed', (event: any) => {
+            this.authorized = false;
+            this.settings.mode = 'paper';
+            this.log(
+                'error',
+                `Could not re-authorize after reconnect (${
+                    event?.detail || 'unknown error'
+                }). Switched to paper mode for safety.`
+            );
+            this.emit();
+        });
 
         try {
             await this.api.connect();
@@ -634,8 +684,11 @@ class AIBotEngine extends EventTarget {
                     );
 
                     try {
-                        await this.executeTrade(symbol, quotes, decimals, best);
-                        tradesThisCycle += 1;
+                        const opened = await this.executeTrade(symbol, quotes, decimals, best);
+
+                        if (opened) {
+                            tradesThisCycle += 1;
+                        }
                     } catch (error: any) {
                         this.log('warn', `Trade execution failed for ${symbol.symbol}: ${error.message}`);
                     }
@@ -697,9 +750,9 @@ class AIBotEngine extends EventTarget {
         quotes: number[],
         decimals: number,
         analysis: AnalysisResult
-    ) {
+    ): Promise<boolean> {
         if (!this.api || !analysis.contractType) {
-            return;
+            return false;
         }
 
         this.stats.signalsFound += 1;
@@ -708,7 +761,7 @@ class AIBotEngine extends EventTarget {
         const entry = quotes[quotes.length - 1] ?? 0;
 
         if (!entry) {
-            return;
+            return false;
         }
 
         const specs = await this.getContractSpecs(symbol.symbol);
@@ -720,7 +773,7 @@ class AIBotEngine extends EventTarget {
                 'warn',
                 `${symbol.symbol}: ${analysis.contractType} is not offered on this symbol right now. Skipping.`
             );
-            return;
+            return false;
         }
 
         const { payload, duration, durationUnit } = buildProposalPayload(
@@ -746,7 +799,7 @@ class AIBotEngine extends EventTarget {
                         analysis.barrier !== null ? `(${analysis.barrier})` : ''
                     }: broker returned no priceable proposal (duration ${duration}${durationUnit}). Skipping.`
                 );
-                return;
+                return false;
             }
 
             const askPrice = Number(proposal.ask_price);
@@ -776,20 +829,30 @@ class AIBotEngine extends EventTarget {
                         2
                     )}%).`
                 );
-                return;
+                return false;
             }
 
             if (this.settings.mode === 'live' && this.authorized) {
-                await this.executeLiveTrade(symbol.symbol, entry, stake, decimals, analysis, proposal);
-            } else {
-                await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payoutRatio, duration, durationUnit);
+                return await this.executeLiveTrade(symbol.symbol, entry, stake, decimals, analysis, proposal);
             }
+
+            return await this.executePaperTrade(
+                symbol.symbol,
+                entry,
+                stake,
+                decimals,
+                analysis,
+                payoutRatio,
+                duration,
+                durationUnit
+            );
         } catch (error: any) {
             this.stats.proposalsRejectedByBroker += 1;
             this.log(
                 'warn',
                 `Proposal request failed for ${symbol.symbol} ${analysis.contractType} (duration ${duration}${durationUnit}): ${error.message}`
             );
+            return false;
         }
     }
 
@@ -800,9 +863,9 @@ class AIBotEngine extends EventTarget {
         decimals: number,
         analysis: AnalysisResult,
         proposal: any
-    ) {
+    ): Promise<boolean> {
         if (!this.api || !analysis.contractType) {
-            return;
+            return false;
         }
 
         try {
@@ -810,8 +873,9 @@ class AIBotEngine extends EventTarget {
             const contractId = buyResponse?.buy?.contract_id;
 
             if (!contractId) {
-                this.log('warn', `Live buy failed for ${symbol}.`);
-                return;
+                this.stats.proposalsRejectedByBroker += 1;
+                this.log('warn', `Live buy failed for ${symbol}: broker did not return a contract id.`);
+                return false;
             }
 
             const trade: LiveTrade = {
@@ -845,8 +909,11 @@ class AIBotEngine extends EventTarget {
             );
 
             this.emit();
+            return true;
         } catch (error: any) {
+            this.stats.proposalsRejectedByBroker += 1;
             this.log('error', `Live trade failed on ${symbol}: ${error.message}`);
+            return false;
         }
     }
 
@@ -859,9 +926,9 @@ class AIBotEngine extends EventTarget {
         payoutRatio: number,
         duration: number,
         durationUnit: DurationUnit
-    ) {
+    ): Promise<boolean> {
         if (!this.api || !analysis.contractType) {
-            return;
+            return false;
         }
 
         const id = `paper_${Date.now()}_${symbol}`;
@@ -901,6 +968,7 @@ class AIBotEngine extends EventTarget {
 
         await this.monitorPaperTrade(trade);
         this.emit();
+        return true;
     }
 
     private async monitorPaperTrade(trade: PaperTrade) {
