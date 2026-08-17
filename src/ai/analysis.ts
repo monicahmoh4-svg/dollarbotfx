@@ -138,17 +138,26 @@ export function analyzeRiseFall(quotes: number[]): AnalysisResult {
     }
 
     const recentReturns = returns.slice(-25);
-    const volatility = standardDeviation(recentReturns) * 10000;
+    const stdReturn = standardDeviation(recentReturns);
+    const volatility = stdReturn * 10000;
     const momentum = slow !== 0 ? ((last - slow) / slow) * 10000 : 0;
     const rsiValue = rsi(quotes, 14);
 
     let score = 0;
 
-    if (fast > slow) {
-        score += Math.min(2, Math.abs((fast - slow) / slow) * 50000);
-    } else {
-        score -= Math.min(2, Math.abs((fast - slow) / slow) * 50000);
-    }
+    // IMPORTANT — this used to be `Math.abs((fast - slow) / slow) * 50000`,
+    // an arbitrary fixed multiplier. On real tick data that saturated its
+    // own cap almost every single scan, on almost every symbol — meaning
+    // "confidence" was effectively always pinned near its maximum regardless
+    // of whether there was any genuine trend, which made the confidence
+    // threshold meaningless as a filter. The fix: measure the EMA gap
+    // relative to the market's own recent volatility (a z-score), so a
+    // "confident" reading only happens when the gap is actually large
+    // compared to normal noise for that specific instrument right now —
+    // not just whenever price has drifted at all, which is almost always.
+    const gapRatio = slow !== 0 ? (fast - slow) / slow : 0;
+    const normalizedGap = stdReturn > 0 ? gapRatio / stdReturn : 0;
+    score += Math.max(-2, Math.min(2, normalizedGap * 0.8));
 
     if (momentum > 0) {
         score += Math.min(1.5, Math.abs(momentum) / 5);
@@ -190,9 +199,9 @@ export function analyzeRiseFall(quotes: number[]): AnalysisResult {
         confidence: direction ? confidence : 0,
         volatility,
         sampleSize: quotes.length,
-        reason: `ema:${fast > slow ? 'up' : 'down'} rsi:${rsiValue.toFixed(1)} momentum:${momentum.toFixed(
-            2
-        )} vol:${volatility.toFixed(2)}`,
+        reason: `ema:${fast > slow ? 'up' : 'down'} gapZ:${normalizedGap.toFixed(2)} rsi:${rsiValue.toFixed(
+            1
+        )} momentum:${momentum.toFixed(2)} vol:${volatility.toFixed(2)}`,
     };
 }
 
