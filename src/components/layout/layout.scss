@@ -8,6 +8,12 @@
     .deriv-header {
         background: var(--general-main-1);
         height: 5.6rem;
+        // Subtle depth instead of a flat, hard-edged bar — background,
+        // border, and spacing are all untouched.
+        box-shadow: 0 1px 0 rgba(15, 23, 42, 0.06), 0 6px 18px rgba(15, 23, 42, 0.04);
+        position: relative;
+        z-index: 2;
+        transition: box-shadow 0.2s ease;
     }
 
     &.quick-strategy-active {
@@ -16,5 +22,11 @@
                 z-index: 10000;
             }
         }
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .layout .deriv-header {
+        transition: none;
     }
 }
