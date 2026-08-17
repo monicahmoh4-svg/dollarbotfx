@@ -447,6 +447,27 @@ class AIBotEngine extends EventTarget {
         try {
             const symbols = await this.api.activeSymbols();
 
+            // Diagnostic breakdown BEFORE filtering — this is the one piece
+            // of information needed to tell apart "Deriv returned nothing"
+            // from "Deriv returned symbols, but none matched the selected
+            // markets/status filters" (e.g. a market naming mismatch or an
+            // exchange-status field this bot didn't account for). Logging
+            // this unconditionally means the next session's logs answer the
+            // question directly instead of requiring another guess.
+            const marketBreakdown = new Map<string, number>();
+            symbols.forEach(symbol => {
+                marketBreakdown.set(symbol.market, (marketBreakdown.get(symbol.market) ?? 0) + 1);
+            });
+            const breakdownText =
+                Array.from(marketBreakdown.entries())
+                    .map(([market, count]) => `${market}:${count}`)
+                    .join(', ') || '(none)';
+
+            this.log(
+                'info',
+                `Deriv returned ${symbols.length} total symbol(s) across markets: ${breakdownText}.`
+            );
+
             this.activeSymbols = symbols.filter(
                 symbol =>
                     this.settings.enabledMarkets.includes(symbol.market) &&
@@ -460,10 +481,34 @@ class AIBotEngine extends EventTarget {
             );
 
             if (!this.activeSymbols.length) {
-                this.log(
-                    'warn',
-                    'No tradable symbols matched the selected markets right now (some may be closed, e.g. forex on weekends).'
-                );
+                if (symbols.length > 0) {
+                    // Symbols exist, but none survived the filter — almost
+                    // certainly the enabled Markets don't match what Deriv
+                    // actually labelled them (see the breakdown line above),
+                    // or every matching symbol is currently suspended/closed.
+                    this.log(
+                        'warn',
+                        `${symbols.length} symbol(s) came back from Deriv, but 0 matched your selected Markets (${this.settings.enabledMarkets.join(
+                            ', '
+                        )}) after the suspended/closed filter. Check the market breakdown above against your Markets selection.`
+                    );
+                } else {
+                    // Deriv itself returned an empty list — not a filtering
+                    // issue at all. Most likely causes: a transient/blocked
+                    // request (see "Deriv returned 0 total symbol(s)" above
+                    // with no error — try again), or a network/proxy issue
+                    // between this browser and wss://ws.derivws.com.
+                    this.log(
+                        'error',
+                        'Deriv returned 0 symbols total (not a filtering issue) — the active_symbols request itself came back empty. Retrying once in 5s.'
+                    );
+
+                    setTimeout(() => {
+                        if (this.running) {
+                            void this.reloadActiveSymbols();
+                        }
+                    }, 5000);
+                }
             }
         } catch (error: any) {
             this.log('error', `Could not load active symbols: ${error.message}`);
@@ -588,6 +633,36 @@ class AIBotEngine extends EventTarget {
         }
 
         return Number(stake.toFixed(2));
+    }
+
+    private async reloadActiveSymbols() {
+        if (!this.api) {
+            return;
+        }
+
+        try {
+            const symbols = await this.api.activeSymbols();
+
+            this.activeSymbols = symbols.filter(
+                symbol =>
+                    this.settings.enabledMarkets.includes(symbol.market) &&
+                    !symbol.is_trading_suspended &&
+                    (symbol.exchange_is_open === undefined || symbol.exchange_is_open === 1)
+            );
+
+            if (this.activeSymbols.length) {
+                this.log('success', `Retry succeeded — loaded ${this.activeSymbols.length} tradable market(s).`);
+            } else {
+                this.log(
+                    'error',
+                    `Retry also returned ${symbols.length} total symbol(s). If this stays at 0, the issue is upstream of this bot (network/proxy to wss://ws.derivws.com, or an app_id restriction) rather than the trading logic.`
+                );
+            }
+
+            this.emit();
+        } catch (error: any) {
+            this.log('error', `Retry failed: ${error.message}`);
+        }
     }
 
     private async scan() {
