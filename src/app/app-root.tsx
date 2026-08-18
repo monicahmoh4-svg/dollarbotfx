@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { observer } from 'mobx-react-lite';
-import AIBotRoot from '@/components/AIBotRoot';
+import AutoTraderPanel from '@/components/autotrader/autotrader-panel';
 import ErrorBoundary from '@/components/error-component/error-boundary';
 import ErrorComponent from '@/components/error-component/error-component';
 import FreeBots from '@/components/free-bots/free-bots';
@@ -74,7 +74,7 @@ const AppRoot = () => {
             <ErrorBoundary root_store={store}>
                 <ErrorComponentWrapper />
                 <AppContent />
-                <AIBotRoot />
+                <AutoTraderPanel />
                 <FreeBots />
             </ErrorBoundary>
         </Suspense>
