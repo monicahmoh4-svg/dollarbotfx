@@ -1,20 +1,13 @@
 import ReactDOM from 'react-dom/client';
 import { AuthWrapper } from './app/AuthWrapper';
-import { AIBotControlPanel } from './ai/AIBotControlPanel';
 import './styles/index.scss';
 
 // --- 1. MOUNT MAIN APP ---
 // This mounts the core Deriv Bot dashboard, charts, and authentication wrapper.
+// The Autonomous Trading Agent and Free Bots panels are mounted inside this
+// same tree (see src/app/app-root.tsx) — opened from the nav menu, not as
+// separate floating widgets or a second, isolated React root.
 const rootElement = document.getElementById('root');
 if (rootElement) {
     ReactDOM.createRoot(rootElement).render(<AuthWrapper />);
 }
-
-// --- 2. MOUNT AI BOT CONTROL PANEL ---
-// We render the AI Bot in a completely separate React root. 
-// This isolates it from the main app's MobX stores, Context, and Error Boundaries,
-// ensuring that rapid UI updates from the trading scanner cannot crash the main dashboard.
-const aiBotContainer = document.createElement('div');
-aiBotContainer.id = 'ai-bot-control-root';
-document.body.appendChild(aiBotContainer);
-ReactDOM.createRoot(aiBotContainer).render(<AIBotControlPanel />);
