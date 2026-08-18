@@ -1,8 +1,9 @@
 import { ComponentProps, ReactNode, useMemo } from 'react';
+import { autoTraderUIStore } from '@/components/autotrader/autotrader-ui-store';
 import { freeBotsUIStore } from '@/components/free-bots/free-bots-ui-store';
 import useThemeSwitcher from '@/hooks/useThemeSwitcher';
 import RootStore from '@/stores/root-store';
-import { LegacyLogout1pxIcon, LegacyTemplatesIcon, LegacyTheme1pxIcon } from '@deriv/quill-icons/Legacy';
+import { LegacyLogout1pxIcon, LegacyTargetIcon, LegacyTemplatesIcon, LegacyTheme1pxIcon } from '@deriv/quill-icons/Legacy';
 import { useTranslations } from '@deriv-com/translations';
 import { ToggleSwitch } from '@deriv-com/ui';
 
@@ -38,6 +39,16 @@ const useMobileMenuConfig = (
                 // CUSTOM MENU ITEMS
                 // ========================================
                 //
+                // Opens the Autonomous Trading panel (the main agent) via
+                // autoTraderUIStore — mounted once at the app root (see
+                // app-root.tsx) and listens for this.
+                {
+                    as: 'button',
+                    label: localize('Autonomous Trading'),
+                    LeftComponent: LegacyTargetIcon,
+                    onClick: () => autoTraderUIStore.show(),
+                },
+
                 // Opens the Free Bots modal (built-in strategy library) via
                 // freeBotsUIStore — the modal itself is mounted once at the
                 // app root (see app-root.tsx) and listens for this.
