@@ -3,7 +3,6 @@ export type DerivActiveSymbol = { symbol: string; display_name: string; market: 
 export type DerivContractDurationRange = { value: number; unit: string; };
 export type DerivContractSpec = { contractType: string; minDuration: DerivContractDurationRange | null; maxDuration: DerivContractDurationRange | null; };
 
-// FIXED: Regex now perfectly matches Deriv's format (e.g., "1t", "5s", "1m" with no space)
 function parseDuration(raw: unknown): DerivContractDurationRange | null {
     if (typeof raw !== 'string') return null;
     const match = raw.trim().match(/^(\d+)([a-zA-Z]+)$/);
