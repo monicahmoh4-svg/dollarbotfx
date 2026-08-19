@@ -91,10 +91,9 @@ function isDigitContractWin(contractType: ContractType, barrier: number | null, 
     }
 }
 
-// FIXED: Robust duration resolution that strictly adheres to broker specs
 function resolveDuration(desiredValue: number, desiredUnit: DurationUnit, spec: DerivContractSpec): { value: number; unit: DurationUnit } {
     const min = spec.minDuration;
-    if (!min) return { value: desiredValue, unit: desiredUnit }; // Fallback
+    if (!min) return { value: desiredValue, unit: desiredUnit };
     
     const max = spec.maxDuration && spec.maxDuration.unit === min.unit ? spec.maxDuration : min;
     
@@ -104,7 +103,6 @@ function resolveDuration(desiredValue: number, desiredUnit: DurationUnit, spec: 
         return { value: clampedValue, unit: desiredUnit };
     }
     
-    // Desired unit not supported, safely adapt to the contract's native unit
     const maxVal = max.value > min.value ? max.value : min.value;
     const safeValue = Math.min(Math.max(desiredValue, min.value), maxVal);
     return { value: safeValue, unit: min.unit as DurationUnit };
@@ -112,7 +110,7 @@ function resolveDuration(desiredValue: number, desiredUnit: DurationUnit, spec: 
 
 function buildProposalPayload(
     symbol: string, currency: string, stake: number, analysis: AnalysisResult, 
-    settings: AutoTraderSettings, spec: DerivContractSpec // spec is now strictly required
+    settings: AutoTraderSettings, spec: DerivContractSpec
 ): { payload: Record<string, unknown>; duration: number; durationUnit: DurationUnit } {
     const isDigit = analysis.category !== 'rise_fall';
     const desiredValue = isDigit ? Math.min(10, Math.max(1, Math.round(settings.duration))) : settings.duration;
@@ -153,7 +151,14 @@ class AutoTraderEngine extends EventTarget {
             const raw = localStorage.getItem('ai-bot-settings');
             if (!raw) return;
             const saved = JSON.parse(raw);
-            this.settings = { ...DEFAULT_AUTOTRADER_SETTINGS, ...saved, enabledMarkets: Array.isArray(saved.enabledMarkets) && saved.enabledMarkets.length ? saved.enabledMarkets : DEFAULT_AUTOTRADER_SETTINGS.enabledMarkets, tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, apiToken: '' };
+            this.settings = { 
+                ...DEFAULT_AUTOTRADER_SETTINGS, 
+                ...saved, 
+                currency: saved.currency || 'USD', // SAFEGUARD: Ensure currency is never empty
+                enabledMarkets: Array.isArray(saved.enabledMarkets) && saved.enabledMarkets.length ? saved.enabledMarkets : DEFAULT_AUTOTRADER_SETTINGS.enabledMarkets, 
+                tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
+                apiToken: '' 
+            };
         } catch { this.settings = { ...DEFAULT_AUTOTRADER_SETTINGS }; }
     }
 
@@ -189,8 +194,6 @@ class AutoTraderEngine extends EventTarget {
             return;
         }
 
-        // FIXED: Always authorize if a token is present, even in Paper mode. 
-        // This prevents rate-limit rejections and ensures accurate currency pricing.
         if (this.settings.apiToken) {
             try {
                 await this.api.authorize(this.settings.apiToken);
@@ -210,6 +213,12 @@ class AutoTraderEngine extends EventTarget {
                 this.settings.mode = 'paper';
                 this.log('warn', 'Live mode requires an API token. Switched to paper.');
             }
+        }
+
+        // SAFEGUARD: Ensure currency is valid before starting
+        if (!this.settings.currency || this.settings.currency.trim() === '') {
+            this.settings.currency = 'USD';
+            this.log('info', 'Currency was empty, defaulting to USD.');
         }
 
         try {
@@ -379,32 +388,49 @@ class AutoTraderEngine extends EventTarget {
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
         if (!this.api || !analysis.contractType) return false;
         this.stats.signalsFound += 1;
+        
         const stake = this.calculateStake();
         const entry = quotes[quotes.length - 1] ?? 0;
-        if (!entry) return false;
-
-        // FIXED: Strictly require valid contract specs. No more blind guessing.
-        const specs = await this.getContractSpecs(symbol.symbol);
-        if (!specs) {
-            this.log('warn', `${symbol.symbol}: Could not fetch contract specs. Skipping.`);
+        
+        if (!entry || entry === 0) {
+            this.log('warn', `${symbol.symbol}: Invalid entry price (${entry}). Skipping trade.`);
             return false;
         }
-        
-        const spec = specs.get(analysis.contractType);
-        if (!spec) { 
-            this.stats.skippedContractUnavailable += 1; 
-            this.log('warn', `${symbol.symbol}: ${analysis.contractType} is not offered by the broker. Skipping.`); 
-            return false; 
+
+        let spec: DerivContractSpec | undefined;
+        try {
+            const specsMap = await this.getContractSpecs(symbol.symbol);
+            spec = specsMap?.get(analysis.contractType);
+        } catch (error: any) {
+            this.log('warn', `${symbol.symbol}: Could not fetch contract specs (${error.message}). Attempting with safe defaults.`);
+        }
+
+        // RESILIENT FALLBACK: If the broker doesn't explicitly list this contract (or the API call failed),
+        // we use a safe, universally accepted duration profile instead of completely blocking the trade.
+        if (!spec) {
+            this.log('info', `${symbol.symbol}: ${analysis.contractType} specs not explicitly found. Using safe fallback duration.`);
+            spec = {
+                contractType: analysis.contractType,
+                minDuration: { value: 1, unit: analysis.category !== 'rise_fall' ? 't' : 's' },
+                maxDuration: { value: 10, unit: analysis.category !== 'rise_fall' ? 't' : 'm' }
+            };
         }
 
         const { payload, duration, durationUnit } = buildProposalPayload(
-            symbol.symbol, this.settings.currency, stake, analysis, this.settings, spec
+            symbol.symbol, 
+            this.settings.currency || 'USD', 
+            stake, 
+            analysis, 
+            this.settings, 
+            spec
         );
+        
         this.stats.proposalsRequested += 1;
 
         try {
             const proposalResponse = await this.api.requestProposal(payload);
             const proposal = proposalResponse?.proposal;
+            
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
                 this.stats.proposalsRejectedByBroker += 1;
                 this.log('warn', `${symbol.symbol} ${analysis.contractType}: broker returned no priceable proposal. Skipping.`);
@@ -428,7 +454,6 @@ class AutoTraderEngine extends EventTarget {
             return await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payout / askPrice, duration, durationUnit);
         } catch (error: any) {
             this.stats.proposalsRejectedByBroker += 1;
-            // FIXED: Verbose error logging to show exactly WHY the broker rejected it
             const errorMsg = error.message || 'Unknown error';
             this.log('error', `Proposal REJECTED for ${symbol.symbol} ${analysis.contractType}: ${errorMsg}. Duration: ${duration}${durationUnit}, Stake: ${stake}`);
             return false;
