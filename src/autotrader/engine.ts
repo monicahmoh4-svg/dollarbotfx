@@ -40,7 +40,6 @@ export const SYNTHETIC_SYMBOL_PRESETS: { value: string; label: string }[] = [
     { value: '1HZ100V', label: 'Volatility 100 (1s) Index' },
 ];
 
-// CRITICAL FIX: Fallback list ensures the bot always has markets to scan, even if Deriv throttles the active_symbols API
 export const FALLBACK_SYNTHETIC_SYMBOLS: DerivActiveSymbol[] = [
     'R_10', 'R_25', 'R_50', 'R_75', 'R_100',
     '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V',
@@ -71,8 +70,7 @@ type OpenTrade = PaperTrade | LiveTrade;
 
 export const DEFAULT_AUTOTRADER_SETTINGS: AutoTraderSettings = {
     mode: 'paper', appId: '1089', apiToken: '', stake: 1.0, currency: 'USD', duration: 5, durationUnit: 't',
-    minConfidence: 0.58, // FIXED: Lowered from 0.62 to allow valid signals to trigger
-    maxVolatility: 45, maxConcurrentTrades: 3, dailyLossLimit: 50, takeProfit: 100,
+    minConfidence: 0.58, maxVolatility: 45, maxConcurrentTrades: 3, dailyLossLimit: 50, takeProfit: 100,
     martingaleEnabled: false, martingaleMultiplier: 2, maxMartingaleSteps: 3, maxStake: 50,
     requireProfitProjection: true, minProjectedEdge: 0.015, symbolsOverride: '', maxSymbols: 0,
     scanIntervalMs: 5000, scanBatchDelayMs: 250, cooldownMs: 15000,
@@ -93,24 +91,44 @@ function isDigitContractWin(contractType: ContractType, barrier: number | null, 
     }
 }
 
-function resolveDuration(desiredValue: number, desiredUnit: DurationUnit, spec: DerivContractSpec | undefined): { value: number; unit: DurationUnit } {
-    if (!spec || !spec.minDuration) return { value: desiredValue, unit: desiredUnit };
+// FIXED: Robust duration resolution that strictly adheres to broker specs
+function resolveDuration(desiredValue: number, desiredUnit: DurationUnit, spec: DerivContractSpec): { value: number; unit: DurationUnit } {
     const min = spec.minDuration;
+    if (!min) return { value: desiredValue, unit: desiredUnit }; // Fallback
+    
     const max = spec.maxDuration && spec.maxDuration.unit === min.unit ? spec.maxDuration : min;
+    
     if (min.unit === desiredUnit) {
-        const value = Math.min(Math.max(desiredValue, min.value), Math.max(max.value, min.value));
-        return { value, unit: desiredUnit };
+        const maxVal = max.value > min.value ? max.value : min.value;
+        const clampedValue = Math.min(Math.max(desiredValue, min.value), maxVal);
+        return { value: clampedValue, unit: desiredUnit };
     }
-    return { value: min.value, unit: (min.unit as DurationUnit) ?? desiredUnit };
+    
+    // Desired unit not supported, safely adapt to the contract's native unit
+    const maxVal = max.value > min.value ? max.value : min.value;
+    const safeValue = Math.min(Math.max(desiredValue, min.value), maxVal);
+    return { value: safeValue, unit: min.unit as DurationUnit };
 }
 
-function buildProposalPayload(symbol: string, currency: string, stake: number, analysis: AnalysisResult, settings: AutoTraderSettings, spec: DerivContractSpec | undefined): { payload: Record<string, unknown>; duration: number; durationUnit: DurationUnit } {
+function buildProposalPayload(
+    symbol: string, currency: string, stake: number, analysis: AnalysisResult, 
+    settings: AutoTraderSettings, spec: DerivContractSpec // spec is now strictly required
+): { payload: Record<string, unknown>; duration: number; durationUnit: DurationUnit } {
     const isDigit = analysis.category !== 'rise_fall';
     const desiredValue = isDigit ? Math.min(10, Math.max(1, Math.round(settings.duration))) : settings.duration;
     const desiredUnit: DurationUnit = isDigit ? 't' : settings.durationUnit;
+    
     const resolved = resolveDuration(desiredValue, desiredUnit, spec);
-    const payload: Record<string, unknown> = { amount: stake, basis: 'stake', contract_type: analysis.contractType, currency, duration: resolved.value, duration_unit: resolved.unit, symbol, product_type: 'basic' };
-    if (analysis.barrier !== null && analysis.barrier !== undefined) payload.barrier = String(analysis.barrier);
+    
+    const payload: Record<string, unknown> = { 
+        amount: stake, basis: 'stake', contract_type: analysis.contractType, currency, 
+        duration: resolved.value, duration_unit: resolved.unit, symbol, product_type: 'basic' 
+    };
+    
+    if (analysis.barrier !== null && analysis.barrier !== undefined) {
+        payload.barrier = String(analysis.barrier);
+    }
+    
     return { payload, duration: resolved.value, durationUnit: resolved.unit };
 }
 
@@ -118,10 +136,7 @@ class AutoTraderEngine extends EventTarget {
     private api: DerivAPI | null = null;
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
-    private scanning = false;
-    private running = false;
-    private connected = false;
-    private authorized = false;
+    private scanning = false; private running = false; private connected = false; private authorized = false;
     private logs: AutoTraderLog[] = [];
     private stats: AutoTraderStats = { wins: 0, losses: 0, net: 0, dailyNet: 0, open: 0, lossStreak: 0, sessionStart: Date.now(), day: new Date().toDateString(), scanCount: 0, tradesOpened: 0, lastScanAt: null, lastScanSummary: 'Not scanned yet.', signalsFound: 0, proposalsRequested: 0, proposalsRejectedByBroker: 0, skippedBelowEdge: 0, skippedContractUnavailable: 0 };
     private contractsCache = new Map<string, Map<ContractType, DerivContractSpec>>();
@@ -143,11 +158,9 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private saveSettings() { try { const { apiToken, ...rest } = this.settings; localStorage.setItem('ai-bot-settings', JSON.stringify(rest)); } catch {} }
-
     getState() { return { settings: { ...this.settings }, stats: { ...this.stats, open: this.openTrades.size }, logs: [...this.logs], openTrades: Array.from(this.openTrades.values()), running: this.running, scanning: this.scanning, connected: this.connected, authorized: this.authorized, symbolCount: this.activeSymbols.length }; }
     private emit() { this.dispatchEvent(new CustomEvent('state', { detail: this.getState() })); }
     private log(level: AutoTraderLog['level'], message: string) { this.logs.unshift({ time: new Date().toLocaleTimeString(), level, message }); this.logs = this.logs.slice(0, 150); this.emit(); }
-
     updateSettings(patch: Partial<AutoTraderSettings>) { this.settings = { ...this.settings, ...patch }; this.saveSettings(); this.emit(); }
 
     async start(patch: Partial<AutoTraderSettings> = {}) {
@@ -176,13 +189,28 @@ class AutoTraderEngine extends EventTarget {
             return;
         }
 
-        if (this.settings.mode === 'live') {
-            if (!this.settings.apiToken) { this.settings.mode = 'paper'; this.log('warn', 'Live mode requires an API token. Switched to paper.'); }
-            else {
-                try { await this.api.authorize(this.settings.apiToken); this.authorized = true; this.log('success', 'Live trading authorized.'); }
-                catch (error: any) { this.settings.mode = 'paper'; this.authorized = false; this.log('error', `Authorization failed: ${error.message}. Switched to paper.`); }
+        // FIXED: Always authorize if a token is present, even in Paper mode. 
+        // This prevents rate-limit rejections and ensures accurate currency pricing.
+        if (this.settings.apiToken) {
+            try {
+                await this.api.authorize(this.settings.apiToken);
+                this.authorized = true;
+                this.log('success', `Authorized with Deriv (${this.settings.mode === 'live' ? 'Live' : 'Paper'} mode).`);
+            } catch (error: any) {
+                this.authorized = false;
+                this.log('error', `Authorization failed: ${error.message}.`);
+                if (this.settings.mode === 'live') {
+                    this.settings.mode = 'paper';
+                    this.log('warn', 'Switched to paper mode due to authorization failure.');
+                }
             }
-        } else { this.authorized = false; }
+        } else {
+            this.authorized = false;
+            if (this.settings.mode === 'live') {
+                this.settings.mode = 'paper';
+                this.log('warn', 'Live mode requires an API token. Switched to paper.');
+            }
+        }
 
         try {
             const symbols = await this.api.activeSymbols();
@@ -194,7 +222,6 @@ class AutoTraderEngine extends EventTarget {
             this.activeSymbols = symbols.filter(symbol => this.settings.enabledMarkets.includes(symbol.market) && !symbol.is_trading_suspended && (symbol.exchange_is_open === undefined || symbol.exchange_is_open === 1));
             this.log('info', `Loaded ${this.activeSymbols.length} tradable markets.`);
 
-            // CRITICAL FIX: Fallback to hardcoded synthetics if API returns empty (throttling)
             if (!this.activeSymbols.length) {
                 this.log('warn', 'API returned 0 active symbols (likely App ID throttling). Injecting comprehensive synthetic fallback to ensure continuous scanning...');
                 this.activeSymbols = FALLBACK_SYNTHETIC_SYMBOLS;
@@ -356,11 +383,23 @@ class AutoTraderEngine extends EventTarget {
         const entry = quotes[quotes.length - 1] ?? 0;
         if (!entry) return false;
 
+        // FIXED: Strictly require valid contract specs. No more blind guessing.
         const specs = await this.getContractSpecs(symbol.symbol);
-        const spec = specs?.get(analysis.contractType);
-        if (specs && !spec) { this.stats.skippedContractUnavailable += 1; this.log('warn', `${symbol.symbol}: ${analysis.contractType} is not offered. Skipping.`); return false; }
+        if (!specs) {
+            this.log('warn', `${symbol.symbol}: Could not fetch contract specs. Skipping.`);
+            return false;
+        }
+        
+        const spec = specs.get(analysis.contractType);
+        if (!spec) { 
+            this.stats.skippedContractUnavailable += 1; 
+            this.log('warn', `${symbol.symbol}: ${analysis.contractType} is not offered by the broker. Skipping.`); 
+            return false; 
+        }
 
-        const { payload, duration, durationUnit } = buildProposalPayload(symbol.symbol, this.settings.currency, stake, analysis, this.settings, spec);
+        const { payload, duration, durationUnit } = buildProposalPayload(
+            symbol.symbol, this.settings.currency, stake, analysis, this.settings, spec
+        );
         this.stats.proposalsRequested += 1;
 
         try {
@@ -389,7 +428,9 @@ class AutoTraderEngine extends EventTarget {
             return await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payout / askPrice, duration, durationUnit);
         } catch (error: any) {
             this.stats.proposalsRejectedByBroker += 1;
-            this.log('warn', `Proposal request failed for ${symbol.symbol}: ${error.message}`);
+            // FIXED: Verbose error logging to show exactly WHY the broker rejected it
+            const errorMsg = error.message || 'Unknown error';
+            this.log('error', `Proposal REJECTED for ${symbol.symbol} ${analysis.contractType}: ${errorMsg}. Duration: ${duration}${durationUnit}, Stake: ${stake}`);
             return false;
         }
     }
@@ -404,7 +445,6 @@ class AutoTraderEngine extends EventTarget {
             const trade: LiveTrade = { id: String(contractId), symbol, category: analysis.category, contractType: analysis.contractType, barrier: analysis.barrier, direction: analysis.direction, stake, entry: Number(proposal.spot || entry), decimals, createdAt: Date.now(), mode: 'live', contractId: String(contractId) };
             this.openTrades.set(symbol, trade);
 
-            // CRITICAL FIX: Subscribe to the contract so we get updates and it settles!
             await this.api.subscribeProposalOpenContract(String(contractId));
             const unsubscribe = this.api.addProposalOpenContractListener(poc => { this.onLiveContractUpdate(symbol, poc); });
             this.liveUnsubscribes.set(trade.id, unsubscribe);
