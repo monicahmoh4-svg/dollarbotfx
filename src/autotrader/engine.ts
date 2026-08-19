@@ -435,6 +435,21 @@ class AutoTraderEngine extends EventTarget {
             this.emit();
         });
 
+        // Diagnostic trail for the exact failure mode seen in production:
+        // active_symbols resolving successfully but empty. Logs each
+        // request-shape attempt and its result count, so if this recurs the
+        // logs show precisely which shapes were tried and what each got
+        // back, instead of a single opaque "0 symbols" dead end.
+        this.api.addEventListener('active-symbols-attempt', (event: any) => {
+            const { label, count, error } = event?.detail ?? {};
+
+            if (error) {
+                this.log('warn', `active_symbols attempt [${label}] failed: ${error}`);
+            } else {
+                this.log('info', `active_symbols attempt [${label}]: ${count} symbol(s) returned.`);
+            }
+        });
+
         try {
             await this.api.connect();
             this.connected = true;
