@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { observer } from 'mobx-react-lite';
+import AutoTraderFab from '@/components/autotrader/autotrader-fab';
 import AutoTraderPanel from '@/components/autotrader/autotrader-panel';
 import ErrorBoundary from '@/components/error-component/error-boundary';
 import ErrorComponent from '@/components/error-component/error-component';
@@ -74,6 +75,7 @@ const AppRoot = () => {
             <ErrorBoundary root_store={store}>
                 <ErrorComponentWrapper />
                 <AppContent />
+                <AutoTraderFab />
                 <AutoTraderPanel />
                 <FreeBots />
             </ErrorBoundary>
