@@ -343,9 +343,32 @@ function AutoTraderPanel() {
                                         </option>
                                     </select>
                                 </div>
-                                <div className='at-field'>
+                                <div className='at-field' style={{ gridColumn: '1 / -1' }}>
                                     <label>Deriv App ID</label>
-                                    <input className='at-input' value={form.appId} onChange={e => set({ appId: e.target.value })} />
+                                    <input
+                                        className='at-input'
+                                        value={form.appId}
+                                        onChange={e => set({ appId: e.target.value })}
+                                        placeholder='1089 (shared testing id) — register your own for production'
+                                    />
+                                    {(!form.appId || form.appId === '1089') && (
+                                        <div className='at-hint' style={{ color: '#fbbf24' }}>
+                                            You're on Deriv's default <b>1089</b> — their own docs describe this as a
+                                            shared public <b>testing</b> id used concurrently by every tutorial and
+                                            demo on the internet, not intended for production use. If market data
+                                            keeps coming back empty, register your own free app_id at{' '}
+                                            <a
+                                                href='https://developers.deriv.com/docs/app-registration/'
+                                                target='_blank'
+                                                rel='noreferrer'
+                                                style={{ color: '#a5b4fc' }}
+                                            >
+                                                developers.deriv.com/docs/app-registration
+                                            </a>{' '}
+                                            and paste it here — takes about two minutes and requires only a Deriv
+                                            login, no approval wait.
+                                        </div>
+                                    )}
                                 </div>
                                 <div className='at-field'>
                                     <label>Deriv API Token {isLoggedIn ? '(auto-filled from your login)' : ''}</label>
