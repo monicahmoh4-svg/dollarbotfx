@@ -150,14 +150,36 @@ export class DerivAPI extends EventTarget {
     async requestProposal(params: Record<string, unknown>) { return this.send({ proposal: 1, ...params }); }
     async buyProposal(proposalId: string, price: number) { return this.send({ buy: proposalId, price }); }
     
-    async contractsFor(symbol: string, currency = 'USD'): Promise<DerivContractSpec[]> {
-        const response = await this.send({ contracts_for: symbol, currency, product_type: 'basic' });
-        const available = response?.contracts_for?.available ?? [];
-        return available.map((item: any) => ({
-            contractType: item.contract_type,
-            minDuration: parseDuration(item.min_contract_duration),
-            maxDuration: parseDuration(item.max_contract_duration),
-        }));
+    // FIXED: Smart currency retry to prevent "no contract available" errors
+    async contractsFor(symbol: string, currency?: string): Promise<DerivContractSpec[]> {
+        const payload: Record<string, unknown> = { contracts_for: symbol, product_type: 'basic' };
+        if (currency) payload.currency = currency;
+        
+        try {
+            const response = await this.send(payload);
+            const available = response?.contracts_for?.available ?? [];
+            return available.map((item: any) => ({
+                contractType: item.contract_type,
+                minDuration: parseDuration(item.min_contract_duration),
+                maxDuration: parseDuration(item.max_contract_duration),
+            }));
+        } catch (error: any) {
+            // If it fails with currency, retry without currency to bypass mismatch errors
+            if (currency) {
+                try {
+                    const response = await this.send({ contracts_for: symbol, product_type: 'basic' });
+                    const available = response?.contracts_for?.available ?? [];
+                    return available.map((item: any) => ({
+                        contractType: item.contract_type,
+                        minDuration: parseDuration(item.min_contract_duration),
+                        maxDuration: parseDuration(item.max_contract_duration),
+                    }));
+                } catch {
+                    throw error; // Throw original error if retry also fails
+                }
+            }
+            throw error;
+        }
     }
 
     close() {
