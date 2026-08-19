@@ -257,22 +257,67 @@ export class DerivAPI extends EventTarget {
      * traded digit for DIGIT-family contracts (even/odd, over/under,
      * matches/differs). Falls back to 'brief' if 'full' is ever rejected.
      */
+    /**
+     * IMPORTANT — this used to fall back from 'full' to 'brief' only on a
+     * thrown exception. That misses the exact failure mode observed in
+     * production: Deriv can respond successfully (no error, valid message)
+     * to `{ active_symbols: 'full', product_type: 'basic' }` with a
+     * genuinely empty `active_symbols` array — no exception, so the old
+     * code never tried anything else and the bot silently had zero symbols
+     * to trade every single scan. This now treats "resolved but empty" the
+     * same as "failed": it tries progressively simpler, still-valid
+     * request shapes (per Deriv's documented active_symbols parameters)
+     * until one returns actual symbols, and only gives up after all of
+     * them come back empty. Every attempt is logged with its result count
+     * so a repeat of this failure is immediately diagnosable from the logs
+     * instead of being a silent dead end.
+     */
     async activeSymbols(): Promise<DerivActiveSymbol[]> {
-        try {
-            const response = await this.send({
-                active_symbols: 'full',
-                product_type: 'basic',
-            });
+        const attempts: Array<{ label: string; payload: Record<string, unknown> }> = [
+            { label: "full + product_type:'basic'", payload: { active_symbols: 'full', product_type: 'basic' } },
+            { label: "brief + product_type:'basic'", payload: { active_symbols: 'brief', product_type: 'basic' } },
+            { label: 'brief (no product_type)', payload: { active_symbols: 'brief' } },
+            { label: 'full (no product_type)', payload: { active_symbols: 'full' } },
+        ];
 
-            return response?.active_symbols ?? [];
-        } catch (error) {
-            const response = await this.send({
-                active_symbols: 'brief',
-                product_type: 'basic',
-            });
+        let lastError: Error | null = null;
 
-            return response?.active_symbols ?? [];
+        for (const attempt of attempts) {
+            try {
+                const response = await this.send(attempt.payload);
+                const symbols: DerivActiveSymbol[] = response?.active_symbols ?? [];
+
+                this.dispatchEvent(
+                    new CustomEvent('active-symbols-attempt', {
+                        detail: { label: attempt.label, count: symbols.length },
+                    })
+                );
+
+                if (symbols.length > 0) {
+                    return symbols;
+                }
+                // Resolved successfully but empty — try the next request
+                // shape rather than accepting zero on the first attempt.
+            } catch (error: any) {
+                lastError = error instanceof Error ? error : new Error(String(error));
+
+                this.dispatchEvent(
+                    new CustomEvent('active-symbols-attempt', {
+                        detail: { label: attempt.label, count: 0, error: lastError.message },
+                    })
+                );
+            }
         }
+
+        // Every shape came back empty or failed. If at least one attempt
+        // produced a real (non-network) error, surface that — it's more
+        // actionable than a bare empty array. Otherwise return [] and let
+        // the engine's own "0 symbols" diagnostics take over.
+        if (lastError) {
+            throw lastError;
+        }
+
+        return [];
     }
 
     async getTickHistory(symbol: string, count = 300): Promise<DerivTick[]> {
