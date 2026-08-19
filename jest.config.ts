@@ -105,6 +105,7 @@ const config: Config = {
         '^@/stores/(.*)$': '<rootDir>/src/stores/$1',
         '^@/pages/(.*)$': '<rootDir>/src/pages/$1',
         '^@/services/(.*)$': '<rootDir>/src/services/$1',
+        '^@/autotrader/(.*)$': '<rootDir>/src/autotrader/$1',
     },
 
     // An array of regexp pattern strings, matched against all module paths before considered 'visible' to the module loader
