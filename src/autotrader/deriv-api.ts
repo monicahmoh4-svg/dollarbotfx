@@ -252,6 +252,19 @@ export class DerivAPI extends EventTarget {
     }
 
     /**
+     * A minimal round-trip check independent of active_symbols' large
+     * payload. If ping fails or times out, the problem is broad
+     * connectivity (network/proxy/app_id) rather than anything specific to
+     * the active_symbols call — if ping succeeds but active_symbols keeps
+     * coming back empty, that narrows the problem down considerably.
+     */
+    async ping(): Promise<number> {
+        const startedAt = Date.now();
+        await this.send({ ping: 1 });
+        return Date.now() - startedAt;
+    }
+
+    /**
      * 'full' (rather than 'brief') is required so each symbol includes its
      * `pip` value — the engine needs that to correctly compute the last
      * traded digit for DIGIT-family contracts (even/odd, over/under,
