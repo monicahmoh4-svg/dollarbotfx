@@ -3,16 +3,16 @@ export type DerivActiveSymbol = { symbol: string; display_name: string; market: 
 export type DerivContractDurationRange = { value: number; unit: string; };
 export type DerivContractSpec = { contractType: string; minDuration: DerivContractDurationRange | null; maxDuration: DerivContractDurationRange | null; };
 
+// FIXED: Regex now perfectly matches Deriv's format (e.g., "1t", "5s", "1m" with no space)
 function parseDuration(raw: unknown): DerivContractDurationRange | null {
     if (typeof raw !== 'string') return null;
-    const match = raw.trim().match(/^(\d+)\s*([a-zA-Z]+)$/);
+    const match = raw.trim().match(/^(\d+)([a-zA-Z]+)$/);
     if (!match) return null;
     return { value: Number(match[1]), unit: match[2] };
 }
 
 type Waiter = { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; };
 
-// Native EventTarget is used here (no external imports needed for browser environments)
 export class DerivAPI extends EventTarget {
     private ws: WebSocket | null = null;
     private readonly url: string;
@@ -144,7 +144,6 @@ export class DerivAPI extends EventTarget {
         return this.send({ ticks_history: symbol, adjust_start_time: 1, count: 1, end: 'latest', style: 'ticks', subscribe: 1 });
     }
 
-    // CRITICAL FIX: Added to ensure live trades receive settlement updates
     async subscribeProposalOpenContract(contractId: string) {
         return this.send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 });
     }
