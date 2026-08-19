@@ -154,7 +154,7 @@ class AutoTraderEngine extends EventTarget {
             this.settings = { 
                 ...DEFAULT_AUTOTRADER_SETTINGS, 
                 ...saved, 
-                currency: saved.currency || 'USD', // SAFEGUARD: Ensure currency is never empty
+                currency: saved.currency || 'USD',
                 enabledMarkets: Array.isArray(saved.enabledMarkets) && saved.enabledMarkets.length ? saved.enabledMarkets : DEFAULT_AUTOTRADER_SETTINGS.enabledMarkets, 
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
                 apiToken: '' 
@@ -215,7 +215,6 @@ class AutoTraderEngine extends EventTarget {
             }
         }
 
-        // SAFEGUARD: Ensure currency is valid before starting
         if (!this.settings.currency || this.settings.currency.trim() === '') {
             this.settings.currency = 'USD';
             this.log('info', 'Currency was empty, defaulting to USD.');
@@ -405,14 +404,14 @@ class AutoTraderEngine extends EventTarget {
             this.log('warn', `${symbol.symbol}: Could not fetch contract specs (${error.message}). Attempting with safe defaults.`);
         }
 
-        // RESILIENT FALLBACK: If the broker doesn't explicitly list this contract (or the API call failed),
-        // we use a safe, universally accepted duration profile instead of completely blocking the trade.
+        // FIXED FALLBACK: Universally use Ticks ('t') for 1-10 duration. 
+        // This prevents the resolver from incorrectly forcing Seconds ('s') which causes "temporarily unavailable" rejections.
         if (!spec) {
-            this.log('info', `${symbol.symbol}: ${analysis.contractType} specs not explicitly found. Using safe fallback duration.`);
+            this.log('info', `${symbol.symbol}: ${analysis.contractType} specs not explicitly found. Using safe fallback duration (1-10 ticks).`);
             spec = {
                 contractType: analysis.contractType,
-                minDuration: { value: 1, unit: analysis.category !== 'rise_fall' ? 't' : 's' },
-                maxDuration: { value: 10, unit: analysis.category !== 'rise_fall' ? 't' : 'm' }
+                minDuration: { value: 1, unit: 't' },
+                maxDuration: { value: 10, unit: 't' }
             };
         }
 
