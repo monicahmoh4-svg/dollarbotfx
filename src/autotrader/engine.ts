@@ -541,14 +541,30 @@ class AutoTraderEngine extends EventTarget {
                     );
                 } else {
                     // Deriv itself returned an empty list — not a filtering
-                    // issue at all. Most likely causes: a transient/blocked
-                    // request (see "Deriv returned 0 total symbol(s)" above
-                    // with no error — try again), or a network/proxy issue
-                    // between this browser and wss://ws.derivws.com.
+                    // issue at all. Verified via Deriv's own documentation
+                    // (github.com/deriv-com/deriv-api, api.deriv.com): the
+                    // default app_id 1089 is explicitly a SHARED, PUBLIC
+                    // TESTING id — "replace with your own app_id" — used
+                    // concurrently by every tutorial and demo on the
+                    // internet. A large call like active_symbols (the full
+                    // instrument list) resolving successfully but empty is
+                    // consistent with throttling/quota behaviour on that
+                    // shared id, unlike a small call such as ping.
+                    const usingSharedTestAppId = !this.settings.appId || this.settings.appId === '1089';
+
                     this.log(
                         'error',
                         'Deriv returned 0 symbols total (not a filtering issue) — the active_symbols request itself came back empty. Retrying once in 5s.'
                     );
+
+                    if (usingSharedTestAppId) {
+                        this.log(
+                            'warn',
+                            "You're using Deriv's default app_id (1089), which Deriv's own docs describe as a shared public TESTING id, not for production. " +
+                                'Register your own free app_id at https://developers.deriv.com/docs/app-registration/ and enter it in the "Deriv App ID" ' +
+                                'field in Trading Rules — this is the single most likely fix if active_symbols keeps coming back empty.'
+                        );
+                    }
 
                     setTimeout(() => {
                         if (this.running) {
@@ -734,10 +750,20 @@ class AutoTraderEngine extends EventTarget {
             if (this.activeSymbols.length) {
                 this.log('success', `Retry succeeded — loaded ${this.activeSymbols.length} tradable market(s).`);
             } else {
+                const usingSharedTestAppId = !this.settings.appId || this.settings.appId === '1089';
+
                 this.log(
                     'error',
                     `Retry also returned ${symbols.length} total symbol(s). If this stays at 0, the issue is upstream of this bot (network/proxy to wss://ws.derivws.com, or an app_id restriction) rather than the trading logic.`
                 );
+
+                if (usingSharedTestAppId) {
+                    this.log(
+                        'warn',
+                        "Still on Deriv's shared testing app_id (1089). Register your own at https://developers.deriv.com/docs/app-registration/ " +
+                            'and set it in the "Deriv App ID" field — this is the most likely fix.'
+                    );
+                }
             }
 
             this.emit();
