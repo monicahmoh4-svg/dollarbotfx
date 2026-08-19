@@ -224,6 +224,30 @@ export function pipToDecimals(pip?: number | null): number {
     return Number.isFinite(decimals) && decimals >= 0 && decimals <= 6 ? decimals : 2;
 }
 
+/**
+ * Fallback for when a symbol's `pip` is unavailable — e.g. a Symbol
+ * Override entry traded directly because it wasn't in the last
+ * active_symbols response. Rather than assuming a flat 2 decimals (wrong
+ * for several synthetic indices, which breaks last-digit calculation for
+ * digit contracts), this reads the actual decimal precision straight off
+ * the live tick data, which is always accurate for that specific feed
+ * regardless of whether the symbol's metadata was ever fetched.
+ */
+export function inferDecimalsFromQuotes(quotes: number[]): number {
+    let maxDecimals = 0;
+
+    for (const quote of quotes) {
+        const text = quote.toString();
+        const dotIndex = text.indexOf('.');
+
+        if (dotIndex >= 0) {
+            maxDecimals = Math.max(maxDecimals, text.length - dotIndex - 1);
+        }
+    }
+
+    return maxDecimals > 0 ? Math.min(maxDecimals, 6) : 2;
+}
+
 export function lastDigitOf(quote: number, decimals: number): number {
     const scaled = Math.round(quote * Math.pow(10, decimals));
     const digit = Math.abs(scaled % 10);
