@@ -1,5 +1,3 @@
-import { EventTarget } from 'event-target-shim'; // Or standard EventTarget if polyfilled
-
 export type DerivTick = { symbol: string; quote: number; epoch: number; id?: string; };
 export type DerivActiveSymbol = { symbol: string; display_name: string; market: string; submarket?: string; exchange_is_open?: number; is_trading_suspended?: number; pip?: number; };
 export type DerivContractDurationRange = { value: number; unit: string; };
@@ -14,6 +12,7 @@ function parseDuration(raw: unknown): DerivContractDurationRange | null {
 
 type Waiter = { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; };
 
+// Native EventTarget is used here (no external imports needed for browser environments)
 export class DerivAPI extends EventTarget {
     private ws: WebSocket | null = null;
     private readonly url: string;
@@ -145,7 +144,7 @@ export class DerivAPI extends EventTarget {
         return this.send({ ticks_history: symbol, adjust_start_time: 1, count: 1, end: 'latest', style: 'ticks', subscribe: 1 });
     }
 
-    // CRITICAL FIX: Explicitly subscribe to live contract updates so they settle!
+    // CRITICAL FIX: Added to ensure live trades receive settlement updates
     async subscribeProposalOpenContract(contractId: string) {
         return this.send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 });
     }
