@@ -275,7 +275,6 @@ export class DerivAPI extends EventTarget {
         });
     }
 
-    // CRITICAL FIX: Added to ensure live trades receive settlement updates
     async subscribeProposalOpenContract(contractId: string) {
         return this.send({
             proposal_open_contract: 1,
@@ -298,7 +297,6 @@ export class DerivAPI extends EventTarget {
         });
     }
 
-    // CRITICAL FIX: Smart currency retry to prevent "no contract available" errors
     async contractsFor(symbol: string, currency?: string): Promise<DerivContractSpec[]> {
         const payload: Record<string, unknown> = {
             contracts_for: symbol,
@@ -311,13 +309,18 @@ export class DerivAPI extends EventTarget {
         try {
             const response = await this.send(payload);
             const available = response?.contracts_for?.available ?? [];
+            
+            if (available.length === 0) {
+                console.warn(`[API] contracts_for returned EMPTY for ${symbol}. Response:`, JSON.stringify(response).substring(0, 300));
+            }
+            
             return available.map((item: any) => ({
                 contractType: item.contract_type,
                 minDuration: parseDuration(item.min_contract_duration),
                 maxDuration: parseDuration(item.max_contract_duration),
             }));
         } catch (error: any) {
-            // If it fails with currency, retry without currency to bypass mismatch errors
+            console.error(`[API] contracts_for ERROR for ${symbol}:`, error.message);
             if (currency) {
                 try {
                     const response = await this.send({ contracts_for: symbol, product_type: 'basic' });
@@ -327,7 +330,8 @@ export class DerivAPI extends EventTarget {
                         minDuration: parseDuration(item.min_contract_duration),
                         maxDuration: parseDuration(item.max_contract_duration),
                     }));
-                } catch {
+                } catch (e: any) {
+                    console.error(`[API] contracts_for retry without currency also failed:`, e.message);
                     throw error;
                 }
             }
