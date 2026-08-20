@@ -13,89 +13,96 @@ function getSessionToken(client: any): string {
         return '';
     }
     
-    console.log('[TOKEN DEBUG] === START TOKEN EXTRACTION ===');
+    console.log('[TOKEN DEBUG] === START DEEP TOKEN EXTRACTION ===');
     console.log('[TOKEN DEBUG] client.is_logged_in:', client.is_logged_in);
     console.log('[TOKEN DEBUG] client.loginid:', client.loginid);
-    console.log('[TOKEN DEBUG] client keys:', Object.keys(client));
     
+    // Helper to check if a string looks like a Deriv token
+    const looksLikeToken = (val: any) => typeof val === 'string' && val.length > 20 && /^[a-zA-Z0-9_-]+$/.test(val);
+
     // 1. Direct method
     if (typeof client.getToken === 'function') {
         try {
             const t = client.getToken();
-            console.log('[TOKEN DEBUG] client.getToken() returned:', t ? '***' + t.slice(-10) : 'null/empty');
-            if (t) return t;
-        } catch (e) { console.warn('[TOKEN DEBUG] client.getToken error:', e); }
+            if (looksLikeToken(t)) {
+                console.log('[TOKEN DEBUG] ✓ Found token via client.getToken()');
+                return t;
+            }
+        } catch (e) {}
     }
     
     // 2. Direct property
-    if (client.token) {
-        console.log('[TOKEN DEBUG] Found client.token');
+    if (looksLikeToken(client.token)) {
+        console.log('[TOKEN DEBUG] ✓ Found token at client.token');
         return client.token;
     }
     
-    // 3. Accounts object
-    if (client.accounts) {
-        console.log('[TOKEN DEBUG] client.accounts type:', typeof client.accounts);
-        console.log('[TOKEN DEBUG] client.accounts keys:', Object.keys(client.accounts));
-        if (client.loginid && client.accounts[client.loginid]) {
-            console.log('[TOKEN DEBUG] client.accounts[loginid] keys:', Object.keys(client.accounts[client.loginid]));
-            if (client.accounts[client.loginid].token) {
-                console.log('[TOKEN DEBUG] Found token in client.accounts[loginid].token');
-                return client.accounts[client.loginid].token;
-            }
-        }
-        // Try to find ANY token in accounts
-        for (const key in client.accounts) {
-            if (client.accounts[key].token) {
-                console.log(`[TOKEN DEBUG] Found token in client.accounts[${key}].token`);
-                return client.accounts[key].token;
+    // 3. Deep search in client.accounts[loginid]
+    if (client.loginid && client.accounts && client.accounts[client.loginid]) {
+        const acc = client.accounts[client.loginid];
+        console.log('[TOKEN DEBUG] Checking client.accounts[loginid] keys:', Object.keys(acc));
+        for (const key in acc) {
+            if (looksLikeToken(acc[key])) {
+                console.log(`[TOKEN DEBUG] ✓ Found token at client.accounts[loginid].${key}`);
+                return acc[key];
             }
         }
     }
     
-    // 4. account_list (common in some deriv versions)
+    // 4. Deep search in client.account_list
     if (client.account_list && Array.isArray(client.account_list)) {
-        console.log('[TOKEN DEBUG] client.account_list length:', client.account_list.length);
+        console.log('[TOKEN DEBUG] Checking client.account_list (length:', client.account_list.length, ')');
         const currentAccount = client.account_list.find((acc: any) => acc.loginid === client.loginid);
-        if (currentAccount?.token) {
-            console.log('[TOKEN DEBUG] Found token in client.account_list');
-            return currentAccount.token;
+        if (currentAccount) {
+            console.log('[TOKEN DEBUG] Found matching account in account_list. Keys:', Object.keys(currentAccount));
+            for (const key in currentAccount) {
+                if (looksLikeToken(currentAccount[key])) {
+                    console.log(`[TOKEN DEBUG] ✓ Found token at client.account_list[].${key}`);
+                    return currentAccount[key];
+                }
+            }
         }
     }
     
-    // 5. LocalStorage exhaustive search
+    // 5. Deep search in localStorage
     try {
-        console.log('[TOKEN DEBUG] Checking localStorage...');
-        const keys = Object.keys(localStorage).filter(k => k.toLowerCase().includes('account') || k.toLowerCase().includes('token') || k.toLowerCase().includes('client') || k.toLowerCase().includes('config'));
-        console.log('[TOKEN DEBUG] Relevant localStorage keys:', keys);
-        
-        for (const key of keys) {
-            try {
-                const val = JSON.parse(localStorage.getItem(key) || '{}');
-                if (val && typeof val === 'object') {
-                    if (val.token) {
-                        console.log(`[TOKEN DEBUG] Found token in localStorage.${key}.token`);
-                        return val.token;
-                    }
-                    if (client.loginid && val[client.loginid]?.token) {
-                        console.log(`[TOKEN DEBUG] Found token in localStorage.${key}[loginid].token`);
-                        return val[client.loginid].token;
-                    }
-                    // Check nested objects
-                    for (const subKey in val) {
-                        if (val[subKey]?.token) {
-                            console.log(`[TOKEN DEBUG] Found token in localStorage.${key}.${subKey}.token`);
-                            return val[subKey].token;
+        console.log('[TOKEN DEBUG] Deep searching localStorage...');
+        const keysToCheck = ['config', 'client.accounts', 'deriv_config', 'active_loginid', 'client'];
+        for (const key of keysToCheck) {
+            const item = localStorage.getItem(key);
+            if (item) {
+                try {
+                    const parsed = JSON.parse(item);
+                    
+                    // Recursive function to find any token-like string
+                    const findToken = (obj: any): string | null => {
+                        if (!obj) return null;
+                        if (looksLikeToken(obj)) return obj;
+                        if (typeof obj === 'object') {
+                            for (const k in obj) {
+                                if (k.toLowerCase().includes('token') && looksLikeToken(obj[k])) {
+                                    return obj[k];
+                                }
+                                const res = findToken(obj[k]);
+                                if (res) return res;
+                            }
                         }
+                        return null;
+                    };
+                    
+                    const token = findToken(parsed);
+                    if (token) {
+                        console.log(`[TOKEN DEBUG] ✓ Found token in localStorage.${key}`);
+                        return token;
                     }
-                }
-            } catch {}
+                } catch {}
+            }
         }
     } catch (e) {
-        console.warn('[TOKEN DEBUG] localStorage check failed:', e);
+        console.warn('[TOKEN DEBUG] localStorage search failed:', e);
     }
     
-    console.log('[TOKEN DEBUG] === END TOKEN EXTRACTION (FAILED) ===');
+    console.log('[TOKEN DEBUG] ✗ END TOKEN EXTRACTION (FAILED)');
     return '';
 }
 
@@ -104,6 +111,10 @@ function getSessionCurrency(client: any): string {
     if (client.currency) return client.currency;
     if (client.loginid && client.accounts && client.accounts[client.loginid]?.currency) {
         return client.accounts[client.loginid].currency;
+    }
+    if (client.account_list) {
+        const acc = client.account_list.find((a: any) => a.loginid === client.loginid);
+        if (acc?.currency) return acc.currency;
     }
     return 'USD';
 }
@@ -248,7 +259,7 @@ function AutoTraderPanel() {
     console.log('[PANEL] Final token to use:', tokenToUse ? '***' + tokenToUse.slice(-10) : 'EMPTY');
     
     if (!tokenToUse) {
-      console.error('[PANEL] ✗ No token available! Cannot start trading.');
+      console.error('[PANEL] ✗ No token available! Cannot start trading. Please paste a manual API token in Trading Rules.');
     }
     
     await start({ ...form, apiToken: tokenToUse, currency: currencyToUse });
@@ -306,6 +317,11 @@ function AutoTraderPanel() {
                 <div className='at-field'>
                   <label>Deriv API Token {isLoggedIn ? '(auto-filled from login)' : ''}</label>
                   <input className='at-input' type='password' placeholder={isLoggedIn ? 'Using logged-in session' : 'Required for Live'} value={form.apiToken} onChange={e => set({ apiToken: e.target.value })} />
+                  {!sessionToken && (
+                    <div className='at-hint' style={{ color: '#fbbf24' }}>
+                      Auto-extraction failed. Please manually paste your API token from Deriv.com → Settings → API Token.
+                    </div>
+                  )}
                 </div>
                 <div className='at-field'>
                   <label>Currency</label>
