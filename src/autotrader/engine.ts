@@ -1,4 +1,4 @@
-import { DerivAPI, DerivActiveSymbol, DerivContractSpec, DerivTick } from './deriv-api';
+import { DerivActiveSymbol, DerivContractSpec, DerivTick } from './deriv-api';
 import {
     analyzeMarket,
     AnalysisResult,
@@ -97,9 +97,16 @@ function isDigitContractWin(contractType: ContractType, barrier: number | null, 
     }
 }
 
+function parseDuration(raw: unknown): { value: number; unit: string } | null {
+    if (typeof raw !== 'string') return null;
+    const match = raw.trim().match(/^(\d+)\s*([a-zA-Z]+)$/);
+    if (!match) return null;
+    return { value: Number(match[1]), unit: match[2] };
+}
+
 class AutoTraderEngine extends EventTarget {
-    private api: DerivAPI | null = null;
-    private existingWs: WebSocket | null = null;
+    // The Deriv App Builder's client object (has send() method)
+    private client: any = null;
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
@@ -109,10 +116,11 @@ class AutoTraderEngine extends EventTarget {
     private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES;
     private openTrades = new Map<string, OpenTrade>();
     private cooldownUntil = new Map<string, number>();
-    private paperUnsubscribes = new Map<string, () => void>();
-    private liveUnsubscribes = new Map<string, () => void>();
+    private tickListeners = new Map<string, Set<(tick: DerivTick) => void>>();
+    private pocListeners = new Set<(poc: any) => void>();
     private reqId = 1;
     private waiters = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+    private messageHandler: ((event: MessageEvent) => void) | null = null;
 
     constructor() { super(); this.loadSettings(); }
 
@@ -163,55 +171,43 @@ class AutoTraderEngine extends EventTarget {
         this.emit(); 
     }
 
-    // CRITICAL FIX: Accept existingWs to bypass token extraction entirely
-    async start(patch: Partial<AutoTraderSettings> & { existingWs?: WebSocket } = {}) {
+    // CRITICAL: Accept the Deriv App Builder's client object directly
+    async start(patch: Partial<AutoTraderSettings> & { client?: any } = {}) {
         console.log('[ENGINE] start() called');
+        console.log('[ENGINE] Has client:', !!patch.client);
+        console.log('[ENGINE] client keys:', patch.client ? Object.keys(patch.client) : []);
+        console.log('[ENGINE] client.send type:', typeof patch.client?.send);
+        console.log('[ENGINE] client.is_logged_in:', patch.client?.is_logged_in);
+        
         try {
             this.updateSettings(patch);
             this.stop(false);
             this.contractsCache.clear();
-            if (this.api) this.api.close();
 
-            // Use existing authorized WebSocket if available
-            if (patch.existingWs && patch.existingWs.readyState === WebSocket.OPEN) {
-                this.existingWs = patch.existingWs;
+            // Use the Deriv App Builder's client (which has authenticated session via cookies)
+            if (patch.client && patch.client.is_logged_in) {
+                this.client = patch.client;
                 this.connected = true;
                 this.authorized = true;
-                this.log('success', '✓ Using existing authorized Deriv WebSocket connection.');
-                this.log('success', 'Bot can now fetch contract specs and execute trades.');
+                
+                // Subscribe to the client's WebSocket messages for tick/POC updates
+                this.setupClientMessageListener();
+                
+                this.log('success', '✓ Using Deriv App Builder authenticated session (no API token needed)');
+                this.log('success', '✓ Bot is AUTHORIZED and ready to trade');
             } else {
-                // Fallback to token-based authorization
-                this.api = new DerivAPI(this.settings.appId || '1089');
-                await this.api.connect();
-                this.connected = true;
-                this.log('success', 'Connected to Deriv market data.');
-
-                const tokenToUse = patch.apiToken || this.settings.apiToken;
-                if (tokenToUse && tokenToUse.trim() !== '') {
-                    try {
-                        await this.api.authorize(tokenToUse);
-                        this.authorized = true;
-                        this.settings.apiToken = tokenToUse;
-                        this.log('success', `✓ Authorized successfully (${this.settings.mode === 'live' ? 'LIVE' : 'PAPER'} mode)`);
-                    } catch (error: any) {
-                        this.authorized = false;
-                        this.log('error', `✗ Authorization failed: ${error.message}`);
-                    }
-                } else {
-                    this.authorized = false;
-                    this.log('warn', '⚠ No API token provided and no existing WebSocket. Trading disabled.');
-                }
-            }
-
-            // Setup listeners for existingWs if used
-            if (this.existingWs) {
-                this.existingWs.addEventListener('message', this.handleExistingWsMessage);
+                this.authorized = false;
+                this.log('error', '✗ No authenticated Deriv session found');
+                this.log('error', 'Please log in to your Deriv account first (top-right corner)');
+                this.running = false;
+                this.emit();
+                return;
             }
 
             this.running = true;
             this.saveSettings();
             this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
-            this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices.`);
+            this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices`);
             void this.scan();
             this.emit();
         } catch (error: any) {
@@ -222,26 +218,113 @@ class AutoTraderEngine extends EventTarget {
         }
     }
 
-    private handleExistingWsMessage = (event: MessageEvent) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (data.req_id && this.waiters.has(data.req_id)) {
-                const waiter = this.waiters.get(data.req_id)!;
-                clearTimeout(waiter.timer);
-                this.waiters.delete(data.req_id);
-                if (data.error) waiter.reject(new Error(data.error.message));
-                else waiter.resolve(data);
+    // Setup listener on the client's WebSocket to receive ticks and POC updates
+    private setupClientMessageListener() {
+        if (!this.client) return;
+        
+        // Try to find the WebSocket in the client
+        const ws = this.findClientWebSocket();
+        if (!ws) {
+            this.log('warn', 'Could not find WebSocket in client. Tick subscriptions may not work.');
+            return;
+        }
+        
+        this.messageHandler = (event: MessageEvent) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                // Handle request/response
+                if (data.req_id && this.waiters.has(data.req_id)) {
+                    const waiter = this.waiters.get(data.req_id)!;
+                    clearTimeout(waiter.timer);
+                    this.waiters.delete(data.req_id);
+                    if (data.error) waiter.reject(new Error(data.error.message || 'API error'));
+                    else waiter.resolve(data);
+                    return;
+                }
+                
+                // Handle tick subscriptions
+                if (data.msg_type === 'tick' && data.tick) {
+                    const tick: DerivTick = {
+                        symbol: data.tick.symbol,
+                        quote: Number(data.tick.quote),
+                        epoch: Number(data.tick.epoch),
+                        id: data.tick.id,
+                    };
+                    const listeners = this.tickListeners.get(tick.symbol);
+                    if (listeners) {
+                        listeners.forEach(listener => {
+                            try { listener(tick); } catch (e) { console.error(e); }
+                        });
+                    }
+                }
+                
+                // Handle proposal_open_contract
+                if (data.msg_type === 'proposal_open_contract' && data.proposal_open_contract) {
+                    this.pocListeners.forEach(listener => {
+                        try { listener(data.proposal_open_contract); } catch (e) { console.error(e); }
+                    });
+                }
+            } catch {}
+        };
+        
+        ws.addEventListener('message', this.messageHandler);
+        console.log('[ENGINE] WebSocket message listener attached');
+    }
+
+    // Find the WebSocket in the client object (various possible locations)
+    private findClientWebSocket(): WebSocket | null {
+        if (!this.client) return null;
+        
+        // Try various locations where Deriv App Builder might store the WebSocket
+        const candidates = [
+            this.client.ws,
+            this.client.connection,
+            this.client.api?.ws,
+            this.client.api?.connection,
+            this.client._ws,
+            this.client.socket,
+        ];
+        
+        for (const ws of candidates) {
+            if (ws && ws instanceof WebSocket && ws.readyState === WebSocket.OPEN) {
+                console.log('[ENGINE] Found WebSocket at candidate');
+                return ws;
             }
-            // Also forward ticks and POC to DerivAPI listeners if they exist
-            if (this.api) {
-                // @ts-ignore - accessing private for forwarding
-                this.api.handleMessage(event);
+        }
+        
+        // Last resort: search all open WebSockets on the page
+        // This is a hack but works when we can't find it in the client
+        try {
+            const origWS = (window as any).__originalWebSocket || WebSocket;
+            // Try to find via performance entries (WebSocket connections show up)
+            const entries = performance.getEntriesByType('resource') as any[];
+            const wsEntry = entries.find((e: any) => e.name?.includes('derivws.com') && e.initiatorType === 'websocket');
+            if (wsEntry) {
+                console.log('[ENGINE] Found WebSocket via performance entries');
             }
         } catch {}
-    };
+        
+        return null;
+    }
 
+    // Send request using the client's authenticated session
     private async sendRequest<T = any>(payload: Record<string, unknown>): Promise<T> {
-        if (this.existingWs && this.existingWs.readyState === WebSocket.OPEN) {
+        if (!this.client) throw new Error('No client available');
+        
+        // Method 1: Use client.send() if available (standard Deriv App Builder way)
+        if (typeof this.client.send === 'function') {
+            try {
+                const response = await this.client.send(payload);
+                return response as T;
+            } catch (e: any) {
+                console.warn('[ENGINE] client.send() failed, trying WebSocket fallback:', e.message);
+            }
+        }
+        
+        // Method 2: Use the WebSocket directly with req_id tracking
+        const ws = this.findClientWebSocket();
+        if (ws && ws.readyState === WebSocket.OPEN) {
             const req_id = this.reqId++;
             return new Promise<T>((resolve, reject) => {
                 const timer = setTimeout(() => {
@@ -249,20 +332,27 @@ class AutoTraderEngine extends EventTarget {
                     reject(new Error('Request timeout'));
                 }, 30000);
                 this.waiters.set(req_id, { resolve, reject, timer });
-                this.existingWs!.send(JSON.stringify({ ...payload, req_id }));
+                ws.send(JSON.stringify({ ...payload, req_id }));
             });
-        } else if (this.api) {
-            return this.api.send<T>(payload);
-        } else {
-            throw new Error('No WebSocket connection available');
         }
+        
+        throw new Error('No send method or WebSocket available');
     }
 
     stop(emitLog = true) {
         if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
-        if (this.existingWs) {
-            this.existingWs.removeEventListener('message', this.handleExistingWsMessage);
+        
+        // Remove WebSocket listener
+        if (this.messageHandler) {
+            const ws = this.findClientWebSocket();
+            if (ws) ws.removeEventListener('message', this.messageHandler);
+            this.messageHandler = null;
         }
+        
+        // Clear waiters
+        this.waiters.forEach(w => clearTimeout(w.timer));
+        this.waiters.clear();
+        
         if (this.running && emitLog) this.log('warn', 'AI bot stopped.');
         this.running = false;
         this.emit();
@@ -300,7 +390,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || (!this.api && !this.existingWs) || this.scanning) return;
+        if (!this.running || !this.client || this.scanning) return;
         this.scanning = true;
         this.emit();
 
@@ -311,14 +401,21 @@ class AutoTraderEngine extends EventTarget {
                 if (!this.running) break;
                 let quotes: number[] = [];
                 let decimals = 2;
+                
                 try {
-                    const response = await this.sendRequest({ ticks_history: symbol.symbol, adjust_start_time: 1, count: 300, end: 'latest', style: 'ticks' });
+                    const response = await this.sendRequest({ 
+                        ticks_history: symbol.symbol, 
+                        adjust_start_time: 1, 
+                        count: 300, 
+                        end: 'latest', 
+                        style: 'ticks' 
+                    });
                     const prices = response?.history?.prices ?? [];
-                    const times = response?.history?.times ?? [];
-                    quotes = prices.map((price: string | number, index: number) => Number(price));
-                    decimals = symbol.pip ? Math.round(-Math.log10(symbol.pip)) : 2;
+                    quotes = prices.map((p: any) => Number(p));
+                    decimals = symbol.pip ? Math.round(-Math.log10(symbol.pip)) : inferDecimalsFromQuotes(quotes);
                     scannedSymbols += 1;
                 } catch (error: any) {
+                    console.warn(`[ENGINE] Failed to fetch ticks for ${symbol.symbol}:`, error.message);
                     continue;
                 }
 
@@ -336,6 +433,7 @@ class AutoTraderEngine extends EventTarget {
                     this.log('info', `📊 ${symbol.display_name}: ${best.contractType} @ ${(best.confidence * 100).toFixed(1)}%`);
                     
                     if (this.canTrade(symbol.symbol)) {
+                        this.log('info', `🎯 Attempting trade on ${symbol.display_name}...`);
                         try {
                             const opened = await this.executeTrade(symbol, quotes, decimals, best);
                             if (opened) {
@@ -365,21 +463,22 @@ class AutoTraderEngine extends EventTarget {
     private async getContractSpecs(symbol: string): Promise<Map<ContractType, DerivContractSpec> | null> {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
+        
         try {
-            const response = await this.sendRequest({ contracts_for: symbol, currency: this.settings.currency, product_type: 'basic' });
+            const response = await this.sendRequest({ 
+                contracts_for: symbol, 
+                currency: this.settings.currency, 
+                product_type: 'basic' 
+            });
             const available = response?.contracts_for?.available ?? [];
+            
             if (available.length > 0) {
                 const map = new Map<ContractType, DerivContractSpec>();
-                const parseDur = (raw: any) => {
-                    if (typeof raw !== 'string') return null;
-                    const match = raw.trim().match(/^(\d+)\s*([a-zA-Z]+)$/);
-                    return match ? { value: Number(match[1]), unit: match[2] } : null;
-                };
                 available.forEach((item: any) => {
                     map.set(item.contract_type, {
                         contractType: item.contract_type,
-                        minDuration: parseDur(item.min_contract_duration),
-                        maxDuration: parseDur(item.max_contract_duration),
+                        minDuration: parseDuration(item.min_contract_duration),
+                        maxDuration: parseDuration(item.max_contract_duration),
                     });
                 });
                 this.contractsCache.set(symbol, map);
@@ -392,7 +491,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
-        if ((!this.api && !this.existingWs) || !this.authorized || !analysis.contractType) return false;
+        if (!this.client || !this.authorized || !analysis.contractType) return false;
         
         const stake = this.calculateStake();
         const entry = quotes.length > 0 ? quotes[quotes.length - 1] : 0;
@@ -402,6 +501,7 @@ class AutoTraderEngine extends EventTarget {
         if (!specsMap) {
             this.stats.skippedContractUnavailable += 1;
             this.emit();
+            this.log('error', `Could not fetch specs for ${symbol.symbol}`);
             return false;
         }
         
@@ -409,6 +509,7 @@ class AutoTraderEngine extends EventTarget {
         if (!spec) { 
             this.stats.skippedContractUnavailable += 1; 
             this.emit();
+            this.log('error', `${analysis.contractType} not available for ${symbol.symbol}`);
             return false; 
         }
 
@@ -432,6 +533,7 @@ class AutoTraderEngine extends EventTarget {
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
                 this.stats.proposalsRejectedByBroker += 1;
                 this.emit();
+                this.log('error', `No priceable proposal for ${symbol.symbol}`);
                 return false;
             }
 
@@ -440,6 +542,8 @@ class AutoTraderEngine extends EventTarget {
             const breakEven = askPrice / payout;
             const projectedEdge = analysis.confidence - breakEven;
 
+            this.log('info', `💰 Ask=${askPrice.toFixed(2)}, Payout=${payout.toFixed(2)}, Edge=${(projectedEdge*100).toFixed(2)}%`);
+
             if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
                 this.stats.skippedBelowEdge += 1;
                 this.emit();
@@ -447,52 +551,77 @@ class AutoTraderEngine extends EventTarget {
             }
 
             if (this.settings.mode === 'live') {
-                const buyResponse = await this.sendRequest({ buy: proposal.id, price: proposal.ask_price });
+                const buyResponse = await this.sendRequest({ buy: proposal.id, price: askPrice });
                 const contractId = buyResponse?.buy?.contract_id;
-                if (!contractId) return false;
+                if (!contractId) {
+                    this.log('error', `Live buy failed: no contract id`);
+                    return false;
+                }
 
-                const trade: LiveTrade = { id: String(contractId), symbol: symbol.symbol, category: analysis.category, contractType: analysis.contractType, barrier: analysis.barrier, direction: analysis.direction, stake, entry: Number(proposal.spot || entry), decimals, createdAt: Date.now(), mode: 'live', contractId: String(contractId) };
+                const trade: LiveTrade = { 
+                    id: String(contractId), symbol: symbol.symbol, category: analysis.category, 
+                    contractType: analysis.contractType, barrier: analysis.barrier, direction: analysis.direction, 
+                    stake, entry: Number(proposal.spot || entry), decimals, createdAt: Date.now(), 
+                    mode: 'live', contractId: String(contractId) 
+                };
                 this.openTrades.set(symbol.symbol, trade);
 
                 await this.sendRequest({ proposal_open_contract: 1, contract_id: String(contractId), subscribe: 1 });
-                // Note: POC listener is handled by existingWs message forwarder or DerivAPI
-                if (this.api) {
-                    const unsub = this.api.addProposalOpenContractListener((poc: any) => this.onLiveContractUpdate(symbol.symbol, poc));
-                    this.liveUnsubscribes.set(trade.id, unsub);
-                }
+                const pocListener = (poc: any) => this.onLiveContractUpdate(symbol.symbol, poc);
+                this.pocListeners.add(pocListener);
+                this.liveUnsubscribes.set(trade.id, () => this.pocListeners.delete(pocListener));
 
                 this.log('success', `🚀 LIVE ${analysis.contractType} opened | stake=${stake}`);
                 this.emit();
                 return true;
             } else {
                 const id = `paper_${Date.now()}_${symbol.symbol}`;
-                const trade: PaperTrade = { id, symbol: symbol.symbol, category: analysis.category, contractType: analysis.contractType, barrier: analysis.barrier, direction: analysis.direction, stake, entry, decimals, createdAt: Date.now(), mode: 'paper', duration, durationUnit, payoutRatio: payout / askPrice };
+                const trade: PaperTrade = { 
+                    id, symbol: symbol.symbol, category: analysis.category, 
+                    contractType: analysis.contractType, barrier: analysis.barrier, direction: analysis.direction, 
+                    stake, entry, decimals, createdAt: Date.now(), mode: 'paper', 
+                    duration, durationUnit, payoutRatio: payout / askPrice 
+                };
                 if (trade.durationUnit === 't') trade.remainingTicks = Math.max(1, Number(trade.duration) || 1);
                 else trade.expiresAt = Date.now() + (trade.durationUnit === 'm' ? Number(trade.duration) * 60000 : Number(trade.duration) * 1000);
                 
                 this.openTrades.set(symbol.symbol, trade);
                 this.log('success', `📝 PAPER ${analysis.contractType} opened | stake=${stake}`);
                 
-                // Monitor paper trade
+                // Subscribe to ticks for this symbol
                 await this.sendRequest({ ticks_history: symbol.symbol, adjust_start_time: 1, count: 1, end: 'latest', style: 'ticks', subscribe: 1 });
-                if (this.api) {
-                    const unsub = this.api.addTickListener((tick: DerivTick) => {
-                        if (tick.symbol !== trade.symbol) return;
-                        const current = this.openTrades.get(trade.symbol);
-                        if (!current || current.id !== trade.id) { unsub(); return; }
-                        if (trade.durationUnit === 't') {
-                            if (typeof trade.remainingTicks !== 'number') trade.remainingTicks = 1;
-                            trade.remainingTicks -= 1;
-                            if (trade.remainingTicks > 0) return;
-                        } else { if (Date.now() < (trade.expiresAt ?? 0)) return; }
-                        
-                        const win = trade.category === 'rise_fall' ? (trade.direction === 'CALL' ? tick.quote > trade.entry : tick.quote < trade.entry) : isDigitContractWin(trade.contractType, trade.barrier, lastDigitOf(tick.quote, trade.decimals));
-                        const profit = win ? trade.stake * (trade.payoutRatio - 1) : -trade.stake;
-                        this.settleTrade(trade.symbol, win, profit, 'paper-expiry');
-                        unsub(); this.paperUnsubscribes.delete(trade.id);
-                    });
-                    this.paperUnsubscribes.set(trade.id, unsub);
-                }
+                
+                const tickListener = (tick: DerivTick) => {
+                    if (tick.symbol !== trade.symbol) return;
+                    const current = this.openTrades.get(trade.symbol);
+                    if (!current || current.id !== trade.id) return;
+                    
+                    if (trade.durationUnit === 't') {
+                        if (typeof trade.remainingTicks !== 'number') trade.remainingTicks = 1;
+                        trade.remainingTicks -= 1;
+                        if (trade.remainingTicks > 0) return;
+                    } else { 
+                        if (Date.now() < (trade.expiresAt ?? 0)) return; 
+                    }
+                    
+                    const win = trade.category === 'rise_fall' 
+                        ? (trade.direction === 'CALL' ? tick.quote > trade.entry : tick.quote < trade.entry) 
+                        : isDigitContractWin(trade.contractType, trade.barrier, lastDigitOf(tick.quote, trade.decimals));
+                    const profit = win ? trade.stake * (trade.payoutRatio - 1) : -trade.stake;
+                    this.settleTrade(trade.symbol, win, profit, 'paper-expiry');
+                    
+                    // Unsubscribe
+                    const listeners = this.tickListeners.get(trade.symbol);
+                    if (listeners) listeners.delete(tickListener);
+                };
+                
+                if (!this.tickListeners.has(trade.symbol)) this.tickListeners.set(trade.symbol, new Set());
+                this.tickListeners.get(trade.symbol)!.add(tickListener);
+                this.paperUnsubscribes.set(trade.id, () => {
+                    const listeners = this.tickListeners.get(trade.symbol);
+                    if (listeners) listeners.delete(tickListener);
+                });
+                
                 this.emit();
                 return true;
             }
@@ -503,6 +632,9 @@ class AutoTraderEngine extends EventTarget {
             return false;
         }
     }
+
+    private liveUnsubscribes = new Map<string, () => void>();
+    private paperUnsubscribes = new Map<string, () => void>();
 
     private onLiveContractUpdate(symbol: string, poc: any) {
         const trade = this.openTrades.get(symbol);
