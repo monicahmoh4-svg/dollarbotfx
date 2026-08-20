@@ -248,10 +248,10 @@ class AutoTraderEngine extends EventTarget {
                     this.apiInstance.send(payload),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance timeout (15s)')), 15000))
                 ]);
-                console.log('[ENGINE] apiInstance response received');
+                console.log('[ENGINE] apiInstance response received:', response ? 'OK' : 'undefined');
                 return response as T;
             } catch (e: any) {
-                console.error('[ENGINE] apiInstance.send() FAILED:', e.message);
+                console.error('[ENGINE] apiInstance.send() FAILED:', e.message || String(e));
             }
         }
 
@@ -262,10 +262,10 @@ class AutoTraderEngine extends EventTarget {
                     this.apiInstance.api.send(payload),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance.api timeout (15s)')), 15000))
                 ]);
-                console.log('[ENGINE] apiInstance.api response received');
+                console.log('[ENGINE] apiInstance.api response received:', response ? 'OK' : 'undefined');
                 return response as T;
             } catch (e: any) {
-                console.error('[ENGINE] apiInstance.api.send() FAILED:', e.message);
+                console.error('[ENGINE] apiInstance.api.send() FAILED:', e.message || String(e));
             }
         }
 
@@ -278,10 +278,10 @@ class AutoTraderEngine extends EventTarget {
             try {
                 console.log('[ENGINE] Trying fallback API...');
                 const response = await this.fallbackApi.send(payload);
-                console.log('[ENGINE] Fallback API response received');
+                console.log('[ENGINE] Fallback API response received:', response ? 'OK' : 'undefined');
                 return response as T;
             } catch (e: any) {
-                console.error('[ENGINE] Fallback API FAILED:', e.message);
+                console.error('[ENGINE] Fallback API FAILED:', e.message || String(e));
             }
         }
 
@@ -406,13 +406,22 @@ class AutoTraderEngine extends EventTarget {
         }
     }
 
-    // CRITICAL FIX: Try multiple currencies to bypass Deriv's strict currency validation
+    // CRITICAL FIX: Dynamically extract the EXACT account currency and try it first
     private async getContractSpecs(symbol: string): Promise<Map<ContractType, DerivContractSpec> | null> {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
-        const currenciesToTry = [this.settings.currency, 'USD', 'USDC', 'eUSDC', 'EUR', undefined].filter((v, i, a) => v && a.indexOf(v) === i);
+        // 1. Get the EXACT currency from the logged-in client
+        const accountCurrency = this.client?.currency || this.client?.accounts?.[this.client?.loginid]?.currency;
         
+        // 2. Build a prioritized list: Account Currency first, then undefined (default), then common alternatives
+        const currenciesToTry: (string | undefined)[] = [];
+        if (accountCurrency) currenciesToTry.push(accountCurrency);
+        currenciesToTry.push(undefined); // Try without currency (Deriv defaults to account currency)
+        ['USD', 'USDC', 'eUSDC', 'EUR', 'UST', 'GBP'].forEach(c => {
+            if (c !== accountCurrency) currenciesToTry.push(c);
+        });
+
         for (const curr of currenciesToTry) {
             try {
                 const payload: Record<string, unknown> = { 
@@ -421,8 +430,9 @@ class AutoTraderEngine extends EventTarget {
                 };
                 if (curr) payload.currency = curr;
                 
-                console.log(`[ENGINE] Trying contracts_for with currency: ${curr || 'NONE'}`);
+                console.log(`[ENGINE] Trying contracts_for with currency: ${curr || 'NONE (Account Default)'}`);
                 const response = await this.sendRequest(payload);
+                
                 const available = response?.contracts_for?.available ?? [];
                 
                 if (available.length > 0) {
@@ -437,9 +447,11 @@ class AutoTraderEngine extends EventTarget {
                     });
                     this.contractsCache.set(symbol, map);
                     return map;
+                } else {
+                    console.log(`[ENGINE] Empty contracts_for response for currency ${curr || 'NONE'}. Response snippet:`, JSON.stringify(response).substring(0, 200));
                 }
             } catch (e: any) {
-                console.warn(`[ENGINE] contracts_for failed with currency ${curr || 'NONE'}:`, e.message);
+                console.warn(`[ENGINE] contracts_for failed with currency ${curr || 'NONE'}:`, e.message || String(e));
             }
         }
         
