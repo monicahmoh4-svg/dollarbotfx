@@ -12,40 +12,29 @@ import {
 export type AutoTraderMode = 'paper' | 'live';
 export type DurationUnit = 't' | 's' | 'm';
 
-export const TRADE_CATEGORIES: { value: TradeCategory; label: string }[] = [
-    { value: 'rise_fall', label: 'Rise / Fall' },
-    { value: 'even_odd', label: 'Digits: Even / Odd' },
-    { value: 'over_under', label: 'Digits: Over / Under' },
-    { value: 'matches_differs', label: 'Digits: Matches / Differs' },
+export const SYNTHETIC_INDICES: DerivActiveSymbol[] = [
+    { symbol: 'R_10', display_name: 'Volatility 10 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'R_25', display_name: 'Volatility 25 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'R_50', display_name: 'Volatility 50 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'R_75', display_name: 'Volatility 75 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'R_100', display_name: 'Volatility 100 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: '1HZ10V', display_name: 'Volatility 10 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: '1HZ25V', display_name: 'Volatility 25 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: '1HZ50V', display_name: 'Volatility 50 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: '1HZ75V', display_name: 'Volatility 75 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: '1HZ100V', display_name: 'Volatility 100 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'BOOM300', display_name: 'Boom 300 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'BOOM500', display_name: 'Boom 500 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'BOOM1000', display_name: 'Boom 1000 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'CRASH300', display_name: 'Crash 300 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'CRASH500', display_name: 'Crash 500 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'CRASH1000', display_name: 'Crash 1000 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'JD10', display_name: 'Jump 10 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'JD25', display_name: 'Jump 25 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'JD50', display_name: 'Jump 50 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'JD75', display_name: 'Jump 75 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
+    { symbol: 'JD100', display_name: 'Jump 100 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
 ];
-
-export const MARKETS: { value: string; label: string }[] = [
-    { value: 'synthetic_index', label: 'Synthetic Indices' },
-    { value: 'forex', label: 'Forex' },
-    { value: 'indices', label: 'Stock Indices' },
-    { value: 'commodities', label: 'Commodities' },
-    { value: 'cryptocurrency', label: 'Cryptocurrencies' },
-];
-
-export const SYNTHETIC_SYMBOL_PRESETS: { value: string; label: string }[] = [
-    { value: 'R_10', label: 'Volatility 10 Index' },
-    { value: 'R_25', label: 'Volatility 25 Index' },
-    { value: 'R_50', label: 'Volatility 50 Index' },
-    { value: 'R_75', label: 'Volatility 75 Index' },
-    { value: 'R_100', label: 'Volatility 100 Index' },
-    { value: '1HZ10V', label: 'Volatility 10 (1s) Index' },
-    { value: '1HZ25V', label: 'Volatility 25 (1s) Index' },
-    { value: '1HZ50V', label: 'Volatility 50 (1s) Index' },
-    { value: '1HZ75V', label: 'Volatility 75 (1s) Index' },
-    { value: '1HZ100V', label: 'Volatility 100 (1s) Index' },
-];
-
-export const FALLBACK_SYNTHETIC_SYMBOLS: DerivActiveSymbol[] = [
-    'R_10', 'R_25', 'R_50', 'R_75', 'R_100',
-    '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V',
-    'BOOM1000', 'BOOM500', 'CRASH1000', 'CRASH500',
-    'JD10', 'JD25', 'JD50', 'JD75', 'JD100'
-].map(symbol => ({ symbol, display_name: symbol, market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 }));
 
 export type AutoTraderSettings = {
     mode: AutoTraderMode; appId: string; apiToken: string; stake: number; currency: string; duration: number; durationUnit: DurationUnit;
@@ -70,10 +59,10 @@ type OpenTrade = PaperTrade | LiveTrade;
 
 export const DEFAULT_AUTOTRADER_SETTINGS: AutoTraderSettings = {
     mode: 'paper', appId: '1089', apiToken: '', stake: 1.0, currency: 'USD', duration: 5, durationUnit: 't',
-    minConfidence: 0.58, maxVolatility: 45, maxConcurrentTrades: 3, dailyLossLimit: 50, takeProfit: 100,
+    minConfidence: 0.65, maxVolatility: 100, maxConcurrentTrades: 5, dailyLossLimit: 100, takeProfit: 200,
     martingaleEnabled: false, martingaleMultiplier: 2, maxMartingaleSteps: 3, maxStake: 50,
-    requireProfitProjection: true, minProjectedEdge: 0.015, symbolsOverride: '', maxSymbols: 0,
-    scanIntervalMs: 5000, scanBatchDelayMs: 250, cooldownMs: 15000,
+    requireProfitProjection: true, minProjectedEdge: 0.02, symbolsOverride: '', maxSymbols: 0,
+    scanIntervalMs: 3000, scanBatchDelayMs: 200, cooldownMs: 10000,
     enabledMarkets: ['synthetic_index'], tradeCategories: ['rise_fall']
 };
 
@@ -99,7 +88,7 @@ class AutoTraderEngine extends EventTarget {
     private logs: AutoTraderLog[] = [];
     private stats: AutoTraderStats = { wins: 0, losses: 0, net: 0, dailyNet: 0, open: 0, lossStreak: 0, sessionStart: Date.now(), day: new Date().toDateString(), scanCount: 0, tradesOpened: 0, lastScanAt: null, lastScanSummary: 'Not scanned yet.', signalsFound: 0, proposalsRequested: 0, proposalsRejectedByBroker: 0, skippedBelowEdge: 0, skippedContractUnavailable: 0 };
     private contractsCache = new Map<string, Map<ContractType, DerivContractSpec>>();
-    private activeSymbols: DerivActiveSymbol[] = [];
+    private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES;
     private openTrades = new Map<string, OpenTrade>();
     private cooldownUntil = new Map<string, number>();
     private paperUnsubscribes = new Map<string, () => void>();
@@ -116,7 +105,7 @@ class AutoTraderEngine extends EventTarget {
                 ...DEFAULT_AUTOTRADER_SETTINGS, 
                 ...saved, 
                 currency: saved.currency || 'USD',
-                enabledMarkets: Array.isArray(saved.enabledMarkets) && saved.enabledMarkets.length ? saved.enabledMarkets : DEFAULT_AUTOTRADER_SETTINGS.enabledMarkets, 
+                enabledMarkets: ['synthetic_index'], // Force synthetic only
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
                 apiToken: '' 
             };
@@ -134,14 +123,12 @@ class AutoTraderEngine extends EventTarget {
         this.stop(false);
         this.contractsCache.clear();
         if (this.api) this.api.close();
-        if (!this.settings.tradeCategories.length) this.settings.tradeCategories = ['rise_fall'];
-        if (!this.settings.enabledMarkets.length) this.settings.enabledMarkets = ['synthetic_index'];
 
         this.api = new DerivAPI(this.settings.appId || '1089');
-        this.api.addEventListener('close', () => { if (this.authorized) { this.authorized = false; this.log('warn', 'Connection dropped. Reconnecting — Live trading paused.'); this.emit(); } this.connected = false; this.emit(); });
+        this.api.addEventListener('close', () => { if (this.authorized) { this.authorized = false; this.log('warn', 'Connection dropped. Reconnecting...'); } this.connected = false; this.emit(); });
         this.api.addEventListener('reconnected', () => { this.connected = true; this.log('info', 'Reconnected to Deriv.'); this.emit(); });
-        this.api.addEventListener('reauthorized', () => { this.authorized = true; this.log('success', 'Re-authorized. Live trading resumed.'); this.emit(); });
-        this.api.addEventListener('reauthorize-failed', (event: any) => { this.authorized = false; this.settings.mode = 'paper'; this.log('error', `Re-authorization failed: ${event?.detail || 'unknown'}. Switched to paper.`); this.emit(); });
+        this.api.addEventListener('reauthorized', () => { this.authorized = true; this.log('success', 'Re-authorized.'); this.emit(); });
+        this.api.addEventListener('reauthorize-failed', (event: any) => { this.authorized = false; this.settings.mode = 'paper'; this.log('error', `Re-authorization failed: ${event?.detail || 'unknown'}`); this.emit(); });
 
         try {
             await this.api.connect();
@@ -158,76 +145,42 @@ class AutoTraderEngine extends EventTarget {
             try {
                 await this.api.authorize(this.settings.apiToken);
                 this.authorized = true;
-                this.log('success', `Authorized with Deriv (${this.settings.mode === 'live' ? 'Live' : 'Paper'} mode).`);
+                this.log('success', `Authorized (${this.settings.mode === 'live' ? 'Live' : 'Paper'} mode).`);
             } catch (error: any) {
                 this.authorized = false;
-                this.log('error', `Authorization failed: ${error.message}.`);
+                this.log('error', `Authorization failed: ${error.message}`);
                 if (this.settings.mode === 'live') {
                     this.settings.mode = 'paper';
-                    this.log('warn', 'Switched to paper mode due to authorization failure.');
+                    this.log('warn', 'Switched to paper mode.');
                 }
             }
-        } else {
-            this.authorized = false;
-            if (this.settings.mode === 'live') {
-                this.settings.mode = 'paper';
-                this.log('warn', 'Live mode requires an API token. Switched to paper.');
-            }
-        }
-
-        try {
-            const symbols = await this.api.activeSymbols();
-            this.activeSymbols = symbols.filter(symbol => this.settings.enabledMarkets.includes(symbol.market) && !symbol.is_trading_suspended && (symbol.exchange_is_open === undefined || symbol.exchange_is_open === 1));
-            this.log('info', `Loaded ${this.activeSymbols.length} tradable markets.`);
-
-            if (!this.activeSymbols.length) {
-                this.log('warn', 'API returned 0 active symbols. Using fallback synthetic list.');
-                this.activeSymbols = FALLBACK_SYNTHETIC_SYMBOLS;
-            }
-        } catch (error: any) {
-            this.log('error', `Could not load active symbols: ${error.message}. Using fallback.`);
-            this.activeSymbols = FALLBACK_SYNTHETIC_SYMBOLS;
         }
 
         this.running = true;
         this.saveSettings();
         this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
-        this.log('success', `AI bot started in ${this.settings.mode.toUpperCase()} mode.`);
+        this.log('success', `AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices.`);
         void this.scan();
         this.emit();
     }
 
     stop(emitLog = true) {
         if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
-        if (this.running && emitLog) this.log('warn', 'AI bot stopped. Open trades will continue to settle.');
+        if (this.running && emitLog) this.log('warn', 'AI bot stopped.');
         this.running = false;
         this.emit();
     }
 
     private resetDailyIfNeeded() {
         const today = new Date().toDateString();
-        if (this.stats.day !== today) { this.stats.day = today; this.stats.dailyNet = 0; this.log('info', 'Daily risk counters reset.'); }
+        if (this.stats.day !== today) { this.stats.day = today; this.stats.dailyNet = 0; this.log('info', 'Daily counters reset.'); }
     }
 
     private limitsHit(): boolean {
         this.resetDailyIfNeeded();
-        if (this.settings.dailyLossLimit > 0 && this.stats.dailyNet <= -this.settings.dailyLossLimit) { this.log('warn', 'Daily loss limit reached. Bot stopped.'); this.stop(false); return true; }
-        if (this.settings.takeProfit > 0 && this.stats.dailyNet >= this.settings.takeProfit) { this.log('success', 'Daily take profit reached. Bot stopped.'); this.stop(false); return true; }
+        if (this.settings.dailyLossLimit > 0 && this.stats.dailyNet <= -this.settings.dailyLossLimit) { this.log('warn', 'Daily loss limit reached.'); this.stop(false); return true; }
+        if (this.settings.takeProfit > 0 && this.stats.dailyNet >= this.settings.takeProfit) { this.log('success', 'Daily take profit reached.'); this.stop(false); return true; }
         return false;
-    }
-
-    private getSymbols(): DerivActiveSymbol[] {
-        const override = this.settings.symbolsOverride.split(',').map(item => item.trim().toUpperCase()).filter(Boolean);
-        let list = [...this.activeSymbols];
-        if (override.length) {
-            const known = list.filter(item => override.includes(item.symbol));
-            const knownCodes = new Set(known.map(item => item.symbol));
-            const unresolved = override.filter(code => !knownCodes.has(code));
-            const synthesized: DerivActiveSymbol[] = unresolved.map(code => ({ symbol: code, display_name: code, market: this.settings.enabledMarkets[0] ?? 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 }));
-            list = [...known, ...synthesized];
-        }
-        if (this.settings.maxSymbols > 0) list = list.slice(0, this.settings.maxSymbols);
-        return list;
     }
 
     private canTrade(symbol: string): boolean {
@@ -236,7 +189,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private calculateStake(): number {
-        const base = Number(this.settings.stake) || 0.35;
+        const base = Number(this.settings.stake) || 1.0;
         let stake = base;
         if (this.settings.martingaleEnabled) {
             const steps = Math.min(this.stats.lossStreak, Math.max(0, this.settings.maxMartingaleSteps));
@@ -249,18 +202,11 @@ class AutoTraderEngine extends EventTarget {
         if (!this.running || !this.api || this.scanning) return;
         this.scanning = true;
         this.emit();
-        const symbols = this.getSymbols();
-        if (!symbols.length) {
-            this.stats.scanCount += 1; this.stats.lastScanAt = Date.now();
-            this.stats.lastScanSummary = 'No tradable symbols available.';
-            this.log('warn', `Scan #${this.stats.scanCount}: 0 symbols available.`);
-            this.scanning = false; this.emit(); return;
-        }
 
         let scannedSymbols = 0, tradesThisCycle = 0;
 
         try {
-            for (const symbol of symbols) {
+            for (const symbol of SYNTHETIC_INDICES) {
                 if (!this.running) break;
                 let quotes: number[] = [];
                 let decimals = 2;
@@ -270,8 +216,6 @@ class AutoTraderEngine extends EventTarget {
                     decimals = symbol.pip ? pipToDecimals(symbol.pip) : inferDecimalsFromQuotes(quotes);
                     scannedSymbols += 1;
                 } catch (error: any) {
-                    this.log('warn', `Could not fetch ticks for ${symbol.symbol}: ${error.message}`);
-                    await sleep(this.settings.scanBatchDelayMs);
                     continue;
                 }
 
@@ -281,18 +225,18 @@ class AutoTraderEngine extends EventTarget {
                 if (candidates.length && this.canTrade(symbol.symbol)) {
                     candidates.sort((a, b) => b.confidence - a.confidence);
                     const best = candidates[0];
-                    this.log('info', `${symbol.display_name || symbol.symbol}: signal ${best.contractType} | conf ${(best.confidence * 100).toFixed(1)}%`);
+                    this.log('info', `${symbol.display_name}: ${best.contractType} @ ${(best.confidence * 100).toFixed(1)}% | ${best.reason}`);
                     try {
                         const opened = await this.executeTrade(symbol, quotes, decimals, best);
                         if (opened) tradesThisCycle += 1;
-                    } catch (error: any) { this.log('warn', `Trade execution failed for ${symbol.symbol}: ${error.message}`); }
+                    } catch (error: any) { this.log('warn', `Trade failed: ${error.message}`); }
                 }
                 await sleep(this.settings.scanBatchDelayMs);
             }
         } finally {
             this.stats.scanCount += 1; this.stats.lastScanAt = Date.now(); this.stats.tradesOpened += tradesThisCycle;
-            this.stats.lastScanSummary = `${scannedSymbols} symbol(s) checked, ${tradesThisCycle} trade(s) opened.`;
-            this.log('info', `Scan #${this.stats.scanCount} complete: ${this.stats.lastScanSummary}`);
+            this.stats.lastScanSummary = `${scannedSymbols} symbols scanned, ${tradesThisCycle} trades opened.`;
+            this.log('info', `Scan #${this.stats.scanCount}: ${this.stats.lastScanSummary}`);
             this.scanning = false; this.emit();
         }
     }
@@ -302,7 +246,6 @@ class AutoTraderEngine extends EventTarget {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
-        // Try without currency first, then with currency
         for (const currency of [undefined, this.settings.currency || 'USD']) {
             try {
                 const specs = await this.api.contractsFor(symbol, currency);
@@ -312,9 +255,7 @@ class AutoTraderEngine extends EventTarget {
                     this.contractsCache.set(symbol, map);
                     return map;
                 }
-            } catch (error: any) {
-                this.log('warn', `contracts_for failed for ${symbol} with currency ${currency || 'none'}: ${error.message}`);
-            }
+            } catch {}
         }
         return null;
     }
@@ -325,47 +266,33 @@ class AutoTraderEngine extends EventTarget {
         
         const stake = this.calculateStake();
         const entry = quotes[quotes.length - 1] ?? 0;
-        
-        if (!entry || entry === 0) {
-            this.log('warn', `${symbol.symbol}: Invalid entry price. Skipping.`);
-            return false;
-        }
+        if (!entry) return false;
 
-        // CRITICAL: Only trade if we have validated contract specs
         const specsMap = await this.getContractSpecs(symbol.symbol);
         if (!specsMap) {
             this.stats.skippedContractUnavailable += 1;
-            this.log('warn', `${symbol.symbol}: Could not fetch contract specs. Skipping trade.`);
             return false;
         }
         
         const spec = specsMap.get(analysis.contractType);
         if (!spec) { 
             this.stats.skippedContractUnavailable += 1; 
-            this.log('warn', `${symbol.symbol}: ${analysis.contractType} not available. Skipping.`); 
             return false; 
         }
 
-        // Use the EXACT minimum duration from the API
         const duration = spec.minDuration?.value || 5;
         const durationUnit = (spec.minDuration?.unit || 't') as DurationUnit;
 
         const payload: Record<string, unknown> = { 
-            amount: stake, 
-            basis: 'stake', 
-            contract_type: analysis.contractType, 
+            amount: stake, basis: 'stake', contract_type: analysis.contractType, 
             currency: this.settings.currency || 'USD',
-            duration: duration, 
-            duration_unit: durationUnit, 
-            symbol: symbol.symbol, 
-            product_type: 'basic' 
+            duration, duration_unit: durationUnit, symbol: symbol.symbol, product_type: 'basic' 
         };
         
         if (analysis.barrier !== null && analysis.barrier !== undefined) {
             payload.barrier = String(analysis.barrier);
         }
 
-        this.log('info', `Requesting proposal: ${JSON.stringify(payload)}`);
         this.stats.proposalsRequested += 1;
 
         try {
@@ -374,7 +301,6 @@ class AutoTraderEngine extends EventTarget {
             
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
                 this.stats.proposalsRejectedByBroker += 1;
-                this.log('warn', `${symbol.symbol}: No priceable proposal returned.`);
                 return false;
             }
 
@@ -385,7 +311,6 @@ class AutoTraderEngine extends EventTarget {
 
             if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
                 this.stats.skippedBelowEdge += 1;
-                this.log('warn', `Skipping: edge ${(projectedEdge * 100).toFixed(2)}% below minimum.`);
                 return false;
             }
 
@@ -405,7 +330,7 @@ class AutoTraderEngine extends EventTarget {
         try {
             const buyResponse = await this.api.buyProposal(proposal.id, proposal.ask_price);
             const contractId = buyResponse?.buy?.contract_id;
-            if (!contractId) { this.log('warn', `Live buy failed: no contract id.`); return false; }
+            if (!contractId) return false;
 
             const trade: LiveTrade = { id: String(contractId), symbol, category: analysis.category, contractType: analysis.contractType, barrier: analysis.barrier, direction: analysis.direction, stake, entry: Number(proposal.spot || entry), decimals, createdAt: Date.now(), mode: 'live', contractId: String(contractId) };
             this.openTrades.set(symbol, trade);
@@ -414,7 +339,7 @@ class AutoTraderEngine extends EventTarget {
             const unsubscribe = this.api.addProposalOpenContractListener(poc => { this.onLiveContractUpdate(symbol, poc); });
             this.liveUnsubscribes.set(trade.id, unsubscribe);
 
-            this.log('success', `LIVE ${analysis.contractType} opened on ${symbol} stake=${stake}`);
+            this.log('success', `LIVE ${analysis.contractType} opened | stake=${stake}`);
             this.emit();
             return true;
         } catch (error: any) {
@@ -431,7 +356,7 @@ class AutoTraderEngine extends EventTarget {
         else trade.expiresAt = Date.now() + (trade.durationUnit === 'm' ? Number(trade.duration) * 60000 : Number(trade.duration) * 1000);
         
         this.openTrades.set(symbol, trade);
-        this.log('success', `PAPER ${analysis.contractType} opened on ${symbol} stake=${stake}`);
+        this.log('success', `PAPER ${analysis.contractType} opened | stake=${stake}`);
         await this.monitorPaperTrade(trade);
         this.emit();
         return true;
@@ -478,7 +403,7 @@ class AutoTraderEngine extends EventTarget {
         if (win) { this.stats.wins += 1; this.stats.lossStreak = 0; } else { this.stats.losses += 1; this.stats.lossStreak += 1; }
         this.stats.net += profit; this.stats.dailyNet += profit;
         this.cooldownUntil.set(symbol, Date.now() + this.settings.cooldownMs);
-        this.log(win ? 'success' : 'warn', `${trade.mode.toUpperCase()} ${trade.contractType} ${win ? 'won' : 'lost'} on ${symbol} | P/L ${profit.toFixed(2)}`);
+        this.log(win ? 'success' : 'warn', `${trade.mode.toUpperCase()} ${trade.contractType} ${win ? 'WON' : 'LOST'} | P/L ${profit.toFixed(2)}`);
         this.limitsHit(); this.emit();
     }
 }
