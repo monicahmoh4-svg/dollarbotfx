@@ -12,6 +12,36 @@ import {
 export type AutoTraderMode = 'paper' | 'live';
 export type DurationUnit = 't' | 's' | 'm';
 
+// Re-added exports required by autotrader-panel.tsx UI
+export const TRADE_CATEGORIES: { value: TradeCategory; label: string }[] = [
+    { value: 'rise_fall', label: 'Rise / Fall' },
+    { value: 'even_odd', label: 'Digits: Even / Odd' },
+    { value: 'over_under', label: 'Digits: Over / Under' },
+    { value: 'matches_differs', label: 'Digits: Matches / Differs' },
+];
+
+export const MARKETS: { value: string; label: string }[] = [
+    { value: 'synthetic_index', label: 'Synthetic Indices' },
+    { value: 'forex', label: 'Forex' },
+    { value: 'indices', label: 'Stock Indices' },
+    { value: 'commodities', label: 'Commodities' },
+    { value: 'cryptocurrency', label: 'Cryptocurrencies' },
+];
+
+export const SYNTHETIC_SYMBOL_PRESETS: { value: string; label: string }[] = [
+    { value: 'R_10', label: 'Volatility 10 Index' },
+    { value: 'R_25', label: 'Volatility 25 Index' },
+    { value: 'R_50', label: 'Volatility 50 Index' },
+    { value: 'R_75', label: 'Volatility 75 Index' },
+    { value: 'R_100', label: 'Volatility 100 Index' },
+    { value: '1HZ10V', label: 'Volatility 10 (1s) Index' },
+    { value: '1HZ25V', label: 'Volatility 25 (1s) Index' },
+    { value: '1HZ50V', label: 'Volatility 50 (1s) Index' },
+    { value: '1HZ75V', label: 'Volatility 75 (1s) Index' },
+    { value: '1HZ100V', label: 'Volatility 100 (1s) Index' },
+];
+
+// Hardcoded synthetic indices for guaranteed, throttling-proof scanning
 export const SYNTHETIC_INDICES: DerivActiveSymbol[] = [
     { symbol: 'R_10', display_name: 'Volatility 10 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
     { symbol: 'R_25', display_name: 'Volatility 25 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
@@ -88,7 +118,7 @@ class AutoTraderEngine extends EventTarget {
     private logs: AutoTraderLog[] = [];
     private stats: AutoTraderStats = { wins: 0, losses: 0, net: 0, dailyNet: 0, open: 0, lossStreak: 0, sessionStart: Date.now(), day: new Date().toDateString(), scanCount: 0, tradesOpened: 0, lastScanAt: null, lastScanSummary: 'Not scanned yet.', signalsFound: 0, proposalsRequested: 0, proposalsRejectedByBroker: 0, skippedBelowEdge: 0, skippedContractUnavailable: 0 };
     private contractsCache = new Map<string, Map<ContractType, DerivContractSpec>>();
-    private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES;
+    private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES; // Force synthetic only
     private openTrades = new Map<string, OpenTrade>();
     private cooldownUntil = new Map<string, number>();
     private paperUnsubscribes = new Map<string, () => void>();
@@ -105,7 +135,7 @@ class AutoTraderEngine extends EventTarget {
                 ...DEFAULT_AUTOTRADER_SETTINGS, 
                 ...saved, 
                 currency: saved.currency || 'USD',
-                enabledMarkets: ['synthetic_index'], // Force synthetic only
+                enabledMarkets: ['synthetic_index'], // Force synthetic only regardless of UI selection
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
                 apiToken: '' 
             };
