@@ -7,115 +7,10 @@ import type { AutoTraderSettings } from '@/autotrader/engine';
 import { MARKETS, SYNTHETIC_SYMBOL_PRESETS, TRADE_CATEGORIES } from '@/autotrader/engine';
 import type { TradeCategory } from '@/autotrader/analysis';
 
-function getSessionToken(client: any): string {
-    if (!client) {
-        console.log('[TOKEN DEBUG] client is null/undefined');
-        return '';
-    }
-    
-    console.log('[TOKEN DEBUG] === START DEEP TOKEN EXTRACTION ===');
-    console.log('[TOKEN DEBUG] client.is_logged_in:', client.is_logged_in);
-    console.log('[TOKEN DEBUG] client.loginid:', client.loginid);
-    
-    // Helper to check if a string looks like a Deriv token
-    const looksLikeToken = (val: any) => typeof val === 'string' && val.length > 20 && /^[a-zA-Z0-9_-]+$/.test(val);
-
-    // 1. Direct method
-    if (typeof client.getToken === 'function') {
-        try {
-            const t = client.getToken();
-            if (looksLikeToken(t)) {
-                console.log('[TOKEN DEBUG] ✓ Found token via client.getToken()');
-                return t;
-            }
-        } catch (e) {}
-    }
-    
-    // 2. Direct property
-    if (looksLikeToken(client.token)) {
-        console.log('[TOKEN DEBUG] ✓ Found token at client.token');
-        return client.token;
-    }
-    
-    // 3. Deep search in client.accounts[loginid]
-    if (client.loginid && client.accounts && client.accounts[client.loginid]) {
-        const acc = client.accounts[client.loginid];
-        console.log('[TOKEN DEBUG] Checking client.accounts[loginid] keys:', Object.keys(acc));
-        for (const key in acc) {
-            if (looksLikeToken(acc[key])) {
-                console.log(`[TOKEN DEBUG] ✓ Found token at client.accounts[loginid].${key}`);
-                return acc[key];
-            }
-        }
-    }
-    
-    // 4. Deep search in client.account_list
-    if (client.account_list && Array.isArray(client.account_list)) {
-        console.log('[TOKEN DEBUG] Checking client.account_list (length:', client.account_list.length, ')');
-        const currentAccount = client.account_list.find((acc: any) => acc.loginid === client.loginid);
-        if (currentAccount) {
-            console.log('[TOKEN DEBUG] Found matching account in account_list. Keys:', Object.keys(currentAccount));
-            for (const key in currentAccount) {
-                if (looksLikeToken(currentAccount[key])) {
-                    console.log(`[TOKEN DEBUG] ✓ Found token at client.account_list[].${key}`);
-                    return currentAccount[key];
-                }
-            }
-        }
-    }
-    
-    // 5. Deep search in localStorage
-    try {
-        console.log('[TOKEN DEBUG] Deep searching localStorage...');
-        const keysToCheck = ['config', 'client.accounts', 'deriv_config', 'active_loginid', 'client'];
-        for (const key of keysToCheck) {
-            const item = localStorage.getItem(key);
-            if (item) {
-                try {
-                    const parsed = JSON.parse(item);
-                    
-                    // Recursive function to find any token-like string
-                    const findToken = (obj: any): string | null => {
-                        if (!obj) return null;
-                        if (looksLikeToken(obj)) return obj;
-                        if (typeof obj === 'object') {
-                            for (const k in obj) {
-                                if (k.toLowerCase().includes('token') && looksLikeToken(obj[k])) {
-                                    return obj[k];
-                                }
-                                const res = findToken(obj[k]);
-                                if (res) return res;
-                            }
-                        }
-                        return null;
-                    };
-                    
-                    const token = findToken(parsed);
-                    if (token) {
-                        console.log(`[TOKEN DEBUG] ✓ Found token in localStorage.${key}`);
-                        return token;
-                    }
-                } catch {}
-            }
-        }
-    } catch (e) {
-        console.warn('[TOKEN DEBUG] localStorage search failed:', e);
-    }
-    
-    console.log('[TOKEN DEBUG] ✗ END TOKEN EXTRACTION (FAILED)');
-    return '';
-}
-
 function getSessionCurrency(client: any): string {
     if (!client) return 'USD';
     if (client.currency) return client.currency;
-    if (client.loginid && client.accounts && client.accounts[client.loginid]?.currency) {
-        return client.accounts[client.loginid].currency;
-    }
-    if (client.account_list) {
-        const acc = client.account_list.find((a: any) => a.loginid === client.loginid);
-        if (acc?.currency) return acc.currency;
-    }
+    if (client.loginid && client.accounts && client.accounts[client.loginid]?.currency) return client.accounts[client.loginid].currency;
     return 'USD';
 }
 
@@ -196,28 +91,24 @@ function AutoTraderPanel() {
   const client = store?.client;
   
   const isLoggedIn = Boolean(client?.is_logged_in && client?.loginid);
-  const sessionToken = getSessionToken(client);
   const sessionCurrency = getSessionCurrency(client);
   const sessionLoginId = isLoggedIn ? client?.loginid : '';
   const isVirtualAccount = Boolean(client?.is_virtual);
+
+  // CRITICAL: Access the existing authorized WebSocket from the Deriv store
+  const existingWs = (client as any)?.ws;
 
   const [form, setForm] = useState<AutoTraderSettings>(state.settings);
   const [section, setSection] = useState<Section>('rules');
 
   useEffect(() => {
     if (open) {
-      console.log('[PANEL] Panel opened, updating form with session data');
-      console.log('[PANEL] isLoggedIn:', isLoggedIn);
-      console.log('[PANEL] sessionToken:', sessionToken ? '***' + sessionToken.slice(-10) : 'EMPTY');
-      console.log('[PANEL] sessionCurrency:', sessionCurrency);
-      
       setForm(previous => ({
         ...state.settings,
-        apiToken: sessionToken || previous.apiToken || '',
         currency: sessionCurrency || previous.currency || 'USD',
       }));
     }
-  }, [open, sessionToken, sessionCurrency]);
+  }, [open, sessionCurrency]);
 
   if (!open) return null;
 
@@ -250,19 +141,13 @@ function AutoTraderPanel() {
   };
 
   const handleStart = async () => {
-    console.log('[PANEL] handleStart called');
-    console.log('[PANEL] Current sessionToken:', sessionToken ? '***' + sessionToken.slice(-10) : 'EMPTY');
+    console.log('[PANEL] Starting bot. Existing WS ready:', existingWs?.readyState === WebSocket.OPEN);
     
-    const tokenToUse = sessionToken || form.apiToken;
-    const currencyToUse = sessionCurrency || form.currency;
-    
-    console.log('[PANEL] Final token to use:', tokenToUse ? '***' + tokenToUse.slice(-10) : 'EMPTY');
-    
-    if (!tokenToUse) {
-      console.error('[PANEL] ✗ No token available! Cannot start trading. Please paste a manual API token in Trading Rules.');
-    }
-    
-    await start({ ...form, apiToken: tokenToUse, currency: currencyToUse });
+    await start({ 
+        ...form, 
+        currency: sessionCurrency || form.currency,
+        existingWs: existingWs?.readyState === WebSocket.OPEN ? existingWs : undefined
+    });
     setSection('activity');
   };
 
@@ -311,17 +196,8 @@ function AutoTraderPanel() {
                   <label>Mode</label>
                   <select className='at-input' value={form.mode} onChange={e => set({ mode: e.target.value as AutoTraderSettings['mode'] })}>
                     <option value='paper'>Paper / Simulation</option>
-                    <option value='live' disabled={!isLoggedIn && !form.apiToken}>Live Trading{!isLoggedIn && !form.apiToken ? ' (log in first)' : ''}</option>
+                    <option value='live' disabled={!isLoggedIn}>Live Trading{!isLoggedIn ? ' (log in first)' : ''}</option>
                   </select>
-                </div>
-                <div className='at-field'>
-                  <label>Deriv API Token {isLoggedIn ? '(auto-filled from login)' : ''}</label>
-                  <input className='at-input' type='password' placeholder={isLoggedIn ? 'Using logged-in session' : 'Required for Live'} value={form.apiToken} onChange={e => set({ apiToken: e.target.value })} />
-                  {!sessionToken && (
-                    <div className='at-hint' style={{ color: '#fbbf24' }}>
-                      Auto-extraction failed. Please manually paste your API token from Deriv.com → Settings → API Token.
-                    </div>
-                  )}
                 </div>
                 <div className='at-field'>
                   <label>Currency</label>
