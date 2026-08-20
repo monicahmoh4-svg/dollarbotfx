@@ -74,7 +74,7 @@ export const DEFAULT_AUTOTRADER_SETTINGS: AutoTraderSettings = {
     martingaleEnabled: false, martingaleMultiplier: 2, maxMartingaleSteps: 3, maxStake: 50,
     requireProfitProjection: true, minProjectedEdge: 0.015, symbolsOverride: '', maxSymbols: 0,
     scanIntervalMs: 5000, scanBatchDelayMs: 250, cooldownMs: 15000,
-    enabledMarkets: ['synthetic_index'], tradeCategories: ['rise_fall', 'even_odd', 'over_under', 'matches_differs']
+    enabledMarkets: ['synthetic_index'], tradeCategories: ['rise_fall']
 };
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -89,45 +89,6 @@ function isDigitContractWin(contractType: ContractType, barrier: number | null, 
         case 'DIGITDIFF': return barrier !== null && digit !== barrier;
         default: return false;
     }
-}
-
-function resolveDuration(desiredValue: number, desiredUnit: DurationUnit, spec: DerivContractSpec): { value: number; unit: DurationUnit } {
-    const min = spec.minDuration;
-    if (!min) return { value: desiredValue, unit: desiredUnit };
-    
-    const max = spec.maxDuration && spec.maxDuration.unit === min.unit ? spec.maxDuration : min;
-    
-    if (min.unit === desiredUnit) {
-        const maxVal = max.value > min.value ? max.value : min.value;
-        const clampedValue = Math.min(Math.max(desiredValue, min.value), maxVal);
-        return { value: clampedValue, unit: desiredUnit };
-    }
-    
-    const maxVal = max.value > min.value ? max.value : min.value;
-    const safeValue = Math.min(Math.max(desiredValue, min.value), maxVal);
-    return { value: safeValue, unit: min.unit as DurationUnit };
-}
-
-function buildProposalPayload(
-    symbol: string, currency: string, stake: number, analysis: AnalysisResult, 
-    settings: AutoTraderSettings, spec: DerivContractSpec
-): { payload: Record<string, unknown>; duration: number; durationUnit: DurationUnit } {
-    const isDigit = analysis.category !== 'rise_fall';
-    const desiredValue = isDigit ? Math.min(10, Math.max(1, Math.round(settings.duration))) : settings.duration;
-    const desiredUnit: DurationUnit = isDigit ? 't' : settings.durationUnit;
-    
-    const resolved = resolveDuration(desiredValue, desiredUnit, spec);
-    
-    const payload: Record<string, unknown> = { 
-        amount: stake, basis: 'stake', contract_type: analysis.contractType, currency, 
-        duration: resolved.value, duration_unit: resolved.unit, symbol, product_type: 'basic' 
-    };
-    
-    if (analysis.barrier !== null && analysis.barrier !== undefined) {
-        payload.barrier = String(analysis.barrier);
-    }
-    
-    return { payload, duration: resolved.value, durationUnit: resolved.unit };
 }
 
 class AutoTraderEngine extends EventTarget {
@@ -181,7 +142,6 @@ class AutoTraderEngine extends EventTarget {
         this.api.addEventListener('reconnected', () => { this.connected = true; this.log('info', 'Reconnected to Deriv.'); this.emit(); });
         this.api.addEventListener('reauthorized', () => { this.authorized = true; this.log('success', 'Re-authorized. Live trading resumed.'); this.emit(); });
         this.api.addEventListener('reauthorize-failed', (event: any) => { this.authorized = false; this.settings.mode = 'paper'; this.log('error', `Re-authorization failed: ${event?.detail || 'unknown'}. Switched to paper.`); this.emit(); });
-        this.api.addEventListener('active-symbols-attempt', (event: any) => { const { label, count, error } = event?.detail ?? {}; if (error) this.log('warn', `active_symbols [${label}] failed: ${error}`); else this.log('info', `active_symbols [${label}]: ${count} symbol(s).`); });
 
         try {
             await this.api.connect();
@@ -215,27 +175,17 @@ class AutoTraderEngine extends EventTarget {
             }
         }
 
-        if (!this.settings.currency || this.settings.currency.trim() === '') {
-            this.settings.currency = 'USD';
-            this.log('info', 'Currency was empty, defaulting to USD.');
-        }
-
         try {
             const symbols = await this.api.activeSymbols();
-            const marketBreakdown = new Map<string, number>();
-            symbols.forEach(symbol => { marketBreakdown.set(symbol.market, (marketBreakdown.get(symbol.market) ?? 0) + 1); });
-            const breakdownText = Array.from(marketBreakdown.entries()).map(([market, count]) => `${market}:${count}`).join(', ') || '(none)';
-            this.log('info', `Deriv returned ${symbols.length} total symbol(s) across markets: ${breakdownText}.`);
-
             this.activeSymbols = symbols.filter(symbol => this.settings.enabledMarkets.includes(symbol.market) && !symbol.is_trading_suspended && (symbol.exchange_is_open === undefined || symbol.exchange_is_open === 1));
             this.log('info', `Loaded ${this.activeSymbols.length} tradable markets.`);
 
             if (!this.activeSymbols.length) {
-                this.log('warn', 'API returned 0 active symbols (likely App ID throttling). Injecting comprehensive synthetic fallback to ensure continuous scanning...');
+                this.log('warn', 'API returned 0 active symbols. Using fallback synthetic list.');
                 this.activeSymbols = FALLBACK_SYNTHETIC_SYMBOLS;
             }
         } catch (error: any) {
-            this.log('error', `Could not load active symbols: ${error.message}. Falling back to synthetic list.`);
+            this.log('error', `Could not load active symbols: ${error.message}. Using fallback.`);
             this.activeSymbols = FALLBACK_SYNTHETIC_SYMBOLS;
         }
 
@@ -274,7 +224,6 @@ class AutoTraderEngine extends EventTarget {
             const knownCodes = new Set(known.map(item => item.symbol));
             const unresolved = override.filter(code => !knownCodes.has(code));
             const synthesized: DerivActiveSymbol[] = unresolved.map(code => ({ symbol: code, display_name: code, market: this.settings.enabledMarkets[0] ?? 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 }));
-            if (synthesized.length) this.log('warn', `${synthesized.length} Symbol Override entr${synthesized.length === 1 ? 'y' : 'ies'} (${unresolved.join(', ')}) weren't in active_symbols — trying directly.`);
             list = [...known, ...synthesized];
         }
         if (this.settings.maxSymbols > 0) list = list.slice(0, this.settings.maxSymbols);
@@ -296,17 +245,6 @@ class AutoTraderEngine extends EventTarget {
         return Number((this.settings.maxStake > 0 ? Math.min(stake, this.settings.maxStake) : stake).toFixed(2));
     }
 
-    private async reloadActiveSymbols() {
-        if (!this.api) return;
-        try {
-            const symbols = await this.api.activeSymbols();
-            this.activeSymbols = symbols.filter(symbol => this.settings.enabledMarkets.includes(symbol.market) && !symbol.is_trading_suspended && (symbol.exchange_is_open === undefined || symbol.exchange_is_open === 1));
-            if (this.activeSymbols.length) this.log('success', `Retry succeeded — loaded ${this.activeSymbols.length} tradable market(s).`);
-            else this.log('error', 'Retry also returned 0 symbols. Check network or register your own App ID.');
-            this.emit();
-        } catch (error: any) { this.log('error', `Retry failed: ${error.message}`); }
-    }
-
     private async scan() {
         if (!this.running || !this.api || this.scanning) return;
         this.scanning = true;
@@ -314,13 +252,12 @@ class AutoTraderEngine extends EventTarget {
         const symbols = this.getSymbols();
         if (!symbols.length) {
             this.stats.scanCount += 1; this.stats.lastScanAt = Date.now();
-            this.stats.lastScanSummary = 'No tradable symbols matched your Markets selection / Symbol Override / trading hours.';
+            this.stats.lastScanSummary = 'No tradable symbols available.';
             this.log('warn', `Scan #${this.stats.scanCount}: 0 symbols available.`);
             this.scanning = false; this.emit(); return;
         }
 
         let scannedSymbols = 0, tradesThisCycle = 0;
-        let topSeen: { symbol: string; contractType: ContractType; barrier: number | null; confidence: number } | null = null;
 
         try {
             for (const symbol of symbols) {
@@ -339,18 +276,12 @@ class AutoTraderEngine extends EventTarget {
                 }
 
                 const results = this.settings.tradeCategories.map(category => analyzeMarket(category, quotes, decimals));
-                results.forEach(result => {
-                    if (result.contractType && (!topSeen || result.confidence > topSeen.confidence)) {
-                        topSeen = { symbol: symbol.display_name || symbol.symbol, contractType: result.contractType, barrier: result.barrier, confidence: result.confidence };
-                    }
-                });
-
-                const candidates = results.filter(result => result.contractType && result.confidence >= this.settings.minConfidence).filter(result => result.category !== 'rise_fall' || this.settings.maxVolatility <= 0 || result.volatility <= this.settings.maxVolatility);
+                const candidates = results.filter(result => result.contractType && result.confidence >= this.settings.minConfidence);
 
                 if (candidates.length && this.canTrade(symbol.symbol)) {
                     candidates.sort((a, b) => b.confidence - a.confidence);
                     const best = candidates[0];
-                    this.log('info', `${symbol.display_name || symbol.symbol}: signal ${best.contractType}${best.barrier !== null ? `(${best.barrier})` : ''} | conf ${(best.confidence * 100).toFixed(1)}% | ${best.reason}`);
+                    this.log('info', `${symbol.display_name || symbol.symbol}: signal ${best.contractType} | conf ${(best.confidence * 100).toFixed(1)}%`);
                     try {
                         const opened = await this.executeTrade(symbol, quotes, decimals, best);
                         if (opened) tradesThisCycle += 1;
@@ -360,9 +291,7 @@ class AutoTraderEngine extends EventTarget {
             }
         } finally {
             this.stats.scanCount += 1; this.stats.lastScanAt = Date.now(); this.stats.tradesOpened += tradesThisCycle;
-            const seen = topSeen as { symbol: string; contractType: ContractType; barrier: number | null; confidence: number } | null;
-            const summary = seen ? `strongest signal ${seen.symbol} ${seen.contractType}${seen.barrier !== null ? `(${seen.barrier})` : ''} @ ${(seen.confidence * 100).toFixed(1)}%` : 'no directional signal found';
-            this.stats.lastScanSummary = `${scannedSymbols} symbol(s) checked, ${tradesThisCycle} trade(s) opened — ${summary}.`;
+            this.stats.lastScanSummary = `${scannedSymbols} symbol(s) checked, ${tradesThisCycle} trade(s) opened.`;
             this.log('info', `Scan #${this.stats.scanCount} complete: ${this.stats.lastScanSummary}`);
             this.scanning = false; this.emit();
         }
@@ -372,16 +301,22 @@ class AutoTraderEngine extends EventTarget {
         if (!this.api) return null;
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
-        try {
-            const specs = await this.api.contractsFor(symbol, this.settings.currency || 'USD');
-            const map = new Map<ContractType, DerivContractSpec>();
-            specs.forEach(spec => { map.set(spec.contractType as ContractType, spec); });
-            this.contractsCache.set(symbol, map);
-            return map;
-        } catch (error: any) {
-            this.log('warn', `Could not load contract list for ${symbol}: ${error.message}.`);
-            return null;
+        
+        // Try without currency first, then with currency
+        for (const currency of [undefined, this.settings.currency || 'USD']) {
+            try {
+                const specs = await this.api.contractsFor(symbol, currency);
+                if (specs.length > 0) {
+                    const map = new Map<ContractType, DerivContractSpec>();
+                    specs.forEach(spec => { map.set(spec.contractType as ContractType, spec); });
+                    this.contractsCache.set(symbol, map);
+                    return map;
+                }
+            } catch (error: any) {
+                this.log('warn', `contracts_for failed for ${symbol} with currency ${currency || 'none'}: ${error.message}`);
+            }
         }
+        return null;
     }
 
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
@@ -392,38 +327,45 @@ class AutoTraderEngine extends EventTarget {
         const entry = quotes[quotes.length - 1] ?? 0;
         
         if (!entry || entry === 0) {
-            this.log('warn', `${symbol.symbol}: Invalid entry price (${entry}). Skipping trade.`);
+            this.log('warn', `${symbol.symbol}: Invalid entry price. Skipping.`);
             return false;
         }
 
-        let spec: DerivContractSpec | undefined;
-        try {
-            const specsMap = await this.getContractSpecs(symbol.symbol);
-            spec = specsMap?.get(analysis.contractType);
-        } catch (error: any) {
-            this.log('warn', `${symbol.symbol}: Could not fetch contract specs (${error.message}). Attempting with safe defaults.`);
+        // CRITICAL: Only trade if we have validated contract specs
+        const specsMap = await this.getContractSpecs(symbol.symbol);
+        if (!specsMap) {
+            this.stats.skippedContractUnavailable += 1;
+            this.log('warn', `${symbol.symbol}: Could not fetch contract specs. Skipping trade.`);
+            return false;
         }
-
-        // FIXED FALLBACK: Universally use Ticks ('t') for 1-10 duration. 
-        // This prevents the resolver from incorrectly forcing Seconds ('s') which causes "temporarily unavailable" rejections.
-        if (!spec) {
-            this.log('info', `${symbol.symbol}: ${analysis.contractType} specs not explicitly found. Using safe fallback duration (1-10 ticks).`);
-            spec = {
-                contractType: analysis.contractType,
-                minDuration: { value: 1, unit: 't' },
-                maxDuration: { value: 10, unit: 't' }
-            };
-        }
-
-        const { payload, duration, durationUnit } = buildProposalPayload(
-            symbol.symbol, 
-            this.settings.currency || 'USD', 
-            stake, 
-            analysis, 
-            this.settings, 
-            spec
-        );
         
+        const spec = specsMap.get(analysis.contractType);
+        if (!spec) { 
+            this.stats.skippedContractUnavailable += 1; 
+            this.log('warn', `${symbol.symbol}: ${analysis.contractType} not available. Skipping.`); 
+            return false; 
+        }
+
+        // Use the EXACT minimum duration from the API
+        const duration = spec.minDuration?.value || 5;
+        const durationUnit = (spec.minDuration?.unit || 't') as DurationUnit;
+
+        const payload: Record<string, unknown> = { 
+            amount: stake, 
+            basis: 'stake', 
+            contract_type: analysis.contractType, 
+            currency: this.settings.currency || 'USD',
+            duration: duration, 
+            duration_unit: durationUnit, 
+            symbol: symbol.symbol, 
+            product_type: 'basic' 
+        };
+        
+        if (analysis.barrier !== null && analysis.barrier !== undefined) {
+            payload.barrier = String(analysis.barrier);
+        }
+
+        this.log('info', `Requesting proposal: ${JSON.stringify(payload)}`);
         this.stats.proposalsRequested += 1;
 
         try {
@@ -432,7 +374,7 @@ class AutoTraderEngine extends EventTarget {
             
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
                 this.stats.proposalsRejectedByBroker += 1;
-                this.log('warn', `${symbol.symbol} ${analysis.contractType}: broker returned no priceable proposal. Skipping.`);
+                this.log('warn', `${symbol.symbol}: No priceable proposal returned.`);
                 return false;
             }
 
@@ -443,7 +385,7 @@ class AutoTraderEngine extends EventTarget {
 
             if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
                 this.stats.skippedBelowEdge += 1;
-                this.log('warn', `Skipping ${symbol.symbol}: projected edge ${(projectedEdge * 100).toFixed(2)}% is below minimum (${(this.settings.minProjectedEdge * 100).toFixed(2)}%).`);
+                this.log('warn', `Skipping: edge ${(projectedEdge * 100).toFixed(2)}% below minimum.`);
                 return false;
             }
 
@@ -453,8 +395,7 @@ class AutoTraderEngine extends EventTarget {
             return await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payout / askPrice, duration, durationUnit);
         } catch (error: any) {
             this.stats.proposalsRejectedByBroker += 1;
-            const errorMsg = error.message || 'Unknown error';
-            this.log('error', `Proposal REJECTED for ${symbol.symbol} ${analysis.contractType}: ${errorMsg}. Duration: ${duration}${durationUnit}, Stake: ${stake}`);
+            this.log('error', `REJECTED: ${error.message}`);
             return false;
         }
     }
@@ -464,7 +405,7 @@ class AutoTraderEngine extends EventTarget {
         try {
             const buyResponse = await this.api.buyProposal(proposal.id, proposal.ask_price);
             const contractId = buyResponse?.buy?.contract_id;
-            if (!contractId) { this.stats.proposalsRejectedByBroker += 1; this.log('warn', `Live buy failed for ${symbol}: no contract id.`); return false; }
+            if (!contractId) { this.log('warn', `Live buy failed: no contract id.`); return false; }
 
             const trade: LiveTrade = { id: String(contractId), symbol, category: analysis.category, contractType: analysis.contractType, barrier: analysis.barrier, direction: analysis.direction, stake, entry: Number(proposal.spot || entry), decimals, createdAt: Date.now(), mode: 'live', contractId: String(contractId) };
             this.openTrades.set(symbol, trade);
@@ -473,12 +414,11 @@ class AutoTraderEngine extends EventTarget {
             const unsubscribe = this.api.addProposalOpenContractListener(poc => { this.onLiveContractUpdate(symbol, poc); });
             this.liveUnsubscribes.set(trade.id, unsubscribe);
 
-            this.log('success', `LIVE ${analysis.contractType}${analysis.barrier !== null ? `(${analysis.barrier})` : ''} opened on ${symbol} stake=${stake} contract=${contractId}`);
+            this.log('success', `LIVE ${analysis.contractType} opened on ${symbol} stake=${stake}`);
             this.emit();
             return true;
         } catch (error: any) {
-            this.stats.proposalsRejectedByBroker += 1;
-            this.log('error', `Live trade failed on ${symbol}: ${error.message}`);
+            this.log('error', `Live trade failed: ${error.message}`);
             return false;
         }
     }
@@ -491,7 +431,7 @@ class AutoTraderEngine extends EventTarget {
         else trade.expiresAt = Date.now() + (trade.durationUnit === 'm' ? Number(trade.duration) * 60000 : Number(trade.duration) * 1000);
         
         this.openTrades.set(symbol, trade);
-        this.log('info', `PAPER ${analysis.contractType}${analysis.barrier !== null ? `(${analysis.barrier})` : ''} opened on ${symbol} stake=${stake} entry=${entry}`);
+        this.log('success', `PAPER ${analysis.contractType} opened on ${symbol} stake=${stake}`);
         await this.monitorPaperTrade(trade);
         this.emit();
         return true;
@@ -537,9 +477,8 @@ class AutoTraderEngine extends EventTarget {
         if (unsubscribe) { unsubscribe(); (trade.mode === 'live' ? this.liveUnsubscribes : this.paperUnsubscribes).delete(trade.id); }
         if (win) { this.stats.wins += 1; this.stats.lossStreak = 0; } else { this.stats.losses += 1; this.stats.lossStreak += 1; }
         this.stats.net += profit; this.stats.dailyNet += profit;
-        if (this.settings.martingaleEnabled && !win && this.stats.lossStreak > this.settings.maxMartingaleSteps) { this.log('warn', 'Martingale max steps reached. Resetting.'); this.stats.lossStreak = 0; }
         this.cooldownUntil.set(symbol, Date.now() + this.settings.cooldownMs);
-        this.log(win ? 'success' : 'warn', `${trade.mode.toUpperCase()} ${trade.contractType}${trade.barrier !== null ? `(${trade.barrier})` : ''} ${win ? 'won' : 'lost'} on ${symbol} | P/L ${profit.toFixed(2)} | ${reason}`);
+        this.log(win ? 'success' : 'warn', `${trade.mode.toUpperCase()} ${trade.contractType} ${win ? 'won' : 'lost'} on ${symbol} | P/L ${profit.toFixed(2)}`);
         this.limitsHit(); this.emit();
     }
 }
