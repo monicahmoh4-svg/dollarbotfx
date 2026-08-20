@@ -52,6 +52,7 @@ const styles = `
 .at-preset-chip { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 6px 11px; font-size: 11px; font-weight: 700; color: #a5b4fc; background: rgba(99,102,241,.08); cursor: pointer; }
 .at-preset-chip:hover { background: rgba(99,102,241,.16); }
 .at-hint { font-size: 11px; color: #6b7280; margin-top: 6px; line-height: 1.5; }
+.at-hint-warning { font-size: 11px; color: #fbbf24; margin-top: 6px; line-height: 1.5; font-weight: 700; }
 .at-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 20px; border-top: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.02); }
 .at-button { border: none; border-radius: 12px; padding: 12px 20px; font-weight: 900; cursor: pointer; font-size: 13.5px; transition: transform .15s ease, opacity .15s ease; }
 .at-button:hover { transform: translateY(-1px); opacity: .95; }
@@ -95,9 +96,6 @@ function AutoTraderPanel() {
   const sessionLoginId = isLoggedIn ? client?.loginid : '';
   const isVirtualAccount = Boolean(client?.is_virtual);
 
-  // CRITICAL: Access the existing authorized WebSocket from the Deriv store
-  const existingWs = (client as any)?.ws;
-
   const [form, setForm] = useState<AutoTraderSettings>(state.settings);
   const [section, setSection] = useState<Section>('rules');
 
@@ -132,21 +130,17 @@ function AutoTraderPanel() {
     });
   };
 
-  const addSymbolPreset = (symbol: string) => {
-    setForm(previous => {
-      const existing = previous.symbolsOverride.split(',').map(item => item.trim()).filter(Boolean);
-      if (existing.includes(symbol)) return previous;
-      return { ...previous, symbolsOverride: [...existing, symbol].join(',') };
-    });
-  };
-
   const handleStart = async () => {
-    console.log('[PANEL] Starting bot. Existing WS ready:', existingWs?.readyState === WebSocket.OPEN);
+    console.log('[PANEL] Starting bot with manual token');
+    
+    if (!form.apiToken || form.apiToken.trim() === '') {
+      alert('⚠️ API Token Required\n\nPlease paste your Deriv API token in the "Deriv API Token" field.\n\nGet your token at:\nhttps://app.deriv.com/account/api-token');
+      return;
+    }
     
     await start({ 
         ...form, 
         currency: sessionCurrency || form.currency,
-        existingWs: existingWs?.readyState === WebSocket.OPEN ? existingWs : undefined
     });
     setSection('activity');
   };
@@ -168,14 +162,14 @@ function AutoTraderPanel() {
           <button className='at-close' onClick={hide}>Close</button>
         </div>
         <div className='at-banner'>
-          No trading system can guarantee profit. Real trading risks real money.
+          ⚠️ <b>IMPORTANT:</b> You must provide your Deriv API token below to enable trading. Get it at: <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noreferrer" style={{ color: '#fcd34d', textDecoration: 'underline' }}>app.deriv.com/account/api-token</a>
         </div>
         <div className={`at-session ${isLoggedIn ? 'at-session-ok' : 'at-session-warn'}`}>
           <div>
             {isLoggedIn ? (
               <>Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b>{sessionCurrency ? ` (${sessionCurrency})` : ''}.</>
             ) : (
-              <>Not logged into a Deriv account. Live mode needs you to log in first.</>
+              <>Not logged into a Deriv account.</>
             )}
           </div>
           <span className='at-session-badge'>{isLoggedIn ? (isVirtualAccount ? 'DEMO ACCOUNT' : 'REAL ACCOUNT') : 'NOT LOGGED IN'}</span>
@@ -190,6 +184,22 @@ function AutoTraderPanel() {
         <div className='at-body'>
           {section === 'rules' && (
             <>
+              <div className='at-section-title'>⚠️ API Token (REQUIRED)</div>
+              <div className='at-field'>
+                <label>Deriv API Token</label>
+                <input 
+                  className='at-input' 
+                  type='text' 
+                  placeholder='Paste your API token here (from app.deriv.com/account/api-token)' 
+                  value={form.apiToken} 
+                  onChange={e => set({ apiToken: e.target.value })} 
+                />
+                <div className='at-hint-warning'>
+                  🔑 Get your token: <a href="https://app.deriv.com/account/api-token" target="_blank" rel="noreferrer" style={{ color: '#fbbf24', textDecoration: 'underline' }}>app.deriv.com/account/api-token</a><br/>
+                  Required scopes: Read, Trade
+                </div>
+              </div>
+              
               <div className='at-section-title'>Mode &amp; Connection</div>
               <div className='at-grid'>
                 <div className='at-field'>
@@ -204,6 +214,7 @@ function AutoTraderPanel() {
                   <input className='at-input' value={form.currency} onChange={e => set({ currency: e.target.value })} />
                 </div>
               </div>
+              
               <div className='at-section-title'>Stake &amp; Profit/Loss Rules</div>
               <div className='at-grid'>
                 <div className='at-field'><label>Base Stake</label><input className='at-input' type='number' step='0.01' value={form.stake} onChange={e => set({ stake: toNumber(e.target.value, form.stake) })} /></div>
