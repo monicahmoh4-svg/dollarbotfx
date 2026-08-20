@@ -106,8 +106,8 @@ function parseDuration(raw: unknown): { value: number; unit: string } | null {
 
 class AutoTraderEngine extends EventTarget {
     private client: any = null;
-    private apiInstance: any = null;  // The REAL API instance from App Builder
-    private fallbackApi: DerivAPI | null = null;  // Our own API as fallback
+    private apiInstance: any = null;
+    private fallbackApi: DerivAPI | null = null;
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
@@ -173,8 +173,6 @@ class AutoTraderEngine extends EventTarget {
         console.log('[ENGINE] === START CALLED ===');
         console.log('[ENGINE] Has client:', !!patch.client);
         console.log('[ENGINE] Has apiInstance:', !!patch.apiInstance);
-        console.log('[ENGINE] apiInstance.send type:', typeof patch.apiInstance?.send);
-        console.log('[ENGINE] apiInstance keys:', patch.apiInstance ? Object.keys(patch.apiInstance) : []);
         
         try {
             this.updateSettings(patch);
@@ -188,19 +186,16 @@ class AutoTraderEngine extends EventTarget {
                 this.connected = true;
                 this.authorized = true;
                 
-                // Test the API instance
                 if (this.apiInstance && typeof this.apiInstance.send === 'function') {
                     try {
                         this.log('info', 'Testing App Builder API...');
-                        const pingResponse = await Promise.race([
+                        await Promise.race([
                             this.apiInstance.send({ ping: 1 }),
                             new Promise((_, reject) => setTimeout(() => reject(new Error('API timeout')), 10000))
                         ]);
-                        console.log('[ENGINE] Ping response:', pingResponse);
                         this.log('success', '✓ App Builder API is working');
                     } catch (e: any) {
                         this.log('warn', `App Builder API test failed: ${e.message}. Setting up fallback...`);
-                        // Set up our own API as fallback
                         await this.setupFallbackApi();
                     }
                 } else {
@@ -237,45 +232,48 @@ class AutoTraderEngine extends EventTarget {
             this.log('info', 'Setting up fallback API...');
             this.fallbackApi = new DerivAPI(this.settings.appId || '1089');
             await this.fallbackApi.connect();
-            this.log('success', '✓ Fallback API connected (unauthenticated - for market data only)');
+            this.log('success', '✓ Fallback API connected');
         } catch (e: any) {
             this.log('error', `Fallback API failed: ${e.message}`);
         }
     }
 
-    // CRITICAL: Robust send method that tries all available APIs
     private async sendRequest<T = any>(payload: Record<string, unknown>): Promise<T> {
-        // Method 1: Use App Builder's API instance (authenticated)
+        console.log('[ENGINE] sendRequest payload:', JSON.stringify(payload));
+        
         if (this.apiInstance && typeof this.apiInstance.send === 'function') {
             try {
                 console.log('[ENGINE] Trying apiInstance.send()...');
                 const response = await Promise.race([
                     this.apiInstance.send(payload),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance timeout')), 15000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance timeout (15s)')), 15000))
                 ]);
                 console.log('[ENGINE] apiInstance response received');
                 return response as T;
             } catch (e: any) {
-                console.warn('[ENGINE] apiInstance.send() failed:', e.message);
+                console.error('[ENGINE] apiInstance.send() FAILED:', e.message);
             }
         }
 
-        // Method 2: Try apiInstance.api.send() (nested API)
         if (this.apiInstance?.api && typeof this.apiInstance.api.send === 'function') {
             try {
                 console.log('[ENGINE] Trying apiInstance.api.send()...');
                 const response = await Promise.race([
                     this.apiInstance.api.send(payload),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance.api timeout')), 15000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance.api timeout (15s)')), 15000))
                 ]);
                 console.log('[ENGINE] apiInstance.api response received');
                 return response as T;
             } catch (e: any) {
-                console.warn('[ENGINE] apiInstance.api.send() failed:', e.message);
+                console.error('[ENGINE] apiInstance.api.send() FAILED:', e.message);
             }
         }
 
-        // Method 3: Use our fallback API (unauthenticated - works for market data)
+        if (!this.fallbackApi) {
+            console.log('[ENGINE] Fallback API is null. Setting it up now...');
+            await this.setupFallbackApi();
+        }
+
         if (this.fallbackApi) {
             try {
                 console.log('[ENGINE] Trying fallback API...');
@@ -283,11 +281,11 @@ class AutoTraderEngine extends EventTarget {
                 console.log('[ENGINE] Fallback API response received');
                 return response as T;
             } catch (e: any) {
-                console.warn('[ENGINE] Fallback API failed:', e.message);
+                console.error('[ENGINE] Fallback API FAILED:', e.message);
             }
         }
 
-        throw new Error('All API methods failed');
+        throw new Error(`All API methods failed for payload: ${JSON.stringify(payload)}`);
     }
 
     stop(emitLog = true) {
@@ -408,33 +406,44 @@ class AutoTraderEngine extends EventTarget {
         }
     }
 
+    // CRITICAL FIX: Try multiple currencies to bypass Deriv's strict currency validation
     private async getContractSpecs(symbol: string): Promise<Map<ContractType, DerivContractSpec> | null> {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
-        try {
-            const response = await this.sendRequest({ 
-                contracts_for: symbol, 
-                currency: this.settings.currency, 
-                product_type: 'basic' 
-            });
-            const available = response?.contracts_for?.available ?? [];
-            
-            if (available.length > 0) {
-                const map = new Map<ContractType, DerivContractSpec>();
-                available.forEach((item: any) => {
-                    map.set(item.contract_type, {
-                        contractType: item.contract_type,
-                        minDuration: parseDuration(item.min_contract_duration),
-                        maxDuration: parseDuration(item.max_contract_duration),
+        const currenciesToTry = [this.settings.currency, 'USD', 'USDC', 'eUSDC', 'EUR', undefined].filter((v, i, a) => v && a.indexOf(v) === i);
+        
+        for (const curr of currenciesToTry) {
+            try {
+                const payload: Record<string, unknown> = { 
+                    contracts_for: symbol, 
+                    product_type: 'basic' 
+                };
+                if (curr) payload.currency = curr;
+                
+                console.log(`[ENGINE] Trying contracts_for with currency: ${curr || 'NONE'}`);
+                const response = await this.sendRequest(payload);
+                const available = response?.contracts_for?.available ?? [];
+                
+                if (available.length > 0) {
+                    console.log(`[ENGINE] ✓ Got ${available.length} contracts for ${symbol} with currency ${curr || 'NONE'}`);
+                    const map = new Map<ContractType, DerivContractSpec>();
+                    available.forEach((item: any) => {
+                        map.set(item.contract_type, {
+                            contractType: item.contract_type,
+                            minDuration: parseDuration(item.min_contract_duration),
+                            maxDuration: parseDuration(item.max_contract_duration),
+                        });
                     });
-                });
-                this.contractsCache.set(symbol, map);
-                return map;
+                    this.contractsCache.set(symbol, map);
+                    return map;
+                }
+            } catch (e: any) {
+                console.warn(`[ENGINE] contracts_for failed with currency ${curr || 'NONE'}:`, e.message);
             }
-        } catch (e: any) {
-            this.log('warn', `Could not fetch specs for ${symbol}: ${e.message}`);
         }
+        
+        this.log('warn', `Could not fetch specs for ${symbol} with any currency`);
         return null;
     }
 
