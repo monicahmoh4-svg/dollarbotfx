@@ -40,28 +40,13 @@ export const SYNTHETIC_SYMBOL_PRESETS: { value: string; label: string }[] = [
     { value: '1HZ100V', label: 'Volatility 100 (1s) Index' },
 ];
 
+// Only use the most universally accessible synthetic indices
 export const SYNTHETIC_INDICES: DerivActiveSymbol[] = [
     { symbol: 'R_10', display_name: 'Volatility 10 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
     { symbol: 'R_25', display_name: 'Volatility 25 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
     { symbol: 'R_50', display_name: 'Volatility 50 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
     { symbol: 'R_75', display_name: 'Volatility 75 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
     { symbol: 'R_100', display_name: 'Volatility 100 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: '1HZ10V', display_name: 'Volatility 10 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: '1HZ25V', display_name: 'Volatility 25 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: '1HZ50V', display_name: 'Volatility 50 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: '1HZ75V', display_name: 'Volatility 75 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: '1HZ100V', display_name: 'Volatility 100 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'BOOM300', display_name: 'Boom 300 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'BOOM500', display_name: 'Boom 500 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'BOOM1000', display_name: 'Boom 1000 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'CRASH300', display_name: 'Crash 300 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'CRASH500', display_name: 'Crash 500 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'CRASH1000', display_name: 'Crash 1000 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'JD10', display_name: 'Jump 10 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'JD25', display_name: 'Jump 25 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'JD50', display_name: 'Jump 50 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'JD75', display_name: 'Jump 75 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
-    { symbol: 'JD100', display_name: 'Jump 100 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
 ];
 
 export type AutoTraderSettings = {
@@ -147,56 +132,47 @@ class AutoTraderEngine extends EventTarget {
     updateSettings(patch: Partial<AutoTraderSettings>) { this.settings = { ...this.settings, ...patch }; this.saveSettings(); this.emit(); }
 
     async start(patch: Partial<AutoTraderSettings> = {}) {
-        this.updateSettings(patch);
-        this.stop(false);
-        this.contractsCache.clear();
-        if (this.api) this.api.close();
-
-        this.api = new DerivAPI(this.settings.appId || '1089');
-        this.api.addEventListener('close', () => { if (this.authorized) { this.authorized = false; this.log('warn', 'Connection dropped. Reconnecting...'); } this.connected = false; this.emit(); });
-        this.api.addEventListener('reconnected', () => { this.connected = true; this.log('info', 'Reconnected to Deriv.'); this.emit(); });
-        this.api.addEventListener('reauthorized', () => { this.authorized = true; this.log('success', 'Re-authorized.'); this.emit(); });
-        this.api.addEventListener('reauthorize-failed', (event: any) => { this.authorized = false; this.settings.mode = 'paper'; this.log('error', `Re-authorization failed: ${event?.detail || 'unknown'}`); this.emit(); });
-
         try {
+            this.updateSettings(patch);
+            this.stop(false);
+            this.contractsCache.clear();
+            if (this.api) this.api.close();
+
+            this.api = new DerivAPI(this.settings.appId || '1089');
+            this.api.addEventListener('close', () => { if (this.authorized) { this.authorized = false; this.log('warn', 'Connection dropped. Reconnecting...'); } this.connected = false; this.emit(); });
+            this.api.addEventListener('reconnected', () => { this.connected = true; this.log('info', 'Reconnected to Deriv.'); this.emit(); });
+            this.api.addEventListener('reauthorized', () => { this.authorized = true; this.log('success', 'Re-authorized.'); this.emit(); });
+            this.api.addEventListener('reauthorize-failed', (event: any) => { this.authorized = false; this.log('error', `Re-authorization failed: ${event?.detail || 'unknown'}`); this.emit(); });
+
             await this.api.connect();
             this.connected = true;
             this.log('success', 'Connected to Deriv market data.');
-        } catch (error: any) {
-            this.connected = false;
-            this.log('error', `Connection failed: ${error.message}`);
-            this.emit();
-            return;
-        }
 
-        // CRITICAL: Authorization is now MANDATORY for trading
-        if (!this.settings.apiToken) {
-            this.log('error', 'Authorization required. Please log in to your Deriv account or provide an API token in Trading Rules.');
-            this.log('error', 'The bot cannot fetch contract specs or execute trades without authorization.');
+            // Try to authorize if token is available, but don't fail if it's not
+            if (this.settings.apiToken) {
+                try {
+                    await this.api.authorize(this.settings.apiToken);
+                    this.authorized = true;
+                    this.log('success', `Authorized successfully (${this.settings.mode === 'live' ? 'Live' : 'Paper'} mode).`);
+                } catch (error: any) {
+                    this.authorized = false;
+                    this.log('warn', `Authorization failed: ${error.message}. Scanning will continue, but trading requires authorization.`);
+                }
+            } else {
+                this.log('info', 'No API token provided. Scanning enabled, but trading requires authorization (log in or provide token).');
+            }
+
+            this.running = true;
+            this.saveSettings();
+            this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
+            this.log('success', `AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices.`);
+            void this.scan();
+            this.emit();
+        } catch (error: any) {
+            this.log('error', `Failed to start bot: ${error.message}`);
             this.running = false;
             this.emit();
-            return;
         }
-
-        try {
-            await this.api.authorize(this.settings.apiToken);
-            this.authorized = true;
-            this.log('success', `Authorized successfully (${this.settings.mode === 'live' ? 'Live' : 'Paper'} mode).`);
-        } catch (error: any) {
-            this.authorized = false;
-            this.log('error', `Authorization failed: ${error.message}`);
-            this.log('error', 'Please check your API token and try again.');
-            this.running = false;
-            this.emit();
-            return;
-        }
-
-        this.running = true;
-        this.saveSettings();
-        this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
-        this.log('success', `AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices.`);
-        void this.scan();
-        this.emit();
     }
 
     stop(emitLog = true) {
@@ -234,7 +210,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || !this.api || !this.authorized || this.scanning) return;
+        if (!this.running || !this.api || this.scanning) return;
         this.scanning = true;
         this.emit();
 
@@ -277,31 +253,30 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async getContractSpecs(symbol: string): Promise<Map<ContractType, DerivContractSpec> | null> {
-        if (!this.api || !this.authorized) return null;
+        if (!this.api) return null;
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
         try {
-            console.log(`[DEBUG] Fetching contractsFor for ${symbol} with currency: ${this.settings.currency}`);
             const specs = await this.api.contractsFor(symbol, this.settings.currency);
-            console.log(`[DEBUG] contractsFor returned ${specs.length} specs for ${symbol}`);
-            
             if (specs.length > 0) {
                 const map = new Map<ContractType, DerivContractSpec>();
                 specs.forEach(spec => { map.set(spec.contractType as ContractType, spec); });
                 this.contractsCache.set(symbol, map);
-                console.log(`[DEBUG] Successfully cached specs for ${symbol}. Types:`, Array.from(map.keys()));
                 return map;
             }
         } catch (e: any) {
-            console.error(`[DEBUG] contractsFor failed for ${symbol}:`, e.message);
+            this.log('warn', `Could not fetch contract specs for ${symbol}: ${e.message}`);
         }
         
         return null;
     }
 
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
-        if (!this.api || !this.authorized || !analysis.contractType) return false;
+        if (!this.api || !this.authorized || !analysis.contractType) {
+            if (!this.authorized) this.log('warn', `Cannot trade ${symbol.symbol}: not authorized. Log in or provide API token.`);
+            return false;
+        }
         
         this.stats.signalsFound += 1;
         this.emit();
