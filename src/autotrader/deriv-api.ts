@@ -116,9 +116,7 @@ export class DerivAPI extends EventTarget {
                         this.dispatchEvent(new CustomEvent('reauthorize-failed', { detail: error?.message }));
                     }
                 }
-            } catch {
-                // connect() failing triggers its own onclose
-            }
+            } catch {}
         }, 3000);
     }
 
@@ -309,32 +307,12 @@ export class DerivAPI extends EventTarget {
         try {
             const response = await this.send(payload);
             const available = response?.contracts_for?.available ?? [];
-            
-            if (available.length === 0) {
-                console.warn(`[API] contracts_for returned EMPTY for ${symbol}. Response:`, JSON.stringify(response).substring(0, 300));
-            }
-            
             return available.map((item: any) => ({
                 contractType: item.contract_type,
                 minDuration: parseDuration(item.min_contract_duration),
                 maxDuration: parseDuration(item.max_contract_duration),
             }));
         } catch (error: any) {
-            console.error(`[API] contracts_for ERROR for ${symbol}:`, error.message);
-            if (currency) {
-                try {
-                    const response = await this.send({ contracts_for: symbol, product_type: 'basic' });
-                    const available = response?.contracts_for?.available ?? [];
-                    return available.map((item: any) => ({
-                        contractType: item.contract_type,
-                        minDuration: parseDuration(item.min_contract_duration),
-                        maxDuration: parseDuration(item.max_contract_duration),
-                    }));
-                } catch (e: any) {
-                    console.error(`[API] contracts_for retry without currency also failed:`, e.message);
-                    throw error;
-                }
-            }
             throw error;
         }
     }
