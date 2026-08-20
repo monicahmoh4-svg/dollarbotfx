@@ -198,9 +198,11 @@ export class DerivAPI extends EventTarget {
     }
 
     async authorize(token: string) {
+        console.log('[API] Authorizing with token...');
         const response = await this.send({ authorize: token });
         this.authorized = true;
         this.lastToken = token;
+        console.log('[API] Authorization successful');
         return response?.authorize;
     }
 
