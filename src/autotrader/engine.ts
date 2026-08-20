@@ -86,7 +86,7 @@ type LiveTrade = BaseTrade & { mode: 'live'; contractId: string; };
 type OpenTrade = PaperTrade | LiveTrade;
 
 export const DEFAULT_AUTOTRADER_SETTINGS: AutoTraderSettings = {
-    mode: 'paper', appId: '1089', apiToken: '', stake: 1.0, currency: 'USDC', duration: 5, durationUnit: 't',
+    mode: 'paper', appId: '1089', apiToken: '', stake: 1.0, currency: 'USD', duration: 5, durationUnit: 't',
     minConfidence: 0.65, maxVolatility: 100, maxConcurrentTrades: 5, dailyLossLimit: 100, takeProfit: 200,
     martingaleEnabled: false, martingaleMultiplier: 2, maxMartingaleSteps: 3, maxStake: 50,
     requireProfitProjection: true, minProjectedEdge: 0.02, symbolsOverride: '', maxSymbols: 0,
@@ -132,7 +132,7 @@ class AutoTraderEngine extends EventTarget {
             this.settings = { 
                 ...DEFAULT_AUTOTRADER_SETTINGS, 
                 ...saved, 
-                currency: saved.currency || 'USDC', // Default to USDC for modern Deriv accounts
+                currency: saved.currency || 'USD',
                 enabledMarkets: ['synthetic_index'],
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
                 apiToken: '' 
@@ -169,19 +169,26 @@ class AutoTraderEngine extends EventTarget {
             return;
         }
 
-        if (this.settings.apiToken) {
-            try {
-                await this.api.authorize(this.settings.apiToken);
-                this.authorized = true;
-                this.log('success', `Authorized (${this.settings.mode === 'live' ? 'Live' : 'Paper'} mode).`);
-            } catch (error: any) {
-                this.authorized = false;
-                this.log('error', `Authorization failed: ${error.message}`);
-                if (this.settings.mode === 'live') {
-                    this.settings.mode = 'paper';
-                    this.log('warn', 'Switched to paper mode.');
-                }
-            }
+        // CRITICAL: Authorization is now MANDATORY for trading
+        if (!this.settings.apiToken) {
+            this.log('error', 'Authorization required. Please log in to your Deriv account or provide an API token in Trading Rules.');
+            this.log('error', 'The bot cannot fetch contract specs or execute trades without authorization.');
+            this.running = false;
+            this.emit();
+            return;
+        }
+
+        try {
+            await this.api.authorize(this.settings.apiToken);
+            this.authorized = true;
+            this.log('success', `Authorized successfully (${this.settings.mode === 'live' ? 'Live' : 'Paper'} mode).`);
+        } catch (error: any) {
+            this.authorized = false;
+            this.log('error', `Authorization failed: ${error.message}`);
+            this.log('error', 'Please check your API token and try again.');
+            this.running = false;
+            this.emit();
+            return;
         }
 
         this.running = true;
@@ -212,7 +219,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private canTrade(symbol: string): boolean {
-        if (!this.running || this.limitsHit() || this.openTrades.size >= this.settings.maxConcurrentTrades || this.openTrades.has(symbol)) return false;
+        if (!this.running || !this.authorized || this.limitsHit() || this.openTrades.size >= this.settings.maxConcurrentTrades || this.openTrades.has(symbol)) return false;
         return Date.now() >= (this.cooldownUntil.get(symbol) ?? 0);
     }
 
@@ -227,7 +234,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || !this.api || this.scanning) return;
+        if (!this.running || !this.api || !this.authorized || this.scanning) return;
         this.scanning = true;
         this.emit();
 
@@ -270,45 +277,31 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async getContractSpecs(symbol: string): Promise<Map<ContractType, DerivContractSpec> | null> {
-        if (!this.api) return null;
+        if (!this.api || !this.authorized) return null;
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
-        // CRITICAL FIX: Try multiple currencies because Deriv Demo accounts are now often USDC or eUSDC
-        const currenciesToTry = [
-            this.settings.currency, 
-            'USDC', 
-            'USD', 
-            'eUSDC', 
-            'EUR', 
-            undefined
-        ].filter((v, i, a) => v && a.indexOf(v) === i);
-        
-        for (const currency of currenciesToTry) {
-            try {
-                console.log(`[DEBUG] Trying contractsFor for ${symbol} with currency: ${currency || 'NONE'}`);
-                const specs = await this.api.contractsFor(symbol, currency);
-                console.log(`[DEBUG] contractsFor returned ${specs.length} specs for ${symbol}`);
-                if (specs.length > 0) {
-                    const map = new Map<ContractType, DerivContractSpec>();
-                    specs.forEach(spec => { map.set(spec.contractType as ContractType, spec); });
-                    this.contractsCache.set(symbol, map);
-                    console.log(`[DEBUG] Successfully cached specs for ${symbol}. Types:`, Array.from(map.keys()));
-                    return map;
-                }
-            } catch (e: any) {
-                console.warn(`[DEBUG] contractsFor failed for ${symbol} with currency ${currency}:`, e.message);
+        try {
+            console.log(`[DEBUG] Fetching contractsFor for ${symbol} with currency: ${this.settings.currency}`);
+            const specs = await this.api.contractsFor(symbol, this.settings.currency);
+            console.log(`[DEBUG] contractsFor returned ${specs.length} specs for ${symbol}`);
+            
+            if (specs.length > 0) {
+                const map = new Map<ContractType, DerivContractSpec>();
+                specs.forEach(spec => { map.set(spec.contractType as ContractType, spec); });
+                this.contractsCache.set(symbol, map);
+                console.log(`[DEBUG] Successfully cached specs for ${symbol}. Types:`, Array.from(map.keys()));
+                return map;
             }
+        } catch (e: any) {
+            console.error(`[DEBUG] contractsFor failed for ${symbol}:`, e.message);
         }
-        console.error(`[DEBUG] FAILED to get specs for ${symbol} after trying all currencies.`);
+        
         return null;
     }
 
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
-        console.log(`[EXECUTE] Started for ${symbol.symbol}. contractType: ${analysis.contractType}`);
-        
-        if (!this.api) { console.error(`[EXECUTE] this.api is null`); return false; }
-        if (!analysis.contractType) { console.error(`[EXECUTE] analysis.contractType is null`); return false; }
+        if (!this.api || !this.authorized || !analysis.contractType) return false;
         
         this.stats.signalsFound += 1;
         this.emit();
@@ -317,8 +310,7 @@ class AutoTraderEngine extends EventTarget {
         const entry = quotes.length > 0 ? quotes[quotes.length - 1] : 0;
         
         if (!entry) {
-            console.error(`[EXECUTE] Aborting: Invalid entry price (${entry}).`);
-            this.log('error', `Aborting trade for ${symbol.symbol}: Invalid entry price (${entry}).`);
+            this.log('error', `Invalid entry price for ${symbol.symbol}.`);
             return false;
         }
 
@@ -326,8 +318,7 @@ class AutoTraderEngine extends EventTarget {
         if (!specsMap) {
             this.stats.skippedContractUnavailable += 1;
             this.emit();
-            console.error(`[EXECUTE] specsMap is null for ${symbol.symbol}.`);
-            this.log('error', `Could not fetch contract specs for ${symbol.symbol}. Check browser console.`);
+            this.log('error', `Could not fetch contract specs for ${symbol.symbol}.`);
             return false;
         }
         
@@ -335,7 +326,6 @@ class AutoTraderEngine extends EventTarget {
         if (!spec) { 
             this.stats.skippedContractUnavailable += 1; 
             this.emit();
-            console.error(`[EXECUTE] spec not found for ${analysis.contractType}. Available:`, Array.from(specsMap.keys()));
             this.log('error', `${analysis.contractType} not available for ${symbol.symbol}.`);
             return false; 
         }
@@ -345,7 +335,7 @@ class AutoTraderEngine extends EventTarget {
 
         const payload: Record<string, unknown> = { 
             amount: stake, basis: 'stake', contract_type: analysis.contractType, 
-            currency: this.settings.currency || 'USDC',
+            currency: this.settings.currency || 'USD',
             duration, duration_unit: durationUnit, symbol: symbol.symbol, product_type: 'basic' 
         };
         
@@ -353,20 +343,16 @@ class AutoTraderEngine extends EventTarget {
             payload.barrier = String(analysis.barrier);
         }
 
-        console.log(`[EXECUTE] Payload:`, JSON.stringify(payload));
         this.stats.proposalsRequested += 1;
         this.emit();
 
         try {
-            console.log(`[EXECUTE] Sending requestProposal...`);
             const proposalResponse = await this.api.requestProposal(payload);
-            console.log(`[EXECUTE] Response:`, JSON.stringify(proposalResponse));
-            
             const proposal = proposalResponse?.proposal;
+            
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
                 this.stats.proposalsRejectedByBroker += 1;
                 this.emit();
-                console.error(`[EXECUTE] Proposal rejected: missing id, ask_price, or payout.`);
                 this.log('error', `Broker returned no priceable proposal for ${symbol.symbol}.`);
                 return false;
             }
@@ -379,20 +365,17 @@ class AutoTraderEngine extends EventTarget {
             if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
                 this.stats.skippedBelowEdge += 1;
                 this.emit();
-                console.log(`[EXECUTE] Skipped: edge ${projectedEdge} < min ${this.settings.minProjectedEdge}`);
                 this.log('warn', `Skipping ${symbol.symbol}: projected edge too low.`);
                 return false;
             }
 
-            console.log(`[EXECUTE] Edge check passed. Executing trade...`);
-            if (this.settings.mode === 'live' && this.authorized) {
+            if (this.settings.mode === 'live') {
                 return await this.executeLiveTrade(symbol.symbol, entry, stake, decimals, analysis, proposal);
             }
             return await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payout / askPrice, duration, durationUnit);
         } catch (error: any) {
             this.stats.proposalsRejectedByBroker += 1;
             this.emit();
-            console.error(`[EXECUTE] REJECTED:`, error);
             this.log('error', `REJECTED: ${error.message}`);
             return false;
         }
