@@ -86,7 +86,7 @@ type LiveTrade = BaseTrade & { mode: 'live'; contractId: string; };
 type OpenTrade = PaperTrade | LiveTrade;
 
 export const DEFAULT_AUTOTRADER_SETTINGS: AutoTraderSettings = {
-    mode: 'paper', appId: '1089', apiToken: '', stake: 1.0, currency: 'USD', duration: 5, durationUnit: 't',
+    mode: 'paper', appId: '1089', apiToken: '', stake: 1.0, currency: 'USDC', duration: 5, durationUnit: 't',
     minConfidence: 0.65, maxVolatility: 100, maxConcurrentTrades: 5, dailyLossLimit: 100, takeProfit: 200,
     martingaleEnabled: false, martingaleMultiplier: 2, maxMartingaleSteps: 3, maxStake: 50,
     requireProfitProjection: true, minProjectedEdge: 0.02, symbolsOverride: '', maxSymbols: 0,
@@ -132,7 +132,7 @@ class AutoTraderEngine extends EventTarget {
             this.settings = { 
                 ...DEFAULT_AUTOTRADER_SETTINGS, 
                 ...saved, 
-                currency: saved.currency || 'USD',
+                currency: saved.currency || 'USDC', // Default to USDC for modern Deriv accounts
                 enabledMarkets: ['synthetic_index'],
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
                 apiToken: '' 
@@ -274,23 +274,36 @@ class AutoTraderEngine extends EventTarget {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
-        for (const currency of [undefined, this.settings.currency || 'USD']) {
+        // CRITICAL FIX: Try multiple currencies because Deriv Demo accounts are now often USDC or eUSDC
+        const currenciesToTry = [
+            this.settings.currency, 
+            'USDC', 
+            'USD', 
+            'eUSDC', 
+            'EUR', 
+            undefined
+        ].filter((v, i, a) => v && a.indexOf(v) === i);
+        
+        for (const currency of currenciesToTry) {
             try {
+                console.log(`[DEBUG] Trying contractsFor for ${symbol} with currency: ${currency || 'NONE'}`);
                 const specs = await this.api.contractsFor(symbol, currency);
+                console.log(`[DEBUG] contractsFor returned ${specs.length} specs for ${symbol}`);
                 if (specs.length > 0) {
                     const map = new Map<ContractType, DerivContractSpec>();
                     specs.forEach(spec => { map.set(spec.contractType as ContractType, spec); });
                     this.contractsCache.set(symbol, map);
+                    console.log(`[DEBUG] Successfully cached specs for ${symbol}. Types:`, Array.from(map.keys()));
                     return map;
                 }
-            } catch (e) {
-                console.warn(`[DEBUG] contractsFor failed for ${symbol} with currency ${currency}:`, e);
+            } catch (e: any) {
+                console.warn(`[DEBUG] contractsFor failed for ${symbol} with currency ${currency}:`, e.message);
             }
         }
+        console.error(`[DEBUG] FAILED to get specs for ${symbol} after trying all currencies.`);
         return null;
     }
 
-    // === HYPER-VERBOSE EXECUTION FOR ROOT CAUSE ANALYSIS ===
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
         console.log(`[EXECUTE] Started for ${symbol.symbol}. contractType: ${analysis.contractType}`);
         
@@ -298,12 +311,10 @@ class AutoTraderEngine extends EventTarget {
         if (!analysis.contractType) { console.error(`[EXECUTE] analysis.contractType is null`); return false; }
         
         this.stats.signalsFound += 1;
-        this.emit(); // Force UI update
-        console.log(`[EXECUTE] signalsFound is now ${this.stats.signalsFound}`);
+        this.emit();
         
         const stake = this.calculateStake();
         const entry = quotes.length > 0 ? quotes[quotes.length - 1] : 0;
-        console.log(`[EXECUTE] stake: ${stake}, entry: ${entry}, quotes length: ${quotes.length}`);
         
         if (!entry) {
             console.error(`[EXECUTE] Aborting: Invalid entry price (${entry}).`);
@@ -311,13 +322,12 @@ class AutoTraderEngine extends EventTarget {
             return false;
         }
 
-        console.log(`[EXECUTE] Fetching contract specs for ${symbol.symbol}...`);
         const specsMap = await this.getContractSpecs(symbol.symbol);
         if (!specsMap) {
             this.stats.skippedContractUnavailable += 1;
             this.emit();
-            console.error(`[EXECUTE] specsMap is null.`);
-            this.log('error', `Could not fetch contract specs for ${symbol.symbol}.`);
+            console.error(`[EXECUTE] specsMap is null for ${symbol.symbol}.`);
+            this.log('error', `Could not fetch contract specs for ${symbol.symbol}. Check browser console.`);
             return false;
         }
         
@@ -332,11 +342,10 @@ class AutoTraderEngine extends EventTarget {
 
         const duration = spec.minDuration?.value ?? 5;
         const durationUnit = (spec.minDuration?.unit ?? 't') as DurationUnit;
-        console.log(`[EXECUTE] Resolved duration: ${duration}${durationUnit}`);
 
         const payload: Record<string, unknown> = { 
             amount: stake, basis: 'stake', contract_type: analysis.contractType, 
-            currency: this.settings.currency || 'USD',
+            currency: this.settings.currency || 'USDC',
             duration, duration_unit: durationUnit, symbol: symbol.symbol, product_type: 'basic' 
         };
         
@@ -346,8 +355,7 @@ class AutoTraderEngine extends EventTarget {
 
         console.log(`[EXECUTE] Payload:`, JSON.stringify(payload));
         this.stats.proposalsRequested += 1;
-        this.emit(); // Force UI update
-        console.log(`[EXECUTE] proposalsRequested is now ${this.stats.proposalsRequested}`);
+        this.emit();
 
         try {
             console.log(`[EXECUTE] Sending requestProposal...`);
