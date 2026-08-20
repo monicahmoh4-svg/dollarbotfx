@@ -1,29 +1,25 @@
 import { useEffect, useState } from 'react';
 import { autoTrader, AutoTraderSettings } from '@/autotrader/engine';
 
-export type AutoTraderUIState = ReturnType<typeof autoTrader.getState>;
-
 export function useAutoTrader() {
-    const [state, setState] = useState<AutoTraderUIState>(() => autoTrader.getState());
+    const [state, setState] = useState(autoTrader.getState());
 
     useEffect(() => {
-        const listener = () => {
-            setState(autoTrader.getState());
+        const handler = (event: Event) => {
+            const customEvent = event as CustomEvent;
+            setState(customEvent.detail);
         };
-
-        autoTrader.addEventListener('state', listener as EventListener);
-
-        return () => {
-            autoTrader.removeEventListener('state', listener as EventListener);
-        };
+        autoTrader.addEventListener('state', handler);
+        return () => autoTrader.removeEventListener('state', handler);
     }, []);
 
-    return {
-        state,
-        start: (settings?: Partial<AutoTraderSettings>) => autoTrader.start(settings),
-        stop: () => autoTrader.stop(),
-        updateSettings: (settings: Partial<AutoTraderSettings>) => autoTrader.updateSettings(settings),
+    const start = async (patch: Partial<AutoTraderSettings> & { client?: any } = {}) => {
+        await autoTrader.start(patch);
     };
-}
 
-export default useAutoTrader;
+    const stop = () => {
+        autoTrader.stop();
+    };
+
+    return { state, start, stop };
+}
