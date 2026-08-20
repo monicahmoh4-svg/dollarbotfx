@@ -1,4 +1,4 @@
-import { DerivActiveSymbol, DerivContractSpec, DerivTick } from './deriv-api';
+import { DerivAPI, DerivActiveSymbol, DerivContractSpec, DerivTick } from './deriv-api';
 import {
     analyzeMarket,
     AnalysisResult,
@@ -106,6 +106,8 @@ function parseDuration(raw: unknown): { value: number; unit: string } | null {
 
 class AutoTraderEngine extends EventTarget {
     private client: any = null;
+    private apiInstance: any = null;  // The REAL API instance from App Builder
+    private fallbackApi: DerivAPI | null = null;  // Our own API as fallback
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
@@ -167,39 +169,49 @@ class AutoTraderEngine extends EventTarget {
         this.emit(); 
     }
 
-    async start(patch: Partial<AutoTraderSettings> & { client?: any } = {}) {
-        console.log('[ENGINE] start() called');
+    async start(patch: Partial<AutoTraderSettings> & { client?: any; apiInstance?: any } = {}) {
+        console.log('[ENGINE] === START CALLED ===');
         console.log('[ENGINE] Has client:', !!patch.client);
-        console.log('[ENGINE] client.send type:', typeof patch.client?.send);
-        console.log('[ENGINE] client.is_logged_in:', patch.client?.is_logged_in);
-        console.log('[ENGINE] client keys:', patch.client ? Object.keys(patch.client) : []);
+        console.log('[ENGINE] Has apiInstance:', !!patch.apiInstance);
+        console.log('[ENGINE] apiInstance.send type:', typeof patch.apiInstance?.send);
+        console.log('[ENGINE] apiInstance keys:', patch.apiInstance ? Object.keys(patch.apiInstance) : []);
         
         try {
             this.updateSettings(patch);
             this.stop(false);
             this.contractsCache.clear();
 
-            if (patch.client && patch.client.is_logged_in) {
-                this.client = patch.client;
+            this.client = patch.client;
+            this.apiInstance = patch.apiInstance;
+
+            if (this.client?.is_logged_in) {
                 this.connected = true;
                 this.authorized = true;
                 
-                // Test the connection with a simple ping
-                try {
-                    this.log('info', 'Testing connection with ping...');
-                    const pingResponse = await this.sendRequest({ ping: 1 });
-                    console.log('[ENGINE] Ping response:', pingResponse);
-                    this.log('success', '✓ Connection test successful');
-                } catch (e: any) {
-                    this.log('warn', `Ping test failed: ${e.message}. Continuing anyway...`);
+                // Test the API instance
+                if (this.apiInstance && typeof this.apiInstance.send === 'function') {
+                    try {
+                        this.log('info', 'Testing App Builder API...');
+                        const pingResponse = await Promise.race([
+                            this.apiInstance.send({ ping: 1 }),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('API timeout')), 10000))
+                        ]);
+                        console.log('[ENGINE] Ping response:', pingResponse);
+                        this.log('success', '✓ App Builder API is working');
+                    } catch (e: any) {
+                        this.log('warn', `App Builder API test failed: ${e.message}. Setting up fallback...`);
+                        // Set up our own API as fallback
+                        await this.setupFallbackApi();
+                    }
+                } else {
+                    this.log('warn', 'No App Builder API found. Setting up fallback...');
+                    await this.setupFallbackApi();
                 }
                 
-                this.log('success', '✓ Using Deriv App Builder authenticated session');
                 this.log('success', '✓ Bot is AUTHORIZED and ready to trade');
             } else {
                 this.authorized = false;
-                this.log('error', '✗ No authenticated Deriv session found');
-                this.log('error', 'Please log in to your Deriv account first');
+                this.log('error', '✗ Not logged in');
                 this.running = false;
                 this.emit();
                 return;
@@ -210,7 +222,6 @@ class AutoTraderEngine extends EventTarget {
             this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
             this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices`);
             
-            // Run first scan immediately
             setTimeout(() => void this.scan(), 100);
             this.emit();
         } catch (error: any) {
@@ -221,53 +232,69 @@ class AutoTraderEngine extends EventTarget {
         }
     }
 
-    // CRITICAL FIX: Robust sendRequest with timeout and extensive logging
+    private async setupFallbackApi() {
+        try {
+            this.log('info', 'Setting up fallback API...');
+            this.fallbackApi = new DerivAPI(this.settings.appId || '1089');
+            await this.fallbackApi.connect();
+            this.log('success', '✓ Fallback API connected (unauthenticated - for market data only)');
+        } catch (e: any) {
+            this.log('error', `Fallback API failed: ${e.message}`);
+        }
+    }
+
+    // CRITICAL: Robust send method that tries all available APIs
     private async sendRequest<T = any>(payload: Record<string, unknown>): Promise<T> {
-        if (!this.client) throw new Error('No client available');
-        
-        console.log('[ENGINE] sendRequest called with:', payload);
-        
-        // Method 1: Use client.send() with timeout
-        if (typeof this.client.send === 'function') {
+        // Method 1: Use App Builder's API instance (authenticated)
+        if (this.apiInstance && typeof this.apiInstance.send === 'function') {
             try {
-                console.log('[ENGINE] Trying client.send()...');
+                console.log('[ENGINE] Trying apiInstance.send()...');
                 const response = await Promise.race([
-                    this.client.send(payload),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('client.send() timeout after 15s')), 15000))
+                    this.apiInstance.send(payload),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance timeout')), 15000))
                 ]);
-                console.log('[ENGINE] client.send() response:', response);
+                console.log('[ENGINE] apiInstance response received');
                 return response as T;
             } catch (e: any) {
-                console.warn('[ENGINE] client.send() failed:', e.message);
-                // Don't throw yet - try alternative methods
+                console.warn('[ENGINE] apiInstance.send() failed:', e.message);
             }
         }
-        
-        // Method 2: Try client.api.send() if it exists
-        if (this.client.api && typeof this.client.api.send === 'function') {
+
+        // Method 2: Try apiInstance.api.send() (nested API)
+        if (this.apiInstance?.api && typeof this.apiInstance.api.send === 'function') {
             try {
-                console.log('[ENGINE] Trying client.api.send()...');
+                console.log('[ENGINE] Trying apiInstance.api.send()...');
                 const response = await Promise.race([
-                    this.client.api.send(payload),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('client.api.send() timeout after 15s')), 15000))
+                    this.apiInstance.api.send(payload),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance.api timeout')), 15000))
                 ]);
-                console.log('[ENGINE] client.api.send() response:', response);
+                console.log('[ENGINE] apiInstance.api response received');
                 return response as T;
             } catch (e: any) {
-                console.warn('[ENGINE] client.api.send() failed:', e.message);
+                console.warn('[ENGINE] apiInstance.api.send() failed:', e.message);
             }
         }
-        
-        throw new Error('All send methods failed');
+
+        // Method 3: Use our fallback API (unauthenticated - works for market data)
+        if (this.fallbackApi) {
+            try {
+                console.log('[ENGINE] Trying fallback API...');
+                const response = await this.fallbackApi.send(payload);
+                console.log('[ENGINE] Fallback API response received');
+                return response as T;
+            } catch (e: any) {
+                console.warn('[ENGINE] Fallback API failed:', e.message);
+            }
+        }
+
+        throw new Error('All API methods failed');
     }
 
     stop(emitLog = true) {
         if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
-        
-        // Clear all paper trade monitors
         this.paperMonitors.forEach(monitor => clearInterval(monitor));
         this.paperMonitors.clear();
-        
+        if (this.fallbackApi) { this.fallbackApi.close(); this.fallbackApi = null; }
         if (this.running && emitLog) this.log('warn', 'AI bot stopped.');
         this.running = false;
         this.emit();
@@ -305,10 +332,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || !this.client || this.scanning) {
-            console.log('[ENGINE] Scan skipped:', { running: this.running, hasClient: !!this.client, scanning: this.scanning });
-            return;
-        }
+        if (!this.running || this.scanning) return;
         
         console.log('[ENGINE] Starting scan...');
         this.scanning = true;
@@ -331,15 +355,14 @@ class AutoTraderEngine extends EventTarget {
                         end: 'latest', 
                         style: 'ticks' 
                     });
-                    console.log(`[ENGINE] Ticks response for ${symbol.symbol}:`, response);
                     
                     const prices = response?.history?.prices ?? [];
                     quotes = prices.map((p: any) => Number(p));
                     decimals = symbol.pip ? Math.round(-Math.log10(symbol.pip)) : inferDecimalsFromQuotes(quotes);
                     scannedSymbols += 1;
-                    console.log(`[ENGINE] Got ${quotes.length} quotes for ${symbol.symbol}`);
+                    console.log(`[ENGINE] ✓ Got ${quotes.length} quotes for ${symbol.symbol}`);
                 } catch (error: any) {
-                    console.error(`[ENGINE] Failed to fetch ticks for ${symbol.symbol}:`, error);
+                    console.error(`[ENGINE] ✗ Failed for ${symbol.symbol}:`, error.message);
                     this.log('warn', `Failed to fetch ticks for ${symbol.symbol}: ${error.message}`);
                     continue;
                 }
@@ -368,21 +391,11 @@ class AutoTraderEngine extends EventTarget {
                         } catch (error: any) {
                             this.log('error', `Trade failed: ${error.message}`);
                         }
-                    } else {
-                        console.log(`[ENGINE] Cannot trade ${symbol.symbol}:`, {
-                            running: this.running,
-                            authorized: this.authorized,
-                            openTrades: this.openTrades.size,
-                            maxConcurrent: this.settings.maxConcurrentTrades,
-                            hasOpenTrade: this.openTrades.has(symbol.symbol),
-                            cooldown: this.cooldownUntil.get(symbol.symbol)
-                        });
                     }
                 }
                 await sleep(this.settings.scanBatchDelayMs);
             }
         } catch (error: any) {
-            console.error('[ENGINE] Scan error:', error);
             this.log('error', `Scan error: ${error.message}`);
         } finally {
             this.stats.scanCount += 1; 
@@ -426,7 +439,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
-        if (!this.client || !this.authorized || !analysis.contractType) return false;
+        if (!this.authorized || !analysis.contractType) return false;
         
         const stake = this.calculateStake();
         const entry = quotes.length > 0 ? quotes[quotes.length - 1] : 0;
@@ -501,7 +514,6 @@ class AutoTraderEngine extends EventTarget {
                 };
                 this.openTrades.set(symbol.symbol, trade);
 
-                // Poll for contract status
                 const monitor = setInterval(async () => {
                     try {
                         const pocResponse = await this.sendRequest({ proposal_open_contract: 1, contract_id: String(contractId) });
@@ -534,9 +546,7 @@ class AutoTraderEngine extends EventTarget {
                 this.openTrades.set(symbol.symbol, trade);
                 this.log('success', `📝 PAPER ${analysis.contractType} opened | stake=${stake}`);
                 
-                // CRITICAL FIX: Use polling instead of WebSocket subscription
-                const tickCount = trade.durationUnit === 't' ? trade.duration : 1;
-                const pollInterval = trade.durationUnit === 't' ? 500 : 1000; // Poll every 0.5s for ticks, 1s for time-based
+                const pollInterval = trade.durationUnit === 't' ? 500 : 1000;
                 
                 const monitor = setInterval(async () => {
                     const current = this.openTrades.get(trade.symbol);
