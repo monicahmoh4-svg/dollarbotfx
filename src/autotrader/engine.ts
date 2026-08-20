@@ -12,7 +12,6 @@ import {
 export type AutoTraderMode = 'paper' | 'live';
 export type DurationUnit = 't' | 's' | 'm';
 
-// Re-added exports required by autotrader-panel.tsx UI
 export const TRADE_CATEGORIES: { value: TradeCategory; label: string }[] = [
     { value: 'rise_fall', label: 'Rise / Fall' },
     { value: 'even_odd', label: 'Digits: Even / Odd' },
@@ -41,7 +40,6 @@ export const SYNTHETIC_SYMBOL_PRESETS: { value: string; label: string }[] = [
     { value: '1HZ100V', label: 'Volatility 100 (1s) Index' },
 ];
 
-// Hardcoded synthetic indices for guaranteed, throttling-proof scanning
 export const SYNTHETIC_INDICES: DerivActiveSymbol[] = [
     { symbol: 'R_10', display_name: 'Volatility 10 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
     { symbol: 'R_25', display_name: 'Volatility 25 Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
@@ -118,7 +116,7 @@ class AutoTraderEngine extends EventTarget {
     private logs: AutoTraderLog[] = [];
     private stats: AutoTraderStats = { wins: 0, losses: 0, net: 0, dailyNet: 0, open: 0, lossStreak: 0, sessionStart: Date.now(), day: new Date().toDateString(), scanCount: 0, tradesOpened: 0, lastScanAt: null, lastScanSummary: 'Not scanned yet.', signalsFound: 0, proposalsRequested: 0, proposalsRejectedByBroker: 0, skippedBelowEdge: 0, skippedContractUnavailable: 0 };
     private contractsCache = new Map<string, Map<ContractType, DerivContractSpec>>();
-    private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES; // Force synthetic only
+    private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES;
     private openTrades = new Map<string, OpenTrade>();
     private cooldownUntil = new Map<string, number>();
     private paperUnsubscribes = new Map<string, () => void>();
@@ -135,7 +133,7 @@ class AutoTraderEngine extends EventTarget {
                 ...DEFAULT_AUTOTRADER_SETTINGS, 
                 ...saved, 
                 currency: saved.currency || 'USD',
-                enabledMarkets: ['synthetic_index'], // Force synthetic only regardless of UI selection
+                enabledMarkets: ['synthetic_index'],
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
                 apiToken: '' 
             };
@@ -285,33 +283,56 @@ class AutoTraderEngine extends EventTarget {
                     this.contractsCache.set(symbol, map);
                     return map;
                 }
-            } catch {}
+            } catch (e) {
+                console.warn(`[DEBUG] contractsFor failed for ${symbol} with currency ${currency}:`, e);
+            }
         }
         return null;
     }
 
+    // === HYPER-VERBOSE EXECUTION FOR ROOT CAUSE ANALYSIS ===
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
-        if (!this.api || !analysis.contractType) return false;
+        console.log(`[EXECUTE] Started for ${symbol.symbol}. contractType: ${analysis.contractType}`);
+        
+        if (!this.api) { console.error(`[EXECUTE] this.api is null`); return false; }
+        if (!analysis.contractType) { console.error(`[EXECUTE] analysis.contractType is null`); return false; }
+        
         this.stats.signalsFound += 1;
+        this.emit(); // Force UI update
+        console.log(`[EXECUTE] signalsFound is now ${this.stats.signalsFound}`);
         
         const stake = this.calculateStake();
-        const entry = quotes[quotes.length - 1] ?? 0;
-        if (!entry) return false;
+        const entry = quotes.length > 0 ? quotes[quotes.length - 1] : 0;
+        console.log(`[EXECUTE] stake: ${stake}, entry: ${entry}, quotes length: ${quotes.length}`);
+        
+        if (!entry) {
+            console.error(`[EXECUTE] Aborting: Invalid entry price (${entry}).`);
+            this.log('error', `Aborting trade for ${symbol.symbol}: Invalid entry price (${entry}).`);
+            return false;
+        }
 
+        console.log(`[EXECUTE] Fetching contract specs for ${symbol.symbol}...`);
         const specsMap = await this.getContractSpecs(symbol.symbol);
         if (!specsMap) {
             this.stats.skippedContractUnavailable += 1;
+            this.emit();
+            console.error(`[EXECUTE] specsMap is null.`);
+            this.log('error', `Could not fetch contract specs for ${symbol.symbol}.`);
             return false;
         }
         
         const spec = specsMap.get(analysis.contractType);
         if (!spec) { 
             this.stats.skippedContractUnavailable += 1; 
+            this.emit();
+            console.error(`[EXECUTE] spec not found for ${analysis.contractType}. Available:`, Array.from(specsMap.keys()));
+            this.log('error', `${analysis.contractType} not available for ${symbol.symbol}.`);
             return false; 
         }
 
-        const duration = spec.minDuration?.value || 5;
-        const durationUnit = (spec.minDuration?.unit || 't') as DurationUnit;
+        const duration = spec.minDuration?.value ?? 5;
+        const durationUnit = (spec.minDuration?.unit ?? 't') as DurationUnit;
+        console.log(`[EXECUTE] Resolved duration: ${duration}${durationUnit}`);
 
         const payload: Record<string, unknown> = { 
             amount: stake, basis: 'stake', contract_type: analysis.contractType, 
@@ -323,14 +344,22 @@ class AutoTraderEngine extends EventTarget {
             payload.barrier = String(analysis.barrier);
         }
 
+        console.log(`[EXECUTE] Payload:`, JSON.stringify(payload));
         this.stats.proposalsRequested += 1;
+        this.emit(); // Force UI update
+        console.log(`[EXECUTE] proposalsRequested is now ${this.stats.proposalsRequested}`);
 
         try {
+            console.log(`[EXECUTE] Sending requestProposal...`);
             const proposalResponse = await this.api.requestProposal(payload);
-            const proposal = proposalResponse?.proposal;
+            console.log(`[EXECUTE] Response:`, JSON.stringify(proposalResponse));
             
+            const proposal = proposalResponse?.proposal;
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
                 this.stats.proposalsRejectedByBroker += 1;
+                this.emit();
+                console.error(`[EXECUTE] Proposal rejected: missing id, ask_price, or payout.`);
+                this.log('error', `Broker returned no priceable proposal for ${symbol.symbol}.`);
                 return false;
             }
 
@@ -341,15 +370,21 @@ class AutoTraderEngine extends EventTarget {
 
             if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
                 this.stats.skippedBelowEdge += 1;
+                this.emit();
+                console.log(`[EXECUTE] Skipped: edge ${projectedEdge} < min ${this.settings.minProjectedEdge}`);
+                this.log('warn', `Skipping ${symbol.symbol}: projected edge too low.`);
                 return false;
             }
 
+            console.log(`[EXECUTE] Edge check passed. Executing trade...`);
             if (this.settings.mode === 'live' && this.authorized) {
                 return await this.executeLiveTrade(symbol.symbol, entry, stake, decimals, analysis, proposal);
             }
             return await this.executePaperTrade(symbol.symbol, entry, stake, decimals, analysis, payout / askPrice, duration, durationUnit);
         } catch (error: any) {
             this.stats.proposalsRejectedByBroker += 1;
+            this.emit();
+            console.error(`[EXECUTE] REJECTED:`, error);
             this.log('error', `REJECTED: ${error.message}`);
             return false;
         }
