@@ -60,7 +60,7 @@ export class DerivAPI extends EventTarget {
                     try { await this.authorize(this.lastToken); this.dispatchEvent(new Event('reauthorized')); }
                     catch (error: any) { this.dispatchEvent(new CustomEvent('reauthorize-failed', { detail: error?.message })); }
                 }
-            } catch { /* connect() failing triggers onclose */ }
+            } catch {}
         }, 3000);
     }
 
@@ -150,7 +150,6 @@ export class DerivAPI extends EventTarget {
     async requestProposal(params: Record<string, unknown>) { return this.send({ proposal: 1, ...params }); }
     async buyProposal(proposalId: string, price: number) { return this.send({ buy: proposalId, price }); }
     
-    // FIXED: Smart currency retry to prevent "no contract available" errors
     async contractsFor(symbol: string, currency?: string): Promise<DerivContractSpec[]> {
         const payload: Record<string, unknown> = { contracts_for: symbol, product_type: 'basic' };
         if (currency) payload.currency = currency;
@@ -164,7 +163,6 @@ export class DerivAPI extends EventTarget {
                 maxDuration: parseDuration(item.max_contract_duration),
             }));
         } catch (error: any) {
-            // If it fails with currency, retry without currency to bypass mismatch errors
             if (currency) {
                 try {
                     const response = await this.send({ contracts_for: symbol, product_type: 'basic' });
@@ -175,7 +173,7 @@ export class DerivAPI extends EventTarget {
                         maxDuration: parseDuration(item.max_contract_duration),
                     }));
                 } catch {
-                    throw error; // Throw original error if retry also fails
+                    throw error;
                 }
             }
             throw error;
