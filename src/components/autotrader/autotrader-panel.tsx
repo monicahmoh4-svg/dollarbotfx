@@ -7,181 +7,126 @@ import type { AutoTraderSettings } from '@/autotrader/engine';
 import { MARKETS, SYNTHETIC_SYMBOL_PRESETS, TRADE_CATEGORIES } from '@/autotrader/engine';
 import type { TradeCategory } from '@/autotrader/analysis';
 
-// Helper function to extract token from multiple possible sources
 function getSessionToken(client: any): string {
-    if (!client) return '';
-    
-    console.log('[TOKEN DEBUG] Attempting to extract token...');
-    console.log('[TOKEN DEBUG] client.is_logged_in:', client.is_logged_in);
-    console.log('[TOKEN DEBUG] client.loginid:', client.loginid);
-    
-    // Method 1: Try getToken() method
-    if (typeof client.getToken === 'function') {
-        try {
-            const token = client.getToken();
-            if (token && typeof token === 'string' && token.trim() !== '') {
-                console.log('[TOKEN DEBUG] ✓ Got token from client.getToken()');
-                return token;
-            }
-        } catch (e) {
-            console.warn('[TOKEN DEBUG] client.getToken() failed:', e);
-        }
+    if (!client) {
+        console.log('[TOKEN DEBUG] client is null/undefined');
+        return '';
     }
     
-    // Method 2: Try token property
-    if (client.token && typeof client.token === 'string') {
-        console.log('[TOKEN DEBUG] ✓ Got token from client.token');
+    console.log('[TOKEN DEBUG] === START TOKEN EXTRACTION ===');
+    console.log('[TOKEN DEBUG] client.is_logged_in:', client.is_logged_in);
+    console.log('[TOKEN DEBUG] client.loginid:', client.loginid);
+    console.log('[TOKEN DEBUG] client keys:', Object.keys(client));
+    
+    // 1. Direct method
+    if (typeof client.getToken === 'function') {
+        try {
+            const t = client.getToken();
+            console.log('[TOKEN DEBUG] client.getToken() returned:', t ? '***' + t.slice(-10) : 'null/empty');
+            if (t) return t;
+        } catch (e) { console.warn('[TOKEN DEBUG] client.getToken error:', e); }
+    }
+    
+    // 2. Direct property
+    if (client.token) {
+        console.log('[TOKEN DEBUG] Found client.token');
         return client.token;
     }
     
-    // Method 3: Try accounts object
-    if (client.loginid && client.accounts) {
-        try {
-            const account = client.accounts[client.loginid];
-            if (account?.token) {
-                console.log('[TOKEN DEBUG] ✓ Got token from client.accounts[loginid].token');
-                return account.token;
+    // 3. Accounts object
+    if (client.accounts) {
+        console.log('[TOKEN DEBUG] client.accounts type:', typeof client.accounts);
+        console.log('[TOKEN DEBUG] client.accounts keys:', Object.keys(client.accounts));
+        if (client.loginid && client.accounts[client.loginid]) {
+            console.log('[TOKEN DEBUG] client.accounts[loginid] keys:', Object.keys(client.accounts[client.loginid]));
+            if (client.accounts[client.loginid].token) {
+                console.log('[TOKEN DEBUG] Found token in client.accounts[loginid].token');
+                return client.accounts[client.loginid].token;
             }
-        } catch (e) {
-            console.warn('[TOKEN DEBUG] client.accounts access failed:', e);
+        }
+        // Try to find ANY token in accounts
+        for (const key in client.accounts) {
+            if (client.accounts[key].token) {
+                console.log(`[TOKEN DEBUG] Found token in client.accounts[${key}].token`);
+                return client.accounts[key].token;
+            }
         }
     }
     
-    // Method 4: Try localStorage as last resort
+    // 4. account_list (common in some deriv versions)
+    if (client.account_list && Array.isArray(client.account_list)) {
+        console.log('[TOKEN DEBUG] client.account_list length:', client.account_list.length);
+        const currentAccount = client.account_list.find((acc: any) => acc.loginid === client.loginid);
+        if (currentAccount?.token) {
+            console.log('[TOKEN DEBUG] Found token in client.account_list');
+            return currentAccount.token;
+        }
+    }
+    
+    // 5. LocalStorage exhaustive search
     try {
-        const accountsStr = localStorage.getItem('client.accounts');
-        if (accountsStr && client.loginid) {
-            const accounts = JSON.parse(accountsStr);
-            if (accounts[client.loginid]?.token) {
-                console.log('[TOKEN DEBUG] ✓ Got token from localStorage client.accounts');
-                return accounts[client.loginid].token;
-            }
+        console.log('[TOKEN DEBUG] Checking localStorage...');
+        const keys = Object.keys(localStorage).filter(k => k.toLowerCase().includes('account') || k.toLowerCase().includes('token') || k.toLowerCase().includes('client') || k.toLowerCase().includes('config'));
+        console.log('[TOKEN DEBUG] Relevant localStorage keys:', keys);
+        
+        for (const key of keys) {
+            try {
+                const val = JSON.parse(localStorage.getItem(key) || '{}');
+                if (val && typeof val === 'object') {
+                    if (val.token) {
+                        console.log(`[TOKEN DEBUG] Found token in localStorage.${key}.token`);
+                        return val.token;
+                    }
+                    if (client.loginid && val[client.loginid]?.token) {
+                        console.log(`[TOKEN DEBUG] Found token in localStorage.${key}[loginid].token`);
+                        return val[client.loginid].token;
+                    }
+                    // Check nested objects
+                    for (const subKey in val) {
+                        if (val[subKey]?.token) {
+                            console.log(`[TOKEN DEBUG] Found token in localStorage.${key}.${subKey}.token`);
+                            return val[subKey].token;
+                        }
+                    }
+                }
+            } catch {}
         }
     } catch (e) {
-        console.warn('[TOKEN DEBUG] localStorage access failed:', e);
+        console.warn('[TOKEN DEBUG] localStorage check failed:', e);
     }
     
-    console.warn('[TOKEN DEBUG] ✗ Could not extract token from any source');
+    console.log('[TOKEN DEBUG] === END TOKEN EXTRACTION (FAILED) ===');
     return '';
 }
 
-// Helper function to extract currency from multiple possible sources
 function getSessionCurrency(client: any): string {
     if (!client) return 'USD';
-    
     if (client.currency) return client.currency;
-    
-    if (client.loginid && client.accounts) {
-        try {
-            const account = client.accounts[client.loginid];
-            if (account?.currency) return account.currency;
-        } catch {}
+    if (client.loginid && client.accounts && client.accounts[client.loginid]?.currency) {
+        return client.accounts[client.loginid].currency;
     }
-    
-    try {
-        const accountsStr = localStorage.getItem('client.accounts');
-        if (accountsStr && client.loginid) {
-            const accounts = JSON.parse(accountsStr);
-            if (accounts[client.loginid]?.currency) {
-                return accounts[client.loginid].currency;
-            }
-        }
-    } catch {}
-    
     return 'USD';
 }
 
 const styles = `
-.at-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2147483300;
-  background: rgba(9, 12, 20, 0.6);
-  backdrop-filter: blur(6px);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  animation: atFadeIn 0.18s ease;
-}
-@media (min-width: 900px) {
-  .at-overlay { align-items: center; padding: 24px; }
-}
-.at-panel {
-  width: 100%;
-  max-width: 1080px;
-  max-height: 94vh;
-  max-height: 94dvh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  background: #0b1220;
-  color: #e5e7eb;
-  border-radius: 20px 20px 0 0;
-  box-shadow: 0 40px 100px rgba(0,0,0,.5);
-  animation: atSlideUp 0.25s ease;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-}
+.at-overlay { position: fixed; inset: 0; z-index: 2147483300; background: rgba(9, 12, 20, 0.6); backdrop-filter: blur(6px); display: flex; align-items: flex-end; justify-content: center; animation: atFadeIn 0.18s ease; }
+@media (min-width: 900px) { .at-overlay { align-items: center; padding: 24px; } }
+.at-panel { width: 100%; max-width: 1080px; max-height: 94vh; max-height: 94dvh; overflow: hidden; display: flex; flex-direction: column; background: #0b1220; color: #e5e7eb; border-radius: 20px 20px 0 0; box-shadow: 0 40px 100px rgba(0,0,0,.5); animation: atSlideUp 0.25s ease; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
 @media (min-width: 900px) { .at-panel { border-radius: 20px; max-height: 90vh; } }
-.at-header {
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid rgba(255,255,255,.08);
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  background: linear-gradient(135deg, rgba(37,99,235,.16), rgba(124,58,237,.10));
-}
+.at-header { padding: 18px 20px 14px; border-bottom: 1px solid rgba(255,255,255,.08); display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; background: linear-gradient(135deg, rgba(37,99,235,.16), rgba(124,58,237,.10)); }
 .at-title { margin: 0; font-size: 19px; font-weight: 900; color: #fff; display: flex; align-items: center; gap: 10px; }
 .at-title-dot { width: 9px; height: 9px; border-radius: 50%; background: #6b7280; flex-shrink: 0; }
 .at-title-dot.running { background: #4ade80; box-shadow: 0 0 0 4px rgba(74,222,128,.18); animation: atPulse 2s infinite; }
 .at-subtitle { margin-top: 4px; color: #9ca3af; font-size: 12px; line-height: 1.5; max-width: 640px; }
-.at-close {
-  border: none; border-radius: 10px; padding: 9px 13px;
-  background: rgba(255,255,255,.08); color: #e5e7eb; font-weight: 800; cursor: pointer;
-  transition: background .15s ease;
-}
+.at-close { border: none; border-radius: 10px; padding: 9px 13px; background: rgba(255,255,255,.08); color: #e5e7eb; font-weight: 800; cursor: pointer; transition: background .15s ease; }
 .at-close:hover { background: rgba(255,255,255,.15); }
-.at-banner {
-  margin: 14px 20px 0;
-  background: rgba(251,191,36,.08);
-  border: 1px solid rgba(251,191,36,.35);
-  color: #fcd34d;
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-.at-session {
-  margin: 10px 20px 0;
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 12px;
-  line-height: 1.5;
-  border: 1px solid;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
+.at-banner { margin: 14px 20px 0; background: rgba(251,191,36,.08); border: 1px solid rgba(251,191,36,.35); color: #fcd34d; border-radius: 12px; padding: 10px 12px; font-size: 11.5px; line-height: 1.5; }
+.at-session { margin: 10px 20px 0; border-radius: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.5; border: 1px solid; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .at-session-ok { background: rgba(74,222,128,.08); border-color: rgba(74,222,128,.35); color: #bbf7d0; }
 .at-session-warn { background: rgba(248,113,113,.08); border-color: rgba(248,113,113,.35); color: #fecaca; }
-.at-session-badge {
-  font-weight: 900; border-radius: 999px; padding: 4px 10px; font-size: 10.5px;
-  background: rgba(255,255,255,.08);
-}
-.at-tabbar {
-  display: flex;
-  gap: 4px;
-  margin: 14px 20px 0;
-  border-bottom: 1px solid rgba(255,255,255,.08);
-  overflow-x: auto;
-}
-.at-tab {
-  border: none; background: none; color: #9ca3af; font-weight: 800; font-size: 12.5px;
-  padding: 10px 14px; cursor: pointer; white-space: nowrap;
-  border-bottom: 2px solid transparent; transition: color .15s ease, border-color .15s ease;
-}
+.at-session-badge { font-weight: 900; border-radius: 999px; padding: 4px 10px; font-size: 10.5px; background: rgba(255,255,255,.08); }
+.at-tabbar { display: flex; gap: 4px; margin: 14px 20px 0; border-bottom: 1px solid rgba(255,255,255,.08); overflow-x: auto; }
+.at-tab { border: none; background: none; color: #9ca3af; font-weight: 800; font-size: 12.5px; padding: 10px 14px; cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; transition: color .15s ease, border-color .15s ease; }
 .at-tab.active { color: #fff; border-color: #6366f1; }
 .at-tab:hover { color: #e5e7eb; }
 .at-body { flex: 1; overflow: auto; padding: 16px 20px 20px; }
@@ -191,26 +136,14 @@ const styles = `
 @media (min-width: 640px) { .at-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
 @media (min-width: 980px) { .at-grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
 .at-field label { display: block; font-size: 11.5px; font-weight: 800; color: #9ca3af; margin-bottom: 5px; }
-.at-input {
-  width: 100%; min-height: 38px; border-radius: 10px; border: 1px solid rgba(255,255,255,.14);
-  background: rgba(255,255,255,.04); color: #f3f4f6; padding: 9px 10px; outline: none;
-  transition: border-color .15s ease, box-shadow .15s ease;
-}
+.at-input { width: 100%; min-height: 38px; border-radius: 10px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.04); color: #f3f4f6; padding: 9px 10px; outline: none; transition: border-color .15s ease, box-shadow .15s ease; }
 .at-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.18); }
 .at-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: #d1d5db; padding: 10px 0; }
 .at-chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
-.at-chip {
-  display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255,255,255,.16);
-  border-radius: 999px; padding: 7px 12px; font-size: 11.5px; font-weight: 800; cursor: pointer;
-  user-select: none; color: #d1d5db; background: rgba(255,255,255,.03);
-  transition: border-color .15s ease, background .15s ease, color .15s ease;
-}
+.at-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px; padding: 7px 12px; font-size: 11.5px; font-weight: 800; cursor: pointer; user-select: none; color: #d1d5db; background: rgba(255,255,255,.03); transition: border-color .15s ease, background .15s ease, color .15s ease; }
 .at-chip input { display: none; }
 .at-chip-active { border-color: #6366f1; background: #6366f1; color: #fff; }
-.at-preset-chip {
-  border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 6px 11px; font-size: 11px;
-  font-weight: 700; color: #a5b4fc; background: rgba(99,102,241,.08); cursor: pointer;
-}
+.at-preset-chip { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 6px 11px; font-size: 11px; font-weight: 700; color: #a5b4fc; background: rgba(99,102,241,.08); cursor: pointer; }
 .at-preset-chip:hover { background: rgba(99,102,241,.16); }
 .at-hint { font-size: 11px; color: #6b7280; margin-top: 6px; line-height: 1.5; }
 .at-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 20px; border-top: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.02); }
@@ -230,11 +163,7 @@ const styles = `
 .at-stat-label { color: #9ca3af; font-size: 10.5px; font-weight: 800; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .03em; }
 .at-stat-value { font-size: 16px; font-weight: 950; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .at-trades { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
-.at-trade-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
-  background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.28); border-radius: 10px;
-  padding: 8px 10px; font-size: 12px; font-weight: 700; color: #c7d2fe;
-}
+.at-trade-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.28); border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 700; color: #c7d2fe; }
 .at-logs { margin-top: 4px; max-height: 420px; overflow: auto; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 10px; font-size: 12px; line-height: 1.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .at-log-line { margin-bottom: 4px; word-break: break-word; }
 @keyframes atFadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -256,8 +185,6 @@ function AutoTraderPanel() {
   const client = store?.client;
   
   const isLoggedIn = Boolean(client?.is_logged_in && client?.loginid);
-  
-  // Use helper functions to extract token and currency
   const sessionToken = getSessionToken(client);
   const sessionCurrency = getSessionCurrency(client);
   const sessionLoginId = isLoggedIn ? client?.loginid : '';
@@ -279,12 +206,9 @@ function AutoTraderPanel() {
         currency: sessionCurrency || previous.currency || 'USD',
       }));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sessionToken, sessionCurrency]);
 
-  if (!open) {
-    return null;
-  }
+  if (!open) return null;
 
   const set = (patch: Partial<AutoTraderSettings>) => {
     setForm(previous => ({ ...previous, ...patch }));
@@ -293,9 +217,7 @@ function AutoTraderPanel() {
   const toggleMarket = (value: string) => {
     setForm(previous => {
       const has = previous.enabledMarkets.includes(value);
-      const next = has
-        ? previous.enabledMarkets.filter(item => item !== value)
-        : [...previous.enabledMarkets, value];
+      const next = has ? previous.enabledMarkets.filter(item => item !== value) : [...previous.enabledMarkets, value];
       return { ...previous, enabledMarkets: next.length ? next : previous.enabledMarkets };
     });
   };
@@ -303,19 +225,14 @@ function AutoTraderPanel() {
   const toggleCategory = (value: TradeCategory) => {
     setForm(previous => {
       const has = previous.tradeCategories.includes(value);
-      const next = has
-        ? previous.tradeCategories.filter(item => item !== value)
-        : [...previous.tradeCategories, value];
+      const next = has ? previous.tradeCategories.filter(item => item !== value) : [...previous.tradeCategories, value];
       return { ...previous, tradeCategories: next.length ? next : previous.tradeCategories };
     });
   };
 
   const addSymbolPreset = (symbol: string) => {
     setForm(previous => {
-      const existing = previous.symbolsOverride
-        .split(',')
-        .map(item => item.trim())
-        .filter(Boolean);
+      const existing = previous.symbolsOverride.split(',').map(item => item.trim()).filter(Boolean);
       if (existing.includes(symbol)) return previous;
       return { ...previous, symbolsOverride: [...existing, symbol].join(',') };
     });
@@ -324,24 +241,17 @@ function AutoTraderPanel() {
   const handleStart = async () => {
     console.log('[PANEL] handleStart called');
     console.log('[PANEL] Current sessionToken:', sessionToken ? '***' + sessionToken.slice(-10) : 'EMPTY');
-    console.log('[PANEL] Current form.apiToken:', form.apiToken ? '***' + form.apiToken.slice(-10) : 'EMPTY');
     
-    // CRITICAL: Always use the current session token, not the one from form state
     const tokenToUse = sessionToken || form.apiToken;
     const currencyToUse = sessionCurrency || form.currency;
     
     console.log('[PANEL] Final token to use:', tokenToUse ? '***' + tokenToUse.slice(-10) : 'EMPTY');
-    console.log('[PANEL] Final currency to use:', currencyToUse);
     
     if (!tokenToUse) {
       console.error('[PANEL] ✗ No token available! Cannot start trading.');
     }
     
-    await start({
-      ...form,
-      apiToken: tokenToUse,
-      currency: currencyToUse,
-    });
+    await start({ ...form, apiToken: tokenToUse, currency: currencyToUse });
     setSection('activity');
   };
 
@@ -357,58 +267,27 @@ function AutoTraderPanel() {
               <span className={`at-title-dot ${state.running ? 'running' : ''}`} />
               Autonomous Trading Agent
             </h2>
-            <div className='at-subtitle'>
-              Fetches live Deriv market data, analyzes it, and — only when Enabled —
-              executes trades on its own within the rules you set below.
-            </div>
+            <div className='at-subtitle'>Fetches live Deriv market data, analyzes it, and executes trades autonomously.</div>
           </div>
-          <button className='at-close' onClick={hide}>
-            Close
-          </button>
+          <button className='at-close' onClick={hide}>Close</button>
         </div>
         <div className='at-banner'>
-          No trading system can guarantee profit. Real trading risks real money — this
-          defaults to Paper (simulated) mode; only enable Live with funds you can afford
-          to lose. Digit contracts (even/odd, over/under, matches/differs) are close to a
-          fixed-odds coin flip by design, so this agent only takes those when the recent
-          sample is a statistically significant outlier, which will be rare — that's
-          correct behaviour, not a fault. Accumulator contracts aren't supported yet
-          (different exit mechanics from the timed contracts below).
+          No trading system can guarantee profit. Real trading risks real money.
         </div>
         <div className={`at-session ${isLoggedIn ? 'at-session-ok' : 'at-session-warn'}`}>
           <div>
             {isLoggedIn ? (
-              <>
-                Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b>
-                {sessionCurrency ? ` (${sessionCurrency})` : ''}. This session is used
-                automatically for Live mode — no separate token needed.
-              </>
+              <>Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b>{sessionCurrency ? ` (${sessionCurrency})` : ''}.</>
             ) : (
-              <>
-                Not logged into a Deriv account. Paper mode still works; Live mode
-                needs you to log in first (or paste a token in Rules below).
-              </>
+              <>Not logged into a Deriv account. Live mode needs you to log in first.</>
             )}
           </div>
-          <span className='at-session-badge'>
-            {isLoggedIn ? (isVirtualAccount ? 'DEMO ACCOUNT' : 'REAL ACCOUNT') : 'NOT LOGGED IN'}
-          </span>
+          <span className='at-session-badge'>{isLoggedIn ? (isVirtualAccount ? 'DEMO ACCOUNT' : 'REAL ACCOUNT') : 'NOT LOGGED IN'}</span>
         </div>
         <div className='at-tabbar'>
-          {(
-            [
-              ['rules', 'Trading Rules'],
-              ['markets', 'Markets & Strategy'],
-              ['activity', 'Live Activity'],
-              ['logs', 'Logs'],
-            ] as [Section, string][]
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              className={`at-tab ${section === id ? 'active' : ''}`}
-              onClick={() => setSection(id)}
-            >
-              {label}
+          {(['rules', 'markets', 'activity', 'logs'] as Section[]).map(id => (
+            <button key={id} className={`at-tab ${section === id ? 'active' : ''}`} onClick={() => setSection(id)}>
+              {id.charAt(0).toUpperCase() + id.slice(1)}
             </button>
           ))}
         </div>
@@ -419,53 +298,14 @@ function AutoTraderPanel() {
               <div className='at-grid'>
                 <div className='at-field'>
                   <label>Mode</label>
-                  <select
-                    className='at-input'
-                    value={form.mode}
-                    onChange={e => set({ mode: e.target.value as AutoTraderSettings['mode'] })}
-                  >
+                  <select className='at-input' value={form.mode} onChange={e => set({ mode: e.target.value as AutoTraderSettings['mode'] })}>
                     <option value='paper'>Paper / Simulation</option>
-                    <option value='live' disabled={!isLoggedIn && !form.apiToken}>
-                      Live Trading{!isLoggedIn && !form.apiToken ? ' (log in or add a token first)' : ''}
-                    </option>
+                    <option value='live' disabled={!isLoggedIn && !form.apiToken}>Live Trading{!isLoggedIn && !form.apiToken ? ' (log in first)' : ''}</option>
                   </select>
                 </div>
-                <div className='at-field' style={{ gridColumn: '1 / -1' }}>
-                  <label>Deriv App ID</label>
-                  <input
-                    className='at-input'
-                    value={form.appId}
-                    onChange={e => set({ appId: e.target.value })}
-                    placeholder='1089 (shared testing id) — register your own for production'
-                  />
-                  {(!form.appId || form.appId === '1089') && (
-                    <div className='at-hint' style={{ color: '#fbbf24' }}>
-                      You're on Deriv's default <b>1089</b> — their own docs describe this as a
-                      shared public <b>testing</b> id used concurrently by every tutorial and
-                      demo on the internet, not intended for production use. If market data
-                      keeps coming back empty, register your own free app_id at{' '}
-                      <a
-                        href='https://developers.deriv.com/docs/app-registration/'
-                        target='_blank'
-                        rel='noreferrer'
-                        style={{ color: '#a5b4fc' }}
-                      >
-                        developers.deriv.com/docs/app-registration
-                      </a>{' '}
-                      and paste it here — takes about two minutes and requires only a Deriv
-                      login, no approval wait.
-                    </div>
-                  )}
-                </div>
                 <div className='at-field'>
-                  <label>Deriv API Token {isLoggedIn ? '(auto-filled from your login)' : ''}</label>
-                  <input
-                    className='at-input'
-                    type='password'
-                    placeholder={isLoggedIn ? 'Using your logged-in session' : 'Required for Live if not logged in'}
-                    value={form.apiToken}
-                    onChange={e => set({ apiToken: e.target.value })}
-                  />
+                  <label>Deriv API Token {isLoggedIn ? '(auto-filled from login)' : ''}</label>
+                  <input className='at-input' type='password' placeholder={isLoggedIn ? 'Using logged-in session' : 'Required for Live'} value={form.apiToken} onChange={e => set({ apiToken: e.target.value })} />
                 </div>
                 <div className='at-field'>
                   <label>Currency</label>
@@ -474,373 +314,75 @@ function AutoTraderPanel() {
               </div>
               <div className='at-section-title'>Stake &amp; Profit/Loss Rules</div>
               <div className='at-grid'>
-                <div className='at-field'>
-                  <label>Base Stake</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    step='0.01'
-                    value={form.stake}
-                    onChange={e => set({ stake: toNumber(e.target.value, form.stake) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Take Profit (max profit — stops for the day once reached)</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.takeProfit}
-                    onChange={e => set({ takeProfit: toNumber(e.target.value, form.takeProfit) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Max Loss (stops for the day once reached)</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.dailyLossLimit}
-                    onChange={e => set({ dailyLossLimit: toNumber(e.target.value, form.dailyLossLimit) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Max Stake (hard ceiling per trade)</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.maxStake}
-                    onChange={e => set({ maxStake: toNumber(e.target.value, form.maxStake) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Max Concurrent Trades</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.maxConcurrentTrades}
-                    onChange={e => set({ maxConcurrentTrades: toNumber(e.target.value, form.maxConcurrentTrades) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Cooldown Between Trades (ms)</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.cooldownMs}
-                    onChange={e => set({ cooldownMs: toNumber(e.target.value, form.cooldownMs) })}
-                  />
-                </div>
+                <div className='at-field'><label>Base Stake</label><input className='at-input' type='number' step='0.01' value={form.stake} onChange={e => set({ stake: toNumber(e.target.value, form.stake) })} /></div>
+                <div className='at-field'><label>Take Profit</label><input className='at-input' type='number' value={form.takeProfit} onChange={e => set({ takeProfit: toNumber(e.target.value, form.takeProfit) })} /></div>
+                <div className='at-field'><label>Max Loss</label><input className='at-input' type='number' value={form.dailyLossLimit} onChange={e => set({ dailyLossLimit: toNumber(e.target.value, form.dailyLossLimit) })} /></div>
+                <div className='at-field'><label>Max Concurrent Trades</label><input className='at-input' type='number' value={form.maxConcurrentTrades} onChange={e => set({ maxConcurrentTrades: toNumber(e.target.value, form.maxConcurrentTrades) })} /></div>
               </div>
-              <label className='at-checkbox-row'>
-                <input
-                  type='checkbox'
-                  checked={form.martingaleEnabled}
-                  onChange={e => set({ martingaleEnabled: e.target.checked })}
-                />
-                Enable Martingale staking after losses
-              </label>
-              {form.martingaleEnabled && (
-                <div className='at-grid' style={{ marginTop: 4 }}>
-                  <div className='at-field'>
-                    <label>Martingale Multiplier</label>
-                    <input
-                      className='at-input'
-                      type='number'
-                      step='0.1'
-                      value={form.martingaleMultiplier}
-                      onChange={e => set({ martingaleMultiplier: toNumber(e.target.value, form.martingaleMultiplier) })}
-                    />
-                  </div>
-                  <div className='at-field'>
-                    <label>Max Martingale Steps</label>
-                    <input
-                      className='at-input'
-                      type='number'
-                      value={form.maxMartingaleSteps}
-                      onChange={e => set({ maxMartingaleSteps: toNumber(e.target.value, form.maxMartingaleSteps) })}
-                    />
-                  </div>
-                </div>
-              )}
             </>
           )}
           {section === 'markets' && (
             <>
-              <div className='at-section-title'>Markets</div>
-              <div className='at-chip-group'>
-                {MARKETS.map(market => (
-                  <label key={market.value} className={`at-chip ${form.enabledMarkets.includes(market.value) ? 'at-chip-active' : ''}`}>
-                    <input
-                      type='checkbox'
-                      checked={form.enabledMarkets.includes(market.value)}
-                      onChange={() => toggleMarket(market.value)}
-                    />
-                    {market.label}
-                  </label>
-                ))}
-              </div>
-              <div className='at-hint'>
-                Forex, Stock Indices, and Commodities only trade while their exchange
-                is open. Synthetic Indices and Cryptocurrencies trade continuously.
-              </div>
               <div className='at-section-title'>Trade Categories</div>
               <div className='at-chip-group'>
                 {TRADE_CATEGORIES.map(category => (
-                  <label
-                    key={category.value}
-                    className={`at-chip ${form.tradeCategories.includes(category.value) ? 'at-chip-active' : ''}`}
-                  >
-                    <input
-                      type='checkbox'
-                      checked={form.tradeCategories.includes(category.value)}
-                      onChange={() => toggleCategory(category.value)}
-                    />
+                  <label key={category.value} className={`at-chip ${form.tradeCategories.includes(category.value) ? 'at-chip-active' : ''}`}>
+                    <input type='checkbox' checked={form.tradeCategories.includes(category.value)} onChange={() => toggleCategory(category.value)} />
                     {category.label}
                   </label>
                 ))}
               </div>
-              <div className='at-hint'>
-                When more than one category qualifies on a symbol in the same scan,
-                the highest-confidence one is taken.
-              </div>
-              <div className='at-section-title'>Specific Symbols (optional)</div>
-              <div className='at-chip-group'>
-                {SYNTHETIC_SYMBOL_PRESETS.map(preset => (
-                  <button
-                    key={preset.value}
-                    type='button'
-                    className='at-preset-chip'
-                    onClick={() => addSymbolPreset(preset.value)}
-                  >
-                    + {preset.label}
-                  </button>
-                ))}
-              </div>
-              <div className='at-field' style={{ marginTop: 10 }}>
-                <label>Symbol Override</label>
-                <input
-                  className='at-input'
-                  placeholder='Blank = every symbol from the selected Markets. Example: R_100,1HZ25V'
-                  value={form.symbolsOverride}
-                  onChange={e => set({ symbolsOverride: e.target.value })}
-                />
-              </div>
               <div className='at-section-title'>Signal Rules</div>
               <div className='at-grid'>
-                <div className='at-field'>
-                  <label>Minimum Confidence</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    step='0.01'
-                    min='0.5'
-                    max='0.95'
-                    value={form.minConfidence}
-                    onChange={e => set({ minConfidence: toNumber(e.target.value, form.minConfidence) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Max Volatility (Rise/Fall only)</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.maxVolatility}
-                    onChange={e => set({ maxVolatility: toNumber(e.target.value, form.maxVolatility) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Minimum Projected Edge</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    step='0.01'
-                    value={form.minProjectedEdge}
-                    onChange={e => set({ minProjectedEdge: toNumber(e.target.value, form.minProjectedEdge) })}
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Duration</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.duration}
-                    onChange={e => set({ duration: toNumber(e.target.value, form.duration) })}
-                  />
-                </div>
+                <div className='at-field'><label>Minimum Confidence</label><input className='at-input' type='number' step='0.01' min='0.5' max='0.95' value={form.minConfidence} onChange={e => set({ minConfidence: toNumber(e.target.value, form.minConfidence) })} /></div>
+                <div className='at-field'><label>Duration</label><input className='at-input' type='number' value={form.duration} onChange={e => set({ duration: toNumber(e.target.value, form.duration) })} /></div>
                 <div className='at-field'>
                   <label>Duration Unit</label>
-                  <select
-                    className='at-input'
-                    value={form.durationUnit}
-                    onChange={e => set({ durationUnit: e.target.value as AutoTraderSettings['durationUnit'] })}
-                  >
+                  <select className='at-input' value={form.durationUnit} onChange={e => set({ durationUnit: e.target.value as AutoTraderSettings['durationUnit'] })}>
                     <option value='t'>Ticks</option>
                     <option value='s'>Seconds</option>
                     <option value='m'>Minutes</option>
                   </select>
                 </div>
-                <div className='at-field'>
-                  <label>Scan Interval (ms)</label>
-                  <input
-                    className='at-input'
-                    type='number'
-                    value={form.scanIntervalMs}
-                    onChange={e => set({ scanIntervalMs: toNumber(e.target.value, form.scanIntervalMs) })}
-                  />
-                </div>
               </div>
-              <div className='at-hint'>
-                Digit categories (even/odd, over/under, matches/differs) always trade
-                in ticks (1-10) regardless of Duration Unit — that setting only
-                applies to Rise/Fall.
-              </div>
-              <label className='at-checkbox-row'>
-                <input
-                  type='checkbox'
-                  checked={form.requireProfitProjection}
-                  onChange={e => set({ requireProfitProjection: e.target.checked })}
-                />
-                Require a positive projected edge before entering (recommended)
-              </label>
             </>
           )}
           {section === 'activity' && (
             <>
               <div className='at-activity-row'>
                 <span className={`at-scan-dot ${state.scanning ? 'active' : ''}`} />
-                {state.scanning
-                  ? 'Scanning markets right now…'
-                  : state.running
-                  ? 'Idle between scans — next scan will start automatically.'
-                  : 'Agent is stopped.'}
-                {' · '}
-                {state.symbolCount} symbol(s) tracked · {state.stats.scanCount} scan(s) run
-                {state.stats.lastScanAt ? ` · last scan ${new Date(state.stats.lastScanAt).toLocaleTimeString()}` : ''}
+                {state.scanning ? 'Scanning markets right now…' : state.running ? 'Idle between scans.' : 'Agent is stopped.'}
+                {' · '} {state.stats.scanCount} scan(s) run
               </div>
-              {state.running && <div className='at-hint' style={{ marginBottom: 12 }}>{state.stats.lastScanSummary}</div>}
               <div className='at-section-title'>Results</div>
               <div className='at-stats'>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Net P/L</div>
-                  <div className='at-stat-value' style={{ color: state.stats.net >= 0 ? '#4ade80' : '#f87171' }}>
-                    {state.stats.net.toFixed(2)}
-                  </div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Daily P/L</div>
-                  <div className='at-stat-value' style={{ color: state.stats.dailyNet >= 0 ? '#4ade80' : '#f87171' }}>
-                    {state.stats.dailyNet.toFixed(2)}
-                  </div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Wins</div>
-                  <div className='at-stat-value'>{state.stats.wins}</div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Losses</div>
-                  <div className='at-stat-value'>{state.stats.losses}</div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Win Rate</div>
-                  <div className='at-stat-value'>
-                    {state.stats.wins + state.stats.losses > 0
-                      ? `${((state.stats.wins / (state.stats.wins + state.stats.losses)) * 100).toFixed(0)}%`
-                      : '—'}
-                  </div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Open Trades</div>
-                  <div className='at-stat-value'>{state.stats.open}</div>
-                </div>
-              </div>
-              {state.openTrades.length > 0 && (
-                <div className='at-trades'>
-                  {state.openTrades.map(trade => (
-                    <div key={trade.id} className='at-trade-row'>
-                      <span>
-                        {trade.symbol} · {trade.contractType}
-                        {trade.barrier !== null ? `(${trade.barrier})` : ''}
-                        {trade.direction ? ` ${trade.direction}` : ''}
-                      </span>
-                      <span>stake {trade.stake} · {trade.mode.toUpperCase()}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className='at-section-title'>Execution Funnel (this session)</div>
-              <div className='at-hint' style={{ marginTop: -4, marginBottom: 8 }}>
-                Shows exactly where signals are (or aren&apos;t) turning into trades.
-              </div>
-              <div className='at-stats'>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Signals Found</div>
-                  <div className='at-stat-value'>{state.stats.signalsFound}</div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Prices Requested</div>
-                  <div className='at-stat-value'>{state.stats.proposalsRequested}</div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Rejected by Broker</div>
-                  <div className='at-stat-value'>{state.stats.proposalsRejectedByBroker}</div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Below Edge Threshold</div>
-                  <div className='at-stat-value'>{state.stats.skippedBelowEdge}</div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Contract Unavailable</div>
-                  <div className='at-stat-value'>{state.stats.skippedContractUnavailable}</div>
-                </div>
-                <div className='at-stat-card'>
-                  <div className='at-stat-label'>Trades Opened</div>
-                  <div className='at-stat-value'>{state.stats.tradesOpened}</div>
-                </div>
+                <div className='at-stat-card'><div className='at-stat-label'>Net P/L</div><div className='at-stat-value' style={{ color: state.stats.net >= 0 ? '#4ade80' : '#f87171' }}>{state.stats.net.toFixed(2)}</div></div>
+                <div className='at-stat-card'><div className='at-stat-label'>Wins</div><div className='at-stat-value'>{state.stats.wins}</div></div>
+                <div className='at-stat-card'><div className='at-stat-label'>Losses</div><div className='at-stat-value'>{state.stats.losses}</div></div>
+                <div className='at-stat-card'><div className='at-stat-label'>Signals Found</div><div className='at-stat-value'>{state.stats.signalsFound}</div></div>
+                <div className='at-stat-card'><div className='at-stat-label'>Prices Requested</div><div className='at-stat-value'>{state.stats.proposalsRequested}</div></div>
+                <div className='at-stat-card'><div className='at-stat-label'>Trades Opened</div><div className='at-stat-value'>{state.stats.tradesOpened}</div></div>
               </div>
             </>
           )}
           {section === 'logs' && (
             <div className='at-logs'>
-              {state.logs.length === 0 ? (
-                <div>No logs yet.</div>
-              ) : (
-                state.logs.map((log, index) => (
-                  <div
-                    key={`${log.time}-${index}`}
-                    className='at-log-line'
-                    style={{
-                      color:
-                        log.level === 'error'
-                          ? '#f87171'
-                          : log.level === 'warn'
-                          ? '#fbbf24'
-                          : log.level === 'success'
-                          ? '#4ade80'
-                          : '#d1d5db',
-                    }}
-                  >
-                    [{log.time}] {log.message}
-                  </div>
-                ))
-              )}
+              {state.logs.length === 0 ? <div>No logs yet.</div> : state.logs.map((log, index) => (
+                <div key={`${log.time}-${index}`} className='at-log-line' style={{ color: log.level === 'error' ? '#f87171' : log.level === 'warn' ? '#fbbf24' : log.level === 'success' ? '#4ade80' : '#d1d5db' }}>
+                  [{log.time}] {log.message}
+                </div>
+              ))}
             </div>
           )}
         </div>
         <div className='at-actions'>
           {!state.running ? (
-            <button className='at-button at-button-primary' onClick={handleStart}>
-              Enable Autonomous Trading
-            </button>
+            <button className='at-button at-button-primary' onClick={handleStart}>Enable Autonomous Trading</button>
           ) : (
-            <button className='at-button at-button-danger' onClick={handleStop}>
-              Disable Autonomous Trading
-            </button>
+            <button className='at-button at-button-danger' onClick={handleStop}>Disable Autonomous Trading</button>
           )}
           <div className='at-status'>
-            Status: <b>{state.running ? 'Running' : 'Stopped'}</b> · Mode:{' '}
-            <b>{state.settings.mode.toUpperCase()}</b> · Connected:{' '}
-            <b>{state.connected ? 'Yes' : 'No'}</b> · Authorized:{' '}
-            <b>{state.authorized ? 'Yes' : 'No'}</b>
-            {state.settings.mode === 'paper' && ' (only needed for Live mode)'}
+            Status: <b>{state.running ? 'Running' : 'Stopped'}</b> · Mode: <b>{state.settings.mode.toUpperCase()}</b> · Authorized: <b>{state.authorized ? 'Yes' : 'No'}</b>
           </div>
         </div>
       </div>
