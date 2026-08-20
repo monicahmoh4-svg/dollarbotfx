@@ -13,7 +13,7 @@ export function useAutoTrader() {
         return () => autoTrader.removeEventListener('state', handler);
     }, []);
 
-    const start = async (patch: Partial<AutoTraderSettings> & { client?: any } = {}) => {
+    const start = async (patch: Partial<AutoTraderSettings> & { client?: any; apiInstance?: any } = {}) => {
         await autoTrader.start(patch);
     };
 
