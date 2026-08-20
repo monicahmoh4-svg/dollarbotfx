@@ -105,7 +105,6 @@ function parseDuration(raw: unknown): { value: number; unit: string } | null {
 }
 
 class AutoTraderEngine extends EventTarget {
-    // The Deriv App Builder's client object (has send() method)
     private client: any = null;
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
@@ -116,11 +115,8 @@ class AutoTraderEngine extends EventTarget {
     private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES;
     private openTrades = new Map<string, OpenTrade>();
     private cooldownUntil = new Map<string, number>();
-    private tickListeners = new Map<string, Set<(tick: DerivTick) => void>>();
-    private pocListeners = new Set<(poc: any) => void>();
-    private reqId = 1;
-    private waiters = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
-    private messageHandler: ((event: MessageEvent) => void) | null = null;
+    private liveUnsubscribes = new Map<string, () => void>();
+    private paperMonitors = new Map<string, ReturnType<typeof setInterval>>();
 
     constructor() { super(); this.loadSettings(); }
 
@@ -171,34 +167,39 @@ class AutoTraderEngine extends EventTarget {
         this.emit(); 
     }
 
-    // CRITICAL: Accept the Deriv App Builder's client object directly
     async start(patch: Partial<AutoTraderSettings> & { client?: any } = {}) {
         console.log('[ENGINE] start() called');
         console.log('[ENGINE] Has client:', !!patch.client);
-        console.log('[ENGINE] client keys:', patch.client ? Object.keys(patch.client) : []);
         console.log('[ENGINE] client.send type:', typeof patch.client?.send);
         console.log('[ENGINE] client.is_logged_in:', patch.client?.is_logged_in);
+        console.log('[ENGINE] client keys:', patch.client ? Object.keys(patch.client) : []);
         
         try {
             this.updateSettings(patch);
             this.stop(false);
             this.contractsCache.clear();
 
-            // Use the Deriv App Builder's client (which has authenticated session via cookies)
             if (patch.client && patch.client.is_logged_in) {
                 this.client = patch.client;
                 this.connected = true;
                 this.authorized = true;
                 
-                // Subscribe to the client's WebSocket messages for tick/POC updates
-                this.setupClientMessageListener();
+                // Test the connection with a simple ping
+                try {
+                    this.log('info', 'Testing connection with ping...');
+                    const pingResponse = await this.sendRequest({ ping: 1 });
+                    console.log('[ENGINE] Ping response:', pingResponse);
+                    this.log('success', '✓ Connection test successful');
+                } catch (e: any) {
+                    this.log('warn', `Ping test failed: ${e.message}. Continuing anyway...`);
+                }
                 
-                this.log('success', '✓ Using Deriv App Builder authenticated session (no API token needed)');
+                this.log('success', '✓ Using Deriv App Builder authenticated session');
                 this.log('success', '✓ Bot is AUTHORIZED and ready to trade');
             } else {
                 this.authorized = false;
                 this.log('error', '✗ No authenticated Deriv session found');
-                this.log('error', 'Please log in to your Deriv account first (top-right corner)');
+                this.log('error', 'Please log in to your Deriv account first');
                 this.running = false;
                 this.emit();
                 return;
@@ -208,7 +209,9 @@ class AutoTraderEngine extends EventTarget {
             this.saveSettings();
             this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
             this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices`);
-            void this.scan();
+            
+            // Run first scan immediately
+            setTimeout(() => void this.scan(), 100);
             this.emit();
         } catch (error: any) {
             console.error('[ENGINE] Start failed:', error);
@@ -218,140 +221,52 @@ class AutoTraderEngine extends EventTarget {
         }
     }
 
-    // Setup listener on the client's WebSocket to receive ticks and POC updates
-    private setupClientMessageListener() {
-        if (!this.client) return;
-        
-        // Try to find the WebSocket in the client
-        const ws = this.findClientWebSocket();
-        if (!ws) {
-            this.log('warn', 'Could not find WebSocket in client. Tick subscriptions may not work.');
-            return;
-        }
-        
-        this.messageHandler = (event: MessageEvent) => {
-            try {
-                const data = JSON.parse(event.data);
-                
-                // Handle request/response
-                if (data.req_id && this.waiters.has(data.req_id)) {
-                    const waiter = this.waiters.get(data.req_id)!;
-                    clearTimeout(waiter.timer);
-                    this.waiters.delete(data.req_id);
-                    if (data.error) waiter.reject(new Error(data.error.message || 'API error'));
-                    else waiter.resolve(data);
-                    return;
-                }
-                
-                // Handle tick subscriptions
-                if (data.msg_type === 'tick' && data.tick) {
-                    const tick: DerivTick = {
-                        symbol: data.tick.symbol,
-                        quote: Number(data.tick.quote),
-                        epoch: Number(data.tick.epoch),
-                        id: data.tick.id,
-                    };
-                    const listeners = this.tickListeners.get(tick.symbol);
-                    if (listeners) {
-                        listeners.forEach(listener => {
-                            try { listener(tick); } catch (e) { console.error(e); }
-                        });
-                    }
-                }
-                
-                // Handle proposal_open_contract
-                if (data.msg_type === 'proposal_open_contract' && data.proposal_open_contract) {
-                    this.pocListeners.forEach(listener => {
-                        try { listener(data.proposal_open_contract); } catch (e) { console.error(e); }
-                    });
-                }
-            } catch {}
-        };
-        
-        ws.addEventListener('message', this.messageHandler);
-        console.log('[ENGINE] WebSocket message listener attached');
-    }
-
-    // Find the WebSocket in the client object (various possible locations)
-    private findClientWebSocket(): WebSocket | null {
-        if (!this.client) return null;
-        
-        // Try various locations where Deriv App Builder might store the WebSocket
-        const candidates = [
-            this.client.ws,
-            this.client.connection,
-            this.client.api?.ws,
-            this.client.api?.connection,
-            this.client._ws,
-            this.client.socket,
-        ];
-        
-        for (const ws of candidates) {
-            if (ws && ws instanceof WebSocket && ws.readyState === WebSocket.OPEN) {
-                console.log('[ENGINE] Found WebSocket at candidate');
-                return ws;
-            }
-        }
-        
-        // Last resort: search all open WebSockets on the page
-        // This is a hack but works when we can't find it in the client
-        try {
-            const origWS = (window as any).__originalWebSocket || WebSocket;
-            // Try to find via performance entries (WebSocket connections show up)
-            const entries = performance.getEntriesByType('resource') as any[];
-            const wsEntry = entries.find((e: any) => e.name?.includes('derivws.com') && e.initiatorType === 'websocket');
-            if (wsEntry) {
-                console.log('[ENGINE] Found WebSocket via performance entries');
-            }
-        } catch {}
-        
-        return null;
-    }
-
-    // Send request using the client's authenticated session
+    // CRITICAL FIX: Robust sendRequest with timeout and extensive logging
     private async sendRequest<T = any>(payload: Record<string, unknown>): Promise<T> {
         if (!this.client) throw new Error('No client available');
         
-        // Method 1: Use client.send() if available (standard Deriv App Builder way)
+        console.log('[ENGINE] sendRequest called with:', payload);
+        
+        // Method 1: Use client.send() with timeout
         if (typeof this.client.send === 'function') {
             try {
-                const response = await this.client.send(payload);
+                console.log('[ENGINE] Trying client.send()...');
+                const response = await Promise.race([
+                    this.client.send(payload),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('client.send() timeout after 15s')), 15000))
+                ]);
+                console.log('[ENGINE] client.send() response:', response);
                 return response as T;
             } catch (e: any) {
-                console.warn('[ENGINE] client.send() failed, trying WebSocket fallback:', e.message);
+                console.warn('[ENGINE] client.send() failed:', e.message);
+                // Don't throw yet - try alternative methods
             }
         }
         
-        // Method 2: Use the WebSocket directly with req_id tracking
-        const ws = this.findClientWebSocket();
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            const req_id = this.reqId++;
-            return new Promise<T>((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    this.waiters.delete(req_id);
-                    reject(new Error('Request timeout'));
-                }, 30000);
-                this.waiters.set(req_id, { resolve, reject, timer });
-                ws.send(JSON.stringify({ ...payload, req_id }));
-            });
+        // Method 2: Try client.api.send() if it exists
+        if (this.client.api && typeof this.client.api.send === 'function') {
+            try {
+                console.log('[ENGINE] Trying client.api.send()...');
+                const response = await Promise.race([
+                    this.client.api.send(payload),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('client.api.send() timeout after 15s')), 15000))
+                ]);
+                console.log('[ENGINE] client.api.send() response:', response);
+                return response as T;
+            } catch (e: any) {
+                console.warn('[ENGINE] client.api.send() failed:', e.message);
+            }
         }
         
-        throw new Error('No send method or WebSocket available');
+        throw new Error('All send methods failed');
     }
 
     stop(emitLog = true) {
         if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
         
-        // Remove WebSocket listener
-        if (this.messageHandler) {
-            const ws = this.findClientWebSocket();
-            if (ws) ws.removeEventListener('message', this.messageHandler);
-            this.messageHandler = null;
-        }
-        
-        // Clear waiters
-        this.waiters.forEach(w => clearTimeout(w.timer));
-        this.waiters.clear();
+        // Clear all paper trade monitors
+        this.paperMonitors.forEach(monitor => clearInterval(monitor));
+        this.paperMonitors.clear();
         
         if (this.running && emitLog) this.log('warn', 'AI bot stopped.');
         this.running = false;
@@ -390,7 +305,12 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || !this.client || this.scanning) return;
+        if (!this.running || !this.client || this.scanning) {
+            console.log('[ENGINE] Scan skipped:', { running: this.running, hasClient: !!this.client, scanning: this.scanning });
+            return;
+        }
+        
+        console.log('[ENGINE] Starting scan...');
         this.scanning = true;
         this.emit();
 
@@ -403,6 +323,7 @@ class AutoTraderEngine extends EventTarget {
                 let decimals = 2;
                 
                 try {
+                    console.log(`[ENGINE] Fetching ticks for ${symbol.symbol}...`);
                     const response = await this.sendRequest({ 
                         ticks_history: symbol.symbol, 
                         adjust_start_time: 1, 
@@ -410,12 +331,16 @@ class AutoTraderEngine extends EventTarget {
                         end: 'latest', 
                         style: 'ticks' 
                     });
+                    console.log(`[ENGINE] Ticks response for ${symbol.symbol}:`, response);
+                    
                     const prices = response?.history?.prices ?? [];
                     quotes = prices.map((p: any) => Number(p));
                     decimals = symbol.pip ? Math.round(-Math.log10(symbol.pip)) : inferDecimalsFromQuotes(quotes);
                     scannedSymbols += 1;
+                    console.log(`[ENGINE] Got ${quotes.length} quotes for ${symbol.symbol}`);
                 } catch (error: any) {
-                    console.warn(`[ENGINE] Failed to fetch ticks for ${symbol.symbol}:`, error.message);
+                    console.error(`[ENGINE] Failed to fetch ticks for ${symbol.symbol}:`, error);
+                    this.log('warn', `Failed to fetch ticks for ${symbol.symbol}: ${error.message}`);
                     continue;
                 }
 
@@ -443,11 +368,21 @@ class AutoTraderEngine extends EventTarget {
                         } catch (error: any) {
                             this.log('error', `Trade failed: ${error.message}`);
                         }
+                    } else {
+                        console.log(`[ENGINE] Cannot trade ${symbol.symbol}:`, {
+                            running: this.running,
+                            authorized: this.authorized,
+                            openTrades: this.openTrades.size,
+                            maxConcurrent: this.settings.maxConcurrentTrades,
+                            hasOpenTrade: this.openTrades.has(symbol.symbol),
+                            cooldown: this.cooldownUntil.get(symbol.symbol)
+                        });
                     }
                 }
                 await sleep(this.settings.scanBatchDelayMs);
             }
         } catch (error: any) {
+            console.error('[ENGINE] Scan error:', error);
             this.log('error', `Scan error: ${error.message}`);
         } finally {
             this.stats.scanCount += 1; 
@@ -566,10 +501,21 @@ class AutoTraderEngine extends EventTarget {
                 };
                 this.openTrades.set(symbol.symbol, trade);
 
-                await this.sendRequest({ proposal_open_contract: 1, contract_id: String(contractId), subscribe: 1 });
-                const pocListener = (poc: any) => this.onLiveContractUpdate(symbol.symbol, poc);
-                this.pocListeners.add(pocListener);
-                this.liveUnsubscribes.set(trade.id, () => this.pocListeners.delete(pocListener));
+                // Poll for contract status
+                const monitor = setInterval(async () => {
+                    try {
+                        const pocResponse = await this.sendRequest({ proposal_open_contract: 1, contract_id: String(contractId) });
+                        const poc = pocResponse?.proposal_open_contract;
+                        if (poc && (poc.is_sold || poc.status === 'sold' || poc.status === 'won' || poc.status === 'lost')) {
+                            const profit = Number(poc.profit ?? 0);
+                            this.settleTrade(symbol.symbol, profit > 0, profit, `live-${poc.status || 'closed'}`);
+                            clearInterval(monitor);
+                        }
+                    } catch (e) {
+                        console.error('[ENGINE] POC poll error:', e);
+                    }
+                }, 2000);
+                this.liveUnsubscribes.set(trade.id, () => clearInterval(monitor));
 
                 this.log('success', `🚀 LIVE ${analysis.contractType} opened | stake=${stake}`);
                 this.emit();
@@ -588,40 +534,55 @@ class AutoTraderEngine extends EventTarget {
                 this.openTrades.set(symbol.symbol, trade);
                 this.log('success', `📝 PAPER ${analysis.contractType} opened | stake=${stake}`);
                 
-                // Subscribe to ticks for this symbol
-                await this.sendRequest({ ticks_history: symbol.symbol, adjust_start_time: 1, count: 1, end: 'latest', style: 'ticks', subscribe: 1 });
+                // CRITICAL FIX: Use polling instead of WebSocket subscription
+                const tickCount = trade.durationUnit === 't' ? trade.duration : 1;
+                const pollInterval = trade.durationUnit === 't' ? 500 : 1000; // Poll every 0.5s for ticks, 1s for time-based
                 
-                const tickListener = (tick: DerivTick) => {
-                    if (tick.symbol !== trade.symbol) return;
+                const monitor = setInterval(async () => {
                     const current = this.openTrades.get(trade.symbol);
-                    if (!current || current.id !== trade.id) return;
-                    
-                    if (trade.durationUnit === 't') {
-                        if (typeof trade.remainingTicks !== 'number') trade.remainingTicks = 1;
-                        trade.remainingTicks -= 1;
-                        if (trade.remainingTicks > 0) return;
-                    } else { 
-                        if (Date.now() < (trade.expiresAt ?? 0)) return; 
+                    if (!current || current.id !== trade.id) {
+                        clearInterval(monitor);
+                        return;
                     }
                     
-                    const win = trade.category === 'rise_fall' 
-                        ? (trade.direction === 'CALL' ? tick.quote > trade.entry : tick.quote < trade.entry) 
-                        : isDigitContractWin(trade.contractType, trade.barrier, lastDigitOf(tick.quote, trade.decimals));
-                    const profit = win ? trade.stake * (trade.payoutRatio - 1) : -trade.stake;
-                    this.settleTrade(trade.symbol, win, profit, 'paper-expiry');
-                    
-                    // Unsubscribe
-                    const listeners = this.tickListeners.get(trade.symbol);
-                    if (listeners) listeners.delete(tickListener);
-                };
+                    try {
+                        const tickResponse = await this.sendRequest({
+                            ticks_history: trade.symbol,
+                            adjust_start_time: 1,
+                            count: 1,
+                            end: 'latest',
+                            style: 'ticks'
+                        });
+                        
+                        const latestPrice = tickResponse?.history?.prices?.[0];
+                        if (!latestPrice) return;
+                        
+                        const tick: DerivTick = {
+                            symbol: trade.symbol,
+                            quote: Number(latestPrice),
+                            epoch: Date.now() / 1000
+                        };
+                        
+                        if (trade.durationUnit === 't') {
+                            if (typeof trade.remainingTicks !== 'number') trade.remainingTicks = 1;
+                            trade.remainingTicks -= 1;
+                            if (trade.remainingTicks > 0) return;
+                        } else { 
+                            if (Date.now() < (trade.expiresAt ?? 0)) return; 
+                        }
+                        
+                        const win = trade.category === 'rise_fall' 
+                            ? (trade.direction === 'CALL' ? tick.quote > trade.entry : tick.quote < trade.entry) 
+                            : isDigitContractWin(trade.contractType, trade.barrier, lastDigitOf(tick.quote, trade.decimals));
+                        const profit = win ? trade.stake * (trade.payoutRatio - 1) : -trade.stake;
+                        this.settleTrade(trade.symbol, win, profit, 'paper-expiry');
+                        clearInterval(monitor);
+                    } catch (e) {
+                        console.error('[ENGINE] Tick poll error:', e);
+                    }
+                }, pollInterval);
                 
-                if (!this.tickListeners.has(trade.symbol)) this.tickListeners.set(trade.symbol, new Set());
-                this.tickListeners.get(trade.symbol)!.add(tickListener);
-                this.paperUnsubscribes.set(trade.id, () => {
-                    const listeners = this.tickListeners.get(trade.symbol);
-                    if (listeners) listeners.delete(tickListener);
-                });
-                
+                this.paperMonitors.set(trade.id, monitor);
                 this.emit();
                 return true;
             }
@@ -633,24 +594,17 @@ class AutoTraderEngine extends EventTarget {
         }
     }
 
-    private liveUnsubscribes = new Map<string, () => void>();
-    private paperUnsubscribes = new Map<string, () => void>();
-
-    private onLiveContractUpdate(symbol: string, poc: any) {
-        const trade = this.openTrades.get(symbol);
-        if (!trade || trade.mode !== 'live' || poc.contract_id !== trade.contractId) return;
-        if (poc.is_sold || poc.status === 'sold' || poc.status === 'won' || poc.status === 'lost') {
-            const profit = Number(poc.profit ?? 0);
-            this.settleTrade(symbol, profit > 0, profit, `live-${poc.status || 'closed'}`);
-        }
-    }
-
     private settleTrade(symbol: string, win: boolean, profit: number, reason: string) {
         const trade = this.openTrades.get(symbol);
         if (!trade) return;
         this.openTrades.delete(symbol);
-        const unsubscribe = trade.mode === 'live' ? this.liveUnsubscribes.get(trade.id) : this.paperUnsubscribes.get(trade.id);
-        if (unsubscribe) { unsubscribe(); (trade.mode === 'live' ? this.liveUnsubscribes : this.paperUnsubscribes).delete(trade.id); }
+        
+        const unsubscribe = trade.mode === 'live' ? this.liveUnsubscribes.get(trade.id) : null;
+        if (unsubscribe) { unsubscribe(); this.liveUnsubscribes.delete(trade.id); }
+        
+        const monitor = this.paperMonitors.get(trade.id);
+        if (monitor) { clearInterval(monitor); this.paperMonitors.delete(trade.id); }
+        
         if (win) { this.stats.wins += 1; this.stats.lossStreak = 0; } else { this.stats.losses += 1; this.stats.lossStreak += 1; }
         this.stats.net += profit; this.stats.dailyNet += profit;
         this.cooldownUntil.set(symbol, Date.now() + this.settings.cooldownMs);
