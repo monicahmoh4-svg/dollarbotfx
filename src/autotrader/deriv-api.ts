@@ -304,17 +304,13 @@ export class DerivAPI extends EventTarget {
             payload.currency = currency;
         }
 
-        try {
-            const response = await this.send(payload);
-            const available = response?.contracts_for?.available ?? [];
-            return available.map((item: any) => ({
-                contractType: item.contract_type,
-                minDuration: parseDuration(item.min_contract_duration),
-                maxDuration: parseDuration(item.max_contract_duration),
-            }));
-        } catch (error: any) {
-            throw error;
-        }
+        const response = await this.send(payload);
+        const available = response?.contracts_for?.available ?? [];
+        return available.map((item: any) => ({
+            contractType: item.contract_type,
+            minDuration: parseDuration(item.min_contract_duration),
+            maxDuration: parseDuration(item.max_contract_duration),
+        }));
     }
 
     close() {
