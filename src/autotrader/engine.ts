@@ -124,7 +124,7 @@ class AutoTraderEngine extends EventTarget {
                 currency: saved.currency || 'USD',
                 enabledMarkets: ['synthetic_index'],
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length ? saved.tradeCategories : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories, 
-                apiToken: '' // Always clear token on load - it will be set via start() patch
+                apiToken: ''
             };
         } catch { this.settings = { ...DEFAULT_AUTOTRADER_SETTINGS }; }
     }
@@ -161,7 +161,11 @@ class AutoTraderEngine extends EventTarget {
     }
 
     async start(patch: Partial<AutoTraderSettings> = {}) {
-        console.log('[BOT] Starting with patch:', patch);
+        console.log('[ENGINE] start() called with patch:', { 
+            hasToken: !!patch.apiToken, 
+            tokenLength: patch.apiToken?.length,
+            currency: patch.currency 
+        });
         
         try {
             this.updateSettings(patch);
@@ -203,46 +207,44 @@ class AutoTraderEngine extends EventTarget {
             this.connected = true;
             this.log('success', 'Connected to Deriv market data.');
 
-            // CRITICAL: Use the token from the patch (OAuth session or manual)
             const tokenToUse = patch.apiToken || this.settings.apiToken;
+            
+            console.log('[ENGINE] Token to use:', tokenToUse ? '***' + tokenToUse.slice(-10) : 'EMPTY');
             
             if (tokenToUse && tokenToUse.trim() !== '') {
                 this.log('info', 'Attempting authorization with provided token...');
                 try {
                     await this.api.authorize(tokenToUse);
                     this.authorized = true;
-                    this.settings.apiToken = tokenToUse; // Store for reconnection
+                    this.settings.apiToken = tokenToUse;
                     this.log('success', `✓ Authorized successfully (${this.settings.mode === 'live' ? 'LIVE' : 'PAPER'} mode)`);
                     this.log('success', 'Bot can now fetch contract specs and execute trades.');
                 } catch (error: any) {
                     this.authorized = false;
                     this.log('error', `✗ Authorization failed: ${error.message}`);
                     this.log('warn', 'Scanning will continue, but trading requires valid authorization.');
-                    this.log('warn', 'Please log in to your Deriv account or provide a valid API token.');
                 }
             } else {
                 this.authorized = false;
                 this.log('warn', '⚠ No API token provided.');
-                this.log('warn', 'To enable trading: Log in to your Deriv account (top-right corner) or provide an API token in Trading Rules.');
+                this.log('warn', 'To enable trading: Log in to your Deriv account or provide an API token.');
                 this.log('info', 'Scanning will continue without authorization (signal detection only).');
             }
 
             this.running = true;
             this.saveSettings();
             this.scanTimer = setInterval(() => { 
-                console.log('[BOT] Scan timer fired');
                 void this.scan(); 
             }, this.settings.scanIntervalMs);
             
             this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices every ${this.settings.scanIntervalMs}ms`);
             this.log('info', `Trading mode: ${this.settings.mode.toUpperCase()} | Min confidence: ${(this.settings.minConfidence * 100).toFixed(0)}%`);
             
-            // Run first scan immediately
             void this.scan();
             this.emit();
             
         } catch (error: any) {
-            console.error('[BOT] Start failed:', error);
+            console.error('[ENGINE] Start failed:', error);
             this.log('error', `Failed to start bot: ${error.message}`);
             this.running = false;
             this.emit();
@@ -285,10 +287,7 @@ class AutoTraderEngine extends EventTarget {
 
     private canTrade(symbol: string): boolean {
         if (!this.running) return false;
-        if (!this.authorized) {
-            // Don't log this every time to avoid spam
-            return false;
-        }
+        if (!this.authorized) return false;
         if (this.limitsHit()) return false;
         if (this.openTrades.size >= this.settings.maxConcurrentTrades) return false;
         if (this.openTrades.has(symbol)) return false;
@@ -306,14 +305,10 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || !this.api || this.scanning) {
-            console.log('[BOT] Scan skipped:', { running: this.running, hasApi: !!this.api, scanning: this.scanning });
-            return;
-        }
+        if (!this.running || !this.api || this.scanning) return;
         
         this.scanning = true;
         this.emit();
-        console.log('[BOT] Starting scan cycle...');
 
         let scannedSymbols = 0, tradesThisCycle = 0, signalsThisCycle = 0;
 
@@ -330,21 +325,17 @@ class AutoTraderEngine extends EventTarget {
                     decimals = symbol.pip ? pipToDecimals(symbol.pip) : inferDecimalsFromQuotes(quotes);
                     scannedSymbols += 1;
                 } catch (error: any) {
-                    console.warn(`[BOT] Failed to fetch ticks for ${symbol.symbol}:`, error.message);
                     continue;
                 }
 
-                // Analyze all enabled categories
                 const results = this.settings.tradeCategories.map(category => {
                     try {
                         return analyzeMarket(category, quotes, decimals);
                     } catch (e) {
-                        console.error(`[BOT] Analysis failed for ${category}:`, e);
                         return null;
                     }
                 }).filter(r => r !== null) as AnalysisResult[];
 
-                // Find candidates that meet confidence threshold
                 const candidates = results.filter(result => {
                     if (!result.contractType) return false;
                     if (result.confidence < this.settings.minConfidence) return false;
@@ -379,7 +370,6 @@ class AutoTraderEngine extends EventTarget {
                 await sleep(this.settings.scanBatchDelayMs);
             }
         } catch (error: any) {
-            console.error('[BOT] Scan error:', error);
             this.log('error', `Scan error: ${error.message}`);
         } finally {
             this.stats.scanCount += 1; 
@@ -398,15 +388,10 @@ class AutoTraderEngine extends EventTarget {
         if (!this.api) return null;
         
         const cached = this.contractsCache.get(symbol);
-        if (cached) {
-            console.log(`[BOT] Using cached specs for ${symbol}`);
-            return cached;
-        }
+        if (cached) return cached;
         
         try {
-            console.log(`[BOT] Fetching contract specs for ${symbol} with currency ${this.settings.currency}`);
             const specs = await this.api.contractsFor(symbol, this.settings.currency);
-            console.log(`[BOT] Got ${specs.length} specs for ${symbol}`);
             
             if (specs.length > 0) {
                 const map = new Map<ContractType, DerivContractSpec>();
@@ -414,11 +399,9 @@ class AutoTraderEngine extends EventTarget {
                     map.set(spec.contractType as ContractType, spec); 
                 });
                 this.contractsCache.set(symbol, map);
-                console.log(`[BOT] Cached specs for ${symbol}. Available types:`, Array.from(map.keys()));
                 return map;
             }
         } catch (e: any) {
-            console.error(`[BOT] Failed to fetch specs for ${symbol}:`, e.message);
             this.log('warn', `Could not fetch contract specs for ${symbol}: ${e.message}`);
         }
         
@@ -426,22 +409,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
-        console.log(`[BOT] executeTrade called for ${symbol.symbol}`, analysis);
-        
-        if (!this.api) {
-            this.log('error', 'Cannot trade: API not connected');
-            return false;
-        }
-        
-        if (!this.authorized) {
-            this.log('error', 'Cannot trade: Not authorized. Please log in to Deriv.');
-            return false;
-        }
-        
-        if (!analysis.contractType) {
-            this.log('error', 'Cannot trade: No contract type in analysis');
-            return false;
-        }
+        if (!this.api || !this.authorized || !analysis.contractType) return false;
         
         const stake = this.calculateStake();
         const entry = quotes.length > 0 ? quotes[quotes.length - 1] : 0;
@@ -451,7 +419,6 @@ class AutoTraderEngine extends EventTarget {
             return false;
         }
 
-        console.log(`[BOT] Getting contract specs for ${symbol.symbol}...`);
         const specsMap = await this.getContractSpecs(symbol.symbol);
         
         if (!specsMap) {
@@ -465,7 +432,7 @@ class AutoTraderEngine extends EventTarget {
         if (!spec) { 
             this.stats.skippedContractUnavailable += 1; 
             this.emit();
-            this.log('error', `${analysis.contractType} not available for ${symbol.symbol}. Available: ${Array.from(specsMap.keys()).join(', ')}`);
+            this.log('error', `${analysis.contractType} not available for ${symbol.symbol}`);
             return false; 
         }
 
@@ -487,14 +454,11 @@ class AutoTraderEngine extends EventTarget {
             payload.barrier = String(analysis.barrier);
         }
 
-        console.log(`[BOT] Requesting proposal with payload:`, payload);
         this.stats.proposalsRequested += 1;
         this.emit();
 
         try {
             const proposalResponse = await this.api.requestProposal(payload);
-            console.log(`[BOT] Proposal response:`, proposalResponse);
-            
             const proposal = proposalResponse?.proposal;
             
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
@@ -509,12 +473,12 @@ class AutoTraderEngine extends EventTarget {
             const breakEven = askPrice / payout;
             const projectedEdge = analysis.confidence - breakEven;
 
-            this.log('info', `💰 ${symbol.display_name}: Ask=${askPrice.toFixed(2)}, Payout=${payout.toFixed(2)}, BreakEven=${(breakEven*100).toFixed(1)}%, Edge=${(projectedEdge*100).toFixed(2)}%`);
+            this.log('info', `💰 ${symbol.display_name}: Ask=${askPrice.toFixed(2)}, Payout=${payout.toFixed(2)}, Edge=${(projectedEdge*100).toFixed(2)}%`);
 
             if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
                 this.stats.skippedBelowEdge += 1;
                 this.emit();
-                this.log('warn', `Skipping ${symbol.symbol}: projected edge ${(projectedEdge * 100).toFixed(2)}% below minimum ${(this.settings.minProjectedEdge * 100).toFixed(2)}%`);
+                this.log('warn', `Skipping ${symbol.symbol}: projected edge too low`);
                 return false;
             }
 
@@ -527,7 +491,6 @@ class AutoTraderEngine extends EventTarget {
             this.stats.proposalsRejectedByBroker += 1;
             this.emit();
             this.log('error', `✗ REJECTED: ${error.message}`);
-            console.error('[BOT] Proposal rejected:', error);
             return false;
         }
     }
@@ -567,7 +530,7 @@ class AutoTraderEngine extends EventTarget {
             });
             this.liveUnsubscribes.set(trade.id, unsubscribe);
 
-            this.log('success', `🚀 LIVE ${analysis.contractType} opened on ${symbol} | stake=${stake} | contract=${contractId}`);
+            this.log('success', `🚀 LIVE ${analysis.contractType} opened on ${symbol} | stake=${stake}`);
             this.emit();
             return true;
             
@@ -605,7 +568,7 @@ class AutoTraderEngine extends EventTarget {
         }
         
         this.openTrades.set(symbol, trade);
-        this.log('success', `📝 PAPER ${analysis.contractType} opened on ${symbol} | stake=${stake} | duration=${duration}${durationUnit}`);
+        this.log('success', `📝 PAPER ${analysis.contractType} opened on ${symbol} | stake=${stake}`);
         
         await this.monitorPaperTrade(trade);
         this.emit();
@@ -617,9 +580,7 @@ class AutoTraderEngine extends EventTarget {
         
         try { 
             await this.api.subscribeTicks(trade.symbol); 
-        } catch (e) {
-            console.warn('[BOT] Failed to subscribe to ticks for paper trade');
-        }
+        } catch {}
         
         const unsubscribe = this.api.addTickListener((tick: DerivTick) => {
             if (tick.symbol !== trade.symbol) return;
@@ -703,8 +664,7 @@ class AutoTraderEngine extends EventTarget {
         
         this.cooldownUntil.set(symbol, Date.now() + this.settings.cooldownMs);
         
-        const emoji = win ? '✅' : '❌';
-        this.log(win ? 'success' : 'warn', `${emoji} ${trade.mode.toUpperCase()} ${trade.contractType} ${win ? 'WON' : 'LOST'} on ${symbol} | P/L ${profit >= 0 ? '+' : ''}${profit.toFixed(2)} | ${reason}`);
+        this.log(win ? 'success' : 'warn', `${trade.mode.toUpperCase()} ${trade.contractType} ${win ? 'WON' : 'LOST'} on ${symbol} | P/L ${profit.toFixed(2)}`);
         
         this.limitsHit(); 
         this.emit();
