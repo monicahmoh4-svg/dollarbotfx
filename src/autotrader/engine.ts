@@ -53,9 +53,6 @@ export const SYNTHETIC_INDICES: DerivActiveSymbol[] = [
     { symbol: '1HZ100V', display_name: 'Volatility 100 (1s) Index', market: 'synthetic_index', exchange_is_open: 1, is_trading_suspended: 0 },
 ];
 
-// Currencies that Deriv supports for synthetic indices
-export const SUPPORTED_SYNTHETIC_CURRENCIES = ['USD', 'USDC', 'eUSDC', 'UST', 'BTC', 'ETH'];
-
 export type AutoTraderSettings = {
     mode: AutoTraderMode; appId: string; apiToken: string; stake: number; currency: string; duration: number; durationUnit: DurationUnit;
     minConfidence: number; maxVolatility: number; maxConcurrentTrades: number; dailyLossLimit: number; takeProfit: number;
@@ -107,20 +104,9 @@ function parseDuration(raw: unknown): { value: number; unit: string } | null {
     return { value: Number(match[1]), unit: match[2] };
 }
 
-// Helper to extract error message from Deriv API response
-function extractErrorMessage(response: any): string | null {
-    if (!response) return null;
-    if (typeof response === 'object') {
-        if (response.error?.message) return response.error.message;
-        if (response.error) return String(response.error);
-    }
-    return null;
-}
-
 class AutoTraderEngine extends EventTarget {
     private client: any = null;
-    private apiInstance: any = null;
-    private fallbackApi: DerivAPI | null = null;
+    private api: DerivAPI | null = null;
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
@@ -132,8 +118,6 @@ class AutoTraderEngine extends EventTarget {
     private cooldownUntil = new Map<string, number>();
     private liveUnsubscribes = new Map<string, () => void>();
     private paperMonitors = new Map<string, ReturnType<typeof setInterval>>();
-    private accountCurrency: string = 'USD';
-    private currencyMismatchDetected = false;
 
     constructor() { super(); this.loadSettings(); }
 
@@ -184,62 +168,54 @@ class AutoTraderEngine extends EventTarget {
         this.emit(); 
     }
 
-    async start(patch: Partial<AutoTraderSettings> & { client?: any; apiInstance?: any } = {}) {
+    async start(patch: Partial<AutoTraderSettings> & { client?: any } = {}) {
         console.log('[ENGINE] === START CALLED ===');
         
         try {
             this.updateSettings(patch);
             this.stop(false);
             this.contractsCache.clear();
-            this.currencyMismatchDetected = false;
 
             this.client = patch.client;
-            this.apiInstance = patch.apiInstance;
 
             if (this.client?.is_logged_in) {
                 this.connected = true;
-                this.authorized = true;
                 
-                // CRITICAL: Detect account currency and check compatibility
-                this.accountCurrency = this.client?.currency || 
-                                      this.client?.accounts?.[this.client?.loginid]?.currency || 
-                                      'USD';
-                
-                console.log('[ENGINE] Detected account currency:', this.accountCurrency);
-                
-                const isSupported = SUPPORTED_SYNTHETIC_CURRENCIES.includes(this.accountCurrency);
-                
-                if (!isSupported) {
-                    this.log('error', `⚠️ CRITICAL: Your Deriv account currency is ${this.accountCurrency}`);
-                    this.log('error', `⚠️ Synthetic Indices are ONLY supported in: ${SUPPORTED_SYNTHETIC_CURRENCIES.join(', ')}`);
-                    this.log('error', `⚠️ Your account (${this.accountCurrency}) cannot trade synthetic indices.`);
-                    this.log('error', `💡 SOLUTION: Create a new Deriv account with USD or USDC currency at app.deriv.com`);
-                    this.log('error', `💡 Steps: Log in → Click account icon → "Add or manage account" → Add new account → Choose USD`);
-                    this.currencyMismatchDetected = true;
-                    // Still allow scanning (for signal detection), but warn about trading
-                }
-                
-                if (this.apiInstance && typeof this.apiInstance.send === 'function') {
+                // CRITICAL FIX: Extract the token directly from the Deriv App Builder client
+                let token = '';
+                if (typeof this.client.getToken === 'function') {
                     try {
-                        this.log('info', 'Testing App Builder API...');
-                        await Promise.race([
-                            this.apiInstance.send({ ping: 1 }),
-                            new Promise((_, reject) => setTimeout(() => reject(new Error('API timeout')), 10000))
-                        ]);
-                        this.log('success', '✓ App Builder API is working');
-                    } catch (e: any) {
-                        this.log('warn', `App Builder API test failed: ${e.message}. Setting up fallback...`);
-                        await this.setupFallbackApi();
+                        token = this.client.getToken();
+                        console.log('[ENGINE] Successfully extracted token via client.getToken()');
+                    } catch (e) {
+                        console.warn('[ENGINE] client.getToken() threw an error:', e);
                     }
-                } else {
-                    this.log('warn', 'No App Builder API found. Setting up fallback...');
-                    await this.setupFallbackApi();
                 }
                 
-                this.log('success', '✓ Bot is AUTHORIZED and ready to trade');
+                if (!token && this.client.loginid && this.client.accounts) {
+                    try {
+                        token = this.client.accounts[this.client.loginid]?.token;
+                        console.log('[ENGINE] Successfully extracted token via client.accounts');
+                    } catch (e) {}
+                }
+
+                if (token) {
+                    this.log('info', 'Initializing authorized API with account token...');
+                    this.api = new DerivAPI(this.settings.appId || '1089');
+                    await this.api.connect();
+                    await this.api.authorize(token);
+                    this.authorized = true;
+                    this.log('success', '✓ API authorized with account token. Ready to trade.');
+                } else {
+                    this.log('error', '✗ Could not extract API token from client. Trading requires authorization.');
+                    this.authorized = false;
+                    this.running = false;
+                    this.emit();
+                    return;
+                }
             } else {
                 this.authorized = false;
-                this.log('error', '✗ Not logged in');
+                this.log('error', '✗ Not logged in. Please log in to your Deriv account.');
                 this.running = false;
                 this.emit();
                 return;
@@ -260,87 +236,18 @@ class AutoTraderEngine extends EventTarget {
         }
     }
 
-    private async setupFallbackApi() {
-        try {
-            this.log('info', 'Setting up fallback API...');
-            this.fallbackApi = new DerivAPI(this.settings.appId || '1089');
-            await this.fallbackApi.connect();
-            this.log('success', '✓ Fallback API connected');
-        } catch (e: any) {
-            this.log('error', `Fallback API failed: ${e.message}`);
-        }
-    }
-
     private async sendRequest<T = any>(payload: Record<string, unknown>): Promise<T> {
-        console.log('[ENGINE] sendRequest payload:', JSON.stringify(payload));
-        
-        if (this.apiInstance && typeof this.apiInstance.send === 'function') {
-            try {
-                console.log('[ENGINE] Trying apiInstance.send()...');
-                const response = await Promise.race([
-                    this.apiInstance.send(payload),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance timeout (15s)')), 15000))
-                ]);
-                
-                // CRITICAL: Check if response contains an error object
-                const errorMsg = extractErrorMessage(response);
-                if (errorMsg) {
-                    console.error('[ENGINE] apiInstance returned error:', errorMsg);
-                    throw new Error(errorMsg);
-                }
-                
-                console.log('[ENGINE] apiInstance response received');
-                return response as T;
-            } catch (e: any) {
-                console.error('[ENGINE] apiInstance.send() FAILED:', e.message || String(e));
-            }
+        if (!this.api) {
+            throw new Error('API not initialized');
         }
-
-        if (this.apiInstance?.api && typeof this.apiInstance.api.send === 'function') {
-            try {
-                console.log('[ENGINE] Trying apiInstance.api.send()...');
-                const response = await Promise.race([
-                    this.apiInstance.api.send(payload),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('apiInstance.api timeout (15s)')), 15000))
-                ]);
-                
-                const errorMsg = extractErrorMessage(response);
-                if (errorMsg) {
-                    console.error('[ENGINE] apiInstance.api returned error:', errorMsg);
-                    throw new Error(errorMsg);
-                }
-                
-                console.log('[ENGINE] apiInstance.api response received');
-                return response as T;
-            } catch (e: any) {
-                console.error('[ENGINE] apiInstance.api.send() FAILED:', e.message || String(e));
-            }
-        }
-
-        if (!this.fallbackApi) {
-            console.log('[ENGINE] Fallback API is null. Setting it up now...');
-            await this.setupFallbackApi();
-        }
-
-        if (this.fallbackApi) {
-            try {
-                console.log('[ENGINE] Trying fallback API...');
-                const response = await this.fallbackApi.send(payload);
-                console.log('[ENGINE] Fallback API response received');
-                return response as T;
-            } catch (e: any) {
-                console.error('[ENGINE] Fallback API FAILED:', e.message || String(e));
-            }
-        }
-
-        throw new Error(`All API methods failed for payload: ${JSON.stringify(payload)}`);
+        return this.api.send<T>(payload);
     }
 
     stop(emitLog = true) {
         if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
         this.paperMonitors.forEach(monitor => clearInterval(monitor));
         this.paperMonitors.clear();
-        if (this.fallbackApi) { this.fallbackApi.close(); this.fallbackApi = null; }
+        if (this.api) { this.api.close(); this.api = null; }
         if (this.running && emitLog) this.log('warn', 'AI bot stopped.');
         this.running = false;
         this.emit();
@@ -361,7 +268,6 @@ class AutoTraderEngine extends EventTarget {
     private canTrade(symbol: string): boolean {
         if (!this.running) return false;
         if (!this.authorized) return false;
-        if (this.currencyMismatchDetected) return false; // Block trading if currency mismatch
         if (this.limitsHit()) return false;
         if (this.openTrades.size >= this.settings.maxConcurrentTrades) return false;
         if (this.openTrades.has(symbol)) return false;
@@ -379,7 +285,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || this.scanning) return;
+        if (!this.running || !this.api || this.scanning) return;
         
         console.log('[ENGINE] Starting scan...');
         this.scanning = true;
@@ -435,11 +341,6 @@ class AutoTraderEngine extends EventTarget {
                         } catch (error: any) {
                             this.log('error', `Trade failed: ${error.message}`);
                         }
-                    } else if (this.currencyMismatchDetected) {
-                        // Only log this once per scan to avoid spam
-                        if (this.stats.scanCount === 0) {
-                            this.log('warn', `⚠️ Cannot trade ${symbol.display_name}: Account currency ${this.accountCurrency} not supported for synthetic indices`);
-                        }
                     }
                 }
                 await sleep(this.settings.scanBatchDelayMs);
@@ -461,59 +362,34 @@ class AutoTraderEngine extends EventTarget {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
-        // CRITICAL: If currency mismatch detected, don't even try - we know it will fail
-        if (this.currencyMismatchDetected) {
-            this.log('error', `Cannot fetch specs for ${symbol}: Account currency ${this.accountCurrency} not supported for synthetic indices`);
-            return null;
-        }
-        
-        // Try supported currencies in order of likelihood
-        const currenciesToTry: (string | undefined)[] = [
-            this.accountCurrency,  // Try account currency first
-            undefined,              // Try without currency (defaults to account)
-            'USD', 'USDC', 'eUSDC', 'UST'
-        ].filter((v, i, a) => v !== undefined ? a.indexOf(v) === i : true);
-
-        for (const curr of currenciesToTry) {
-            try {
-                const payload: Record<string, unknown> = { 
-                    contracts_for: symbol, 
-                    product_type: 'basic' 
-                };
-                if (curr) payload.currency = curr;
-                
-                const response = await this.sendRequest(payload);
-                const available = response?.contracts_for?.available ?? [];
-                
-                if (available.length > 0) {
-                    const map = new Map<ContractType, DerivContractSpec>();
-                    available.forEach((item: any) => {
-                        map.set(item.contract_type, {
-                            contractType: item.contract_type,
-                            minDuration: parseDuration(item.min_contract_duration),
-                            maxDuration: parseDuration(item.max_contract_duration),
-                        });
+        try {
+            const response = await this.sendRequest({ 
+                contracts_for: symbol, 
+                currency: this.client?.currency || 'USD', 
+                product_type: 'basic' 
+            });
+            const available = response?.contracts_for?.available ?? [];
+            
+            if (available.length > 0) {
+                const map = new Map<ContractType, DerivContractSpec>();
+                available.forEach((item: any) => {
+                    map.set(item.contract_type, {
+                        contractType: item.contract_type,
+                        minDuration: parseDuration(item.min_contract_duration),
+                        maxDuration: parseDuration(item.max_contract_duration),
                     });
-                    this.contractsCache.set(symbol, map);
-                    return map;
-                }
-            } catch (e: any) {
-                // Continue to next currency
+                });
+                this.contractsCache.set(symbol, map);
+                return map;
             }
+        } catch (e: any) {
+            this.log('warn', `Could not fetch specs for ${symbol}: ${e.message}`);
         }
-        
-        this.log('warn', `Could not fetch specs for ${symbol}`);
         return null;
     }
 
     private async executeTrade(symbol: DerivActiveSymbol, quotes: number[], decimals: number, analysis: AnalysisResult): Promise<boolean> {
         if (!this.authorized || !analysis.contractType) return false;
-        
-        // CRITICAL: Block trading if currency mismatch
-        if (this.currencyMismatchDetected) {
-            this.log('error', `Trade blocked: Account currency ${this.accountCurrency} not supported for synthetic indices`);
-            return false;
-        }
         
         const stake = this.calculateStake();
         const entry = quotes.length > 0 ? quotes[quotes.length - 1] : 0;
@@ -538,7 +414,7 @@ class AutoTraderEngine extends EventTarget {
 
         const payload: Record<string, unknown> = { 
             amount: stake, basis: 'stake', contract_type: analysis.contractType, 
-            currency: this.accountCurrency || 'USD',
+            currency: this.client?.currency || 'USD',
             duration, duration_unit: durationUnit, symbol: symbol.symbol, product_type: 'basic' 
         };
         if (analysis.barrier !== null) payload.barrier = String(analysis.barrier);
@@ -553,6 +429,7 @@ class AutoTraderEngine extends EventTarget {
             if (!proposal?.id || !proposal.ask_price || !proposal.payout) {
                 this.stats.proposalsRejectedByBroker += 1;
                 this.emit();
+                this.log('error', `No priceable proposal for ${symbol.symbol}`);
                 return false;
             }
 
@@ -572,7 +449,10 @@ class AutoTraderEngine extends EventTarget {
             if (this.settings.mode === 'live') {
                 const buyResponse = await this.sendRequest({ buy: proposal.id, price: askPrice });
                 const contractId = buyResponse?.buy?.contract_id;
-                if (!contractId) return false;
+                if (!contractId) {
+                    this.log('error', `Live buy failed: no contract id`);
+                    return false;
+                }
 
                 const trade: LiveTrade = { 
                     id: String(contractId), symbol: symbol.symbol, category: analysis.category, 
