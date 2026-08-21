@@ -107,6 +107,7 @@ function parseDuration(raw: unknown): { value: number; unit: string } | null {
 class AutoTraderEngine extends EventTarget {
     private client: any = null;
     private api: DerivAPI | null = null;
+    private apiInstance: any = null; // App Builder's API instance
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
@@ -168,7 +169,7 @@ class AutoTraderEngine extends EventTarget {
         this.emit(); 
     }
 
-    async start(patch: Partial<AutoTraderSettings> & { client?: any } = {}) {
+    async start(patch: Partial<AutoTraderSettings> & { client?: any; apiInstance?: any } = {}) {
         console.log('[ENGINE] === START CALLED ===');
         
         try {
@@ -177,29 +178,23 @@ class AutoTraderEngine extends EventTarget {
             this.contractsCache.clear();
 
             this.client = patch.client;
+            const providedApi = patch.apiInstance;
 
             if (this.client?.is_logged_in) {
                 this.connected = true;
                 
-                // CRITICAL FIX: Extract the token directly from the Deriv App Builder client
+                // 1. Try to extract token (Token Auth)
                 let token = '';
                 if (typeof this.client.getToken === 'function') {
-                    try {
-                        token = this.client.getToken();
-                        console.log('[ENGINE] Successfully extracted token via client.getToken()');
-                    } catch (e) {
-                        console.warn('[ENGINE] client.getToken() threw an error:', e);
-                    }
+                    try { token = this.client.getToken(); } catch (e) {}
                 }
-                
-                if (!token && this.client.loginid && this.client.accounts) {
-                    try {
-                        token = this.client.accounts[this.client.loginid]?.token;
-                        console.log('[ENGINE] Successfully extracted token via client.accounts');
-                    } catch (e) {}
+                if ((!token || token === '') && this.client.loginid && this.client.accounts) {
+                    try { token = this.client.accounts[this.client.loginid]?.token; } catch (e) {}
                 }
 
-                if (token) {
+                console.log('[ENGINE] Extracted token length:', token ? token.length : 0);
+
+                if (token && token.length > 10) {
                     this.log('info', 'Initializing authorized API with account token...');
                     this.api = new DerivAPI(this.settings.appId || '1089');
                     await this.api.connect();
@@ -207,11 +202,42 @@ class AutoTraderEngine extends EventTarget {
                     this.authorized = true;
                     this.log('success', '✓ API authorized with account token. Ready to trade.');
                 } else {
-                    this.log('error', '✗ Could not extract API token from client. Trading requires authorization.');
-                    this.authorized = false;
-                    this.running = false;
-                    this.emit();
-                    return;
+                    // 2. No token? Must use App Builder's API instance (Cookie Auth)
+                    this.log('warn', '⚠️ No token in JS (Cookie Auth). Attempting to use App Builder API...');
+                    
+                    if (providedApi && typeof providedApi.send === 'function') {
+                        this.apiInstance = providedApi;
+                        this.authorized = true;
+                        this.log('success', '✓ Using App Builder API (Cookie Auth). Ready to trade.');
+                    } else {
+                        // Try to find it in the client object
+                        const candidates = [
+                            this.client.root_store?.common?.api,
+                            this.client.root_store?.common?.ws,
+                            this.client.common?.api,
+                            this.client.app?.api_helpers_store,
+                        ];
+                        
+                        let foundApi = null;
+                        for (const cand of candidates) {
+                            if (cand && typeof cand.send === 'function') {
+                                foundApi = cand;
+                                break;
+                            }
+                        }
+                        
+                        if (foundApi) {
+                            this.apiInstance = foundApi;
+                            this.authorized = true;
+                            this.log('success', '✓ Found and using App Builder API (Cookie Auth). Ready to trade.');
+                        } else {
+                            this.log('error', '✗ CRITICAL: No token found AND could not find App Builder API.');
+                            this.log('error', '✗ Please ensure you are fully logged in, or provide a manual API token in settings.');
+                            this.running = false;
+                            this.emit();
+                            return;
+                        }
+                    }
                 }
             } else {
                 this.authorized = false;
@@ -237,10 +263,32 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async sendRequest<T = any>(payload: Record<string, unknown>): Promise<T> {
-        if (!this.api) {
-            throw new Error('API not initialized');
+        // Method 1: Our own authorized DerivAPI (Token Auth)
+        if (this.api) {
+            return this.api.send<T>(payload);
         }
-        return this.api.send<T>(payload);
+        
+        // Method 2: App Builder's API instance (Cookie Auth)
+        if (this.apiInstance && typeof this.apiInstance.send === 'function') {
+            try {
+                const response = await Promise.race([
+                    this.apiInstance.send(payload),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('App Builder API timeout (15s)')), 15000))
+                ]);
+                
+                // Check for Deriv error format
+                if (response && typeof response === 'object' && response.error) {
+                    throw new Error(response.error.message || JSON.stringify(response.error));
+                }
+                
+                return response as T;
+            } catch (e: any) {
+                console.error('[ENGINE] App Builder API send failed:', e.message || e);
+                throw e;
+            }
+        }
+        
+        throw new Error('No API available');
     }
 
     stop(emitLog = true) {
@@ -285,7 +333,7 @@ class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.running || !this.api || this.scanning) return;
+        if (!this.running || (!this.api && !this.apiInstance) || this.scanning) return;
         
         console.log('[ENGINE] Starting scan...');
         this.scanning = true;
