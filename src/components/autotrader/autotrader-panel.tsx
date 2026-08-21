@@ -8,10 +8,12 @@ import { MARKETS, SYNTHETIC_SYMBOL_PRESETS, TRADE_CATEGORIES } from '@/autotrade
 import type { TradeCategory } from '@/autotrader/analysis';
 
 function getSessionCurrency(client: any): string {
-    if (!client) return 'USD';
-    if (client.currency) return client.currency;
-    if (client.loginid && client.accounts && client.accounts[client.loginid]?.currency) return client.accounts[client.loginid].currency;
-    return 'USD';
+  if (!client) return 'USD';
+  if (client.currency) return client.currency;
+  if (client.loginid && client.accounts && client.accounts[client.loginid]?.currency) {
+    return client.accounts[client.loginid].currency;
+  }
+  return 'USD';
 }
 
 const styles = `
@@ -139,50 +141,25 @@ function AutoTraderPanel() {
 
   const handleStart = async () => {
     console.log('[PANEL] === STARTING BOT ===');
-    console.log('[PANEL] Store keys:', store ? Object.keys(store) : 'NO STORE');
-    console.log('[PANEL] Client keys:', client ? Object.keys(client) : 'NO CLIENT');
     
-    let apiInstance: any = null;
-    
+    // Aggressively find the App Builder's API instance
+    let apiInstance = null;
     if (store) {
-      const candidates = [
-        store.api,
-        store.apiInstance,
-        store.derivApi,
-        store.client?.api,
-        store.client?.apiInstance,
-        store.common?.api,
-        store.core?.api,
-      ];
-      
-      for (const candidate of candidates) {
-        if (candidate && typeof candidate.send === 'function') {
-          console.log('[PANEL] ✓ Found API instance');
-          apiInstance = candidate;
-          break;
-        }
-      }
-      
-      if (!apiInstance) {
-        console.log('[PANEL] API not found in common locations, doing deep search...');
-        const findApi = (obj: any, path: string = '', depth: number = 0): any => {
-          if (!obj || depth > 3) return null;
-          if (typeof obj.send === 'function' && typeof obj.connect === 'function') {
-            console.log('[PANEL] ✓ Found API at path:', path);
-            return obj;
-          }
-          if (typeof obj === 'object') {
-            for (const key in obj) {
-              try {
-                const found = findApi(obj[key], path ? `${path}.${key}` : key, depth + 1);
-                if (found) return found;
-              } catch {}
+        const candidates = [
+            store.client?.root_store?.common?.api,
+            store.client?.common?.api,
+            store.common?.api,
+            store.core?.api,
+            store.app?.api_helpers_store,
+        ];
+        
+        for (const cand of candidates) {
+            if (cand && typeof cand.send === 'function') {
+                apiInstance = cand;
+                console.log('[PANEL] Found valid API instance');
+                break;
             }
-          }
-          return null;
-        };
-        apiInstance = findApi(store);
-      }
+        }
     }
     
     console.log('[PANEL] Final API instance found:', !!apiInstance);
