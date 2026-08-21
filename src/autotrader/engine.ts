@@ -107,7 +107,7 @@ function parseDuration(raw: unknown): { value: number; unit: string } | null {
 class AutoTraderEngine extends EventTarget {
     private client: any = null;
     private api: DerivAPI | null = null;
-    private apiInstance: any = null; // App Builder's API instance
+    private apiInstance: any = null;
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
@@ -178,18 +178,33 @@ class AutoTraderEngine extends EventTarget {
             this.contractsCache.clear();
 
             this.client = patch.client;
-            const providedApi = patch.apiInstance;
+            this.apiInstance = patch.apiInstance;
 
             if (this.client?.is_logged_in) {
                 this.connected = true;
                 
-                // 1. Try to extract token (Token Auth)
+                // 1. Aggressive Token Extraction
                 let token = '';
+                
+                // Method A: client.getToken()
                 if (typeof this.client.getToken === 'function') {
                     try { token = this.client.getToken(); } catch (e) {}
                 }
+                
+                // Method B: client.accounts[loginid].token
                 if ((!token || token === '') && this.client.loginid && this.client.accounts) {
                     try { token = this.client.accounts[this.client.loginid]?.token; } catch (e) {}
+                }
+                
+                // Method C: localStorage fallback
+                if ((!token || token === '') && this.client.loginid) {
+                    try {
+                        const stored = localStorage.getItem('client.accounts');
+                        if (stored) {
+                            const accounts = JSON.parse(stored);
+                            token = accounts[this.client.loginid]?.token;
+                        }
+                    } catch (e) {}
                 }
 
                 console.log('[ENGINE] Extracted token length:', token ? token.length : 0);
@@ -202,41 +217,18 @@ class AutoTraderEngine extends EventTarget {
                     this.authorized = true;
                     this.log('success', '✓ API authorized with account token. Ready to trade.');
                 } else {
-                    // 2. No token? Must use App Builder's API instance (Cookie Auth)
-                    this.log('warn', '⚠️ No token in JS (Cookie Auth). Attempting to use App Builder API...');
+                    // 2. No token found. Must use App Builder's API instance (Cookie Auth)
+                    this.log('warn', '⚠️ No token in JS. Attempting to use App Builder API (Cookie Auth)...');
                     
-                    if (providedApi && typeof providedApi.send === 'function') {
-                        this.apiInstance = providedApi;
+                    if (this.apiInstance && typeof this.apiInstance.send === 'function') {
                         this.authorized = true;
-                        this.log('success', '✓ Using App Builder API (Cookie Auth). Ready to trade.');
+                        this.log('success', '✓ Using App Builder API. Ready to trade.');
                     } else {
-                        // Try to find it in the client object
-                        const candidates = [
-                            this.client.root_store?.common?.api,
-                            this.client.root_store?.common?.ws,
-                            this.client.common?.api,
-                            this.client.app?.api_helpers_store,
-                        ];
-                        
-                        let foundApi = null;
-                        for (const cand of candidates) {
-                            if (cand && typeof cand.send === 'function') {
-                                foundApi = cand;
-                                break;
-                            }
-                        }
-                        
-                        if (foundApi) {
-                            this.apiInstance = foundApi;
-                            this.authorized = true;
-                            this.log('success', '✓ Found and using App Builder API (Cookie Auth). Ready to trade.');
-                        } else {
-                            this.log('error', '✗ CRITICAL: No token found AND could not find App Builder API.');
-                            this.log('error', '✗ Please ensure you are fully logged in, or provide a manual API token in settings.');
-                            this.running = false;
-                            this.emit();
-                            return;
-                        }
+                        this.log('error', '✗ CRITICAL: No token found AND no valid App Builder API instance.');
+                        this.log('error', '✗ Please ensure you are fully logged in, or provide a manual API token in settings.');
+                        this.running = false;
+                        this.emit();
+                        return;
                     }
                 }
             } else {
@@ -271,19 +263,27 @@ class AutoTraderEngine extends EventTarget {
         // Method 2: App Builder's API instance (Cookie Auth)
         if (this.apiInstance && typeof this.apiInstance.send === 'function') {
             try {
+                console.log('[ENGINE] Sending via App Builder API:', JSON.stringify(payload));
                 const response = await Promise.race([
                     this.apiInstance.send(payload),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('App Builder API timeout (15s)')), 15000))
                 ]);
                 
-                // Check for Deriv error format
-                if (response && typeof response === 'object' && response.error) {
-                    throw new Error(response.error.message || JSON.stringify(response.error));
+                console.log('[ENGINE] App Builder API Response snippet:', JSON.stringify(response).substring(0, 300));
+                
+                // Bulletproof Deriv error extraction
+                if (response && typeof response === 'object') {
+                    if (response.error) {
+                        const err = response.error;
+                        const errMsg = typeof err === 'string' ? err : (err.message || JSON.stringify(err));
+                        console.error('[ENGINE] Deriv API Error Details:', JSON.stringify(err));
+                        throw new Error(errMsg);
+                    }
                 }
                 
                 return response as T;
             } catch (e: any) {
-                console.error('[ENGINE] App Builder API send failed:', e.message || e);
+                console.error('[ENGINE] App Builder API send failed:', e.message || String(e));
                 throw e;
             }
         }
@@ -411,9 +411,12 @@ class AutoTraderEngine extends EventTarget {
         if (cached) return cached;
         
         try {
+            // CRITICAL: Guarantee a valid currency string
+            const safeCurrency = this.client?.currency || this.settings.currency || 'USD';
+            
             const response = await this.sendRequest({ 
                 contracts_for: symbol, 
-                currency: this.client?.currency || 'USD', 
+                currency: safeCurrency, 
                 product_type: 'basic' 
             });
             const available = response?.contracts_for?.available ?? [];
@@ -459,10 +462,11 @@ class AutoTraderEngine extends EventTarget {
 
         const duration = spec.minDuration?.value ?? 5;
         const durationUnit = (spec.minDuration?.unit ?? 't') as DurationUnit;
+        const safeCurrency = this.client?.currency || this.settings.currency || 'USD';
 
         const payload: Record<string, unknown> = { 
             amount: stake, basis: 'stake', contract_type: analysis.contractType, 
-            currency: this.client?.currency || 'USD',
+            currency: safeCurrency,
             duration, duration_unit: durationUnit, symbol: symbol.symbol, product_type: 'basic' 
         };
         if (analysis.barrier !== null) payload.barrier = String(analysis.barrier);
