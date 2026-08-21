@@ -142,23 +142,46 @@ function AutoTraderPanel() {
   const handleStart = async () => {
     console.log('[PANEL] === STARTING BOT ===');
     
-    // Aggressively find the App Builder's API instance
     let apiInstance = null;
     if (store) {
+        // 1. Try known paths first (including the .ws property that was found previously)
         const candidates = [
+            store.app?.api_helpers_store?.ws,
+            store.app?.api_helpers_store,
             store.client?.root_store?.common?.api,
             store.client?.common?.api,
             store.common?.api,
             store.core?.api,
-            store.app?.api_helpers_store,
         ];
         
         for (const cand of candidates) {
             if (cand && typeof cand.send === 'function') {
                 apiInstance = cand;
-                console.log('[PANEL] Found valid API instance');
+                console.log('[PANEL] Found valid API instance at known path');
                 break;
             }
+        }
+
+        // 2. If not found, do a deep search (up to depth 4)
+        if (!apiInstance) {
+            console.log('[PANEL] API not found in known locations, doing deep search...');
+            const findApi = (obj: any, path: string = '', depth: number = 0): any => {
+                if (!obj || depth > 4) return null;
+                if (typeof obj === 'object' && typeof obj.send === 'function') {
+                    console.log('[PANEL] ✓ Found API at path:', path || 'root');
+                    return obj;
+                }
+                if (typeof obj === 'object') {
+                    for (const key in obj) {
+                        try {
+                            const found = findApi(obj[key], path ? `${path}.${key}` : key, depth + 1);
+                            if (found) return found;
+                        } catch {}
+                    }
+                }
+                return null;
+            };
+            apiInstance = findApi(store);
         }
     }
     
