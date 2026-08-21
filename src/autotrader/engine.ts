@@ -182,21 +182,16 @@ class AutoTraderEngine extends EventTarget {
 
             if (this.client?.is_logged_in) {
                 this.connected = true;
+                this.authorized = true; // App Builder WS is already authorized via cookie
                 
-                // 1. Aggressive Token Extraction
+                // Try to extract token for our own DerivAPI instance as a fallback
                 let token = '';
-                
-                // Method A: client.getToken()
                 if (typeof this.client.getToken === 'function') {
                     try { token = this.client.getToken(); } catch (e) {}
                 }
-                
-                // Method B: client.accounts[loginid].token
                 if ((!token || token === '') && this.client.loginid && this.client.accounts) {
                     try { token = this.client.accounts[this.client.loginid]?.token; } catch (e) {}
                 }
-                
-                // Method C: localStorage fallback
                 if ((!token || token === '') && this.client.loginid) {
                     try {
                         const stored = localStorage.getItem('client.accounts');
@@ -207,25 +202,17 @@ class AutoTraderEngine extends EventTarget {
                     } catch (e) {}
                 }
 
-                console.log('[ENGINE] Extracted token length:', token ? token.length : 0);
-
                 if (token && token.length > 10) {
                     this.log('info', 'Initializing authorized API with account token...');
                     this.api = new DerivAPI(this.settings.appId || '1089');
                     await this.api.connect();
                     await this.api.authorize(token);
-                    this.authorized = true;
                     this.log('success', '✓ API authorized with account token. Ready to trade.');
                 } else {
-                    // 2. No token found. Must use App Builder's API instance (Cookie Auth)
-                    this.log('warn', '⚠️ No token in JS. Attempting to use App Builder API (Cookie Auth)...');
-                    
                     if (this.apiInstance && typeof this.apiInstance.send === 'function') {
-                        this.authorized = true;
-                        this.log('success', '✓ Using App Builder API. Ready to trade.');
+                        this.log('success', '✓ Using App Builder API (Cookie Auth). Ready to trade.');
                     } else {
                         this.log('error', '✗ CRITICAL: No token found AND no valid App Builder API instance.');
-                        this.log('error', '✗ Please ensure you are fully logged in, or provide a manual API token in settings.');
                         this.running = false;
                         this.emit();
                         return;
@@ -275,7 +262,7 @@ class AutoTraderEngine extends EventTarget {
                 if (response && typeof response === 'object') {
                     if (response.error) {
                         const err = response.error;
-                        const errMsg = typeof err === 'string' ? err : (err.message || JSON.stringify(err));
+                        const errMsg = err.message || err.code || JSON.stringify(err);
                         console.error('[ENGINE] Deriv API Error Details:', JSON.stringify(err));
                         throw new Error(errMsg);
                     }
@@ -283,8 +270,13 @@ class AutoTraderEngine extends EventTarget {
                 
                 return response as T;
             } catch (e: any) {
-                console.error('[ENGINE] App Builder API send failed:', e.message || String(e));
-                throw e;
+                let errMsg = 'Unknown error';
+                if (typeof e === 'string') errMsg = e;
+                else if (e && typeof e === 'object') {
+                    errMsg = e.message || e.error?.message || e.code || JSON.stringify(e);
+                }
+                console.error('[ENGINE] App Builder API send failed:', errMsg, e);
+                throw new Error(errMsg);
             }
         }
         
@@ -410,32 +402,39 @@ class AutoTraderEngine extends EventTarget {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
         
-        try {
-            // CRITICAL: Guarantee a valid currency string
-            const safeCurrency = this.client?.currency || this.settings.currency || 'USD';
-            
-            const response = await this.sendRequest({ 
-                contracts_for: symbol, 
-                currency: safeCurrency, 
-                product_type: 'basic' 
-            });
-            const available = response?.contracts_for?.available ?? [];
-            
-            if (available.length > 0) {
-                const map = new Map<ContractType, DerivContractSpec>();
-                available.forEach((item: any) => {
-                    map.set(item.contract_type, {
-                        contractType: item.contract_type,
-                        minDuration: parseDuration(item.min_contract_duration),
-                        maxDuration: parseDuration(item.max_contract_duration),
+        const safeCurrency = this.client?.currency || this.settings.currency;
+        
+        // CRITICAL FIX: Try WITHOUT currency first. 
+        // When authorized, Deriv automatically uses the account's native currency.
+        // This prevents "InvalidCurrency" errors when the account is USDC but we send USD.
+        const payloadsToTry = [
+            { contracts_for: symbol, product_type: 'basic' },
+            { contracts_for: symbol, product_type: 'basic', currency: safeCurrency }
+        ];
+        
+        for (const payload of payloadsToTry) {
+            try {
+                const response = await this.sendRequest(payload);
+                const available = response?.contracts_for?.available ?? [];
+                
+                if (available.length > 0) {
+                    const map = new Map<ContractType, DerivContractSpec>();
+                    available.forEach((item: any) => {
+                        map.set(item.contract_type, {
+                            contractType: item.contract_type,
+                            minDuration: parseDuration(item.min_contract_duration),
+                            maxDuration: parseDuration(item.max_contract_duration),
+                        });
                     });
-                });
-                this.contractsCache.set(symbol, map);
-                return map;
+                    this.contractsCache.set(symbol, map);
+                    return map;
+                }
+            } catch (e: any) {
+                console.warn(`[ENGINE] contracts_for failed with payload ${JSON.stringify(payload)}:`, e.message);
             }
-        } catch (e: any) {
-            this.log('warn', `Could not fetch specs for ${symbol}: ${e.message}`);
         }
+        
+        this.log('warn', `Could not fetch specs for ${symbol} after trying all currency options`);
         return null;
     }
 
@@ -462,11 +461,10 @@ class AutoTraderEngine extends EventTarget {
 
         const duration = spec.minDuration?.value ?? 5;
         const durationUnit = (spec.minDuration?.unit ?? 't') as DurationUnit;
-        const safeCurrency = this.client?.currency || this.settings.currency || 'USD';
 
+        // CRITICAL FIX: Omit currency field. Let Deriv use the authorized account's default currency.
         const payload: Record<string, unknown> = { 
             amount: stake, basis: 'stake', contract_type: analysis.contractType, 
-            currency: safeCurrency,
             duration, duration_unit: durationUnit, symbol: symbol.symbol, product_type: 'basic' 
         };
         if (analysis.barrier !== null) payload.barrier = String(analysis.barrier);
