@@ -108,7 +108,10 @@ function standardDeviation(values: number[]): number {
 // === COMPREHENSIVE RISE/FALL ANALYSIS ===
 
 export function analyzeRiseFall(quotes: number[]): AnalysisResult {
-    if (quotes.length < 50) return emptyResult('rise_fall', 'insufficient-data');
+    // Larger minimum sample so EMA(20)/RSI(14)/MACD(26)/BB(20) are all fed with
+    // enough history to have stabilized, instead of computing off a "warm" but
+    // still noisy indicator on the first eligible tick.
+    if (quotes.length < 120) return emptyResult('rise_fall', 'insufficient-data');
 
     // Calculate all indicators
     const emaFast = ema(quotes, 5);
@@ -203,20 +206,36 @@ export function analyzeRiseFall(quotes: number[]): AnalysisResult {
     }
 
     // === CONSENSUS SCORING ===
+    // NOTE: Volatility Indices are generated from a fixed-volatility random walk,
+    // not real order flow — classic TA indicators have weaker edge here than on
+    // real markets. We compensate by requiring a HIGH bar of agreement across
+    // independent indicators (EMA, RSI, MACD, BB, trend strength) before ever
+    // returning a directional signal, instead of trusting any single indicator.
     const totalScore = bullishScore + bearishScore;
     const consensus = Math.abs(bullishScore - bearishScore);
-    const confidenceBase = consensus / totalScore;
-    
-    // Adjust confidence based on indicator agreement
+    const confidenceBase = totalScore > 0 ? consensus / totalScore : 0;
+
+    // Require both a high absolute score gap AND that gap representing most of
+    // the total signal weight (i.e. indicators mostly agree, not a narrow 5-4 split).
     let confidence = 0;
     let direction: 'CALL' | 'PUT' | null = null;
+    const MIN_CONSENSUS_SCORE = 4.5; // was 3.0 — raised bar for signal agreement
+    const MIN_CONSENSUS_RATIO = 0.6; // winning side must hold >=60% of total weight
 
-    if (bullishScore > bearishScore && consensus >= 3.0) {
+    if (
+        bullishScore > bearishScore &&
+        consensus >= MIN_CONSENSUS_SCORE &&
+        confidenceBase >= MIN_CONSENSUS_RATIO
+    ) {
         direction = 'CALL';
-        confidence = Math.min(0.92, 0.55 + confidenceBase * 0.37);
-    } else if (bearishScore > bullishScore && consensus >= 3.0) {
+        confidence = Math.min(0.85, 0.52 + confidenceBase * 0.3);
+    } else if (
+        bearishScore > bullishScore &&
+        consensus >= MIN_CONSENSUS_SCORE &&
+        confidenceBase >= MIN_CONSENSUS_RATIO
+    ) {
         direction = 'PUT';
-        confidence = Math.min(0.92, 0.55 + confidenceBase * 0.37);
+        confidence = Math.min(0.85, 0.52 + confidenceBase * 0.3);
     }
 
     return {
@@ -269,8 +288,12 @@ export function computeDigitStats(quotes: number[], decimals: number, lookback =
     return { counts, total, frequencies, evenProb, oddProb: total ? 1 - evenProb : 0 };
 }
 
-const MIN_DIGIT_SAMPLE = 150;
-const Z_SCORE_GATE = 2.5;
+// Raised from 150/2.5: with 150 samples and a z>=2.5 gate, pure chance alone
+// produces a "significant" false signal roughly 1 in 80 scans even on a truly
+// uniform generator. Larger sample + higher z materially cuts noise-driven
+// false positives (still not zero — no statistical test ever is).
+const MIN_DIGIT_SAMPLE = 300;
+const Z_SCORE_GATE = 3.0;
 const MAX_DIGIT_CONFIDENCE_BUFFER = 0.06;
 
 function zScoreForProportion(observed: number, expected: number, n: number): number {
