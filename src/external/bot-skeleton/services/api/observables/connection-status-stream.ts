@@ -35,6 +35,37 @@ export const setAccountList = (accountList: TAuthData['account_list']) => {
     account_list$.next(accountList);
 };
 
+// ROOT-CAUSE FIX for "balance doesn't update after trades":
+// The header/account-switcher UI reads balance from `account_list$` (via
+// useApiBase().accountList), which was previously only ever populated ONCE at
+// login (api-base.ts authorizeAndSubscribe -> setAccountList). Live `balance`
+// push messages were separately routed to the mobx client-store's `balance`
+// field, which nothing in the account-switcher UI actually reads — so trades
+// executed correctly but the displayed balance never moved.
+// This helper keeps `account_list$` (and `authData$`) in sync with every live
+// balance update, regardless of which connection/subscription produced it.
+export const updateAccountBalance = (loginid: string | undefined | null, balance: number, currency?: string) => {
+    if (!loginid || typeof balance !== 'number' || Number.isNaN(balance)) return;
+
+    const currentList = account_list$.getValue() || [];
+    let matched = false;
+    const updatedList = currentList.map(account => {
+        if (account.loginid === loginid) {
+            matched = true;
+            return { ...account, balance, currency: currency ?? account.currency };
+        }
+        return account;
+    });
+    if (matched) {
+        account_list$.next(updatedList);
+    }
+
+    const currentAuth = authData$.getValue();
+    if (currentAuth && currentAuth.loginid === loginid) {
+        authData$.next({ ...currentAuth, balance, currency: currency ?? currentAuth.currency });
+    }
+};
+
 // Set the auth data
 export const setAuthData = (authData: TAuthData | null) => {
     if (authData?.loginid) {
