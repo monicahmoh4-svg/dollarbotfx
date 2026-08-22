@@ -213,11 +213,13 @@ export class DerivAPI extends EventTarget {
     }
 
     async activeSymbols(): Promise<DerivActiveSymbol[]> {
+        // `product_type` (and other filter params like landing_company/loginid) are
+        // no longer accepted by the live `active_symbols` schema and cause an
+        // "Input validation failed: Properties not allowed" rejection, so we no
+        // longer send it. Kept as two attempts (brief/full) purely for resilience.
         const attempts: Array<{ label: string; payload: Record<string, unknown> }> = [
-            { label: "full + product_type:'basic'", payload: { active_symbols: 'full', product_type: 'basic' } },
-            { label: "brief + product_type:'basic'", payload: { active_symbols: 'brief', product_type: 'basic' } },
-            { label: 'brief (no product_type)', payload: { active_symbols: 'brief' } },
-            { label: 'full (no product_type)', payload: { active_symbols: 'full' } },
+            { label: 'brief', payload: { active_symbols: 'brief' } },
+            { label: 'full', payload: { active_symbols: 'full' } },
         ];
         let lastError: Error | null = null;
         for (const attempt of attempts) {
@@ -297,16 +299,12 @@ export class DerivAPI extends EventTarget {
         });
     }
 
-    async contractsFor(symbol: string, currency?: string): Promise<DerivContractSpec[]> {
-        const payload: Record<string, unknown> = {
-            contracts_for: symbol,
-            product_type: 'basic',
-        };
-        if (currency) {
-            payload.currency = currency;
-        }
-
-        const response = await this.send(payload);
+    async contractsFor(symbol: string): Promise<DerivContractSpec[]> {
+        // The live `contracts_for` schema is additionalProperties:false and only
+        // accepts `contracts_for` (+ optional `passthrough`/`req_id`). Sending
+        // `product_type` or `currency` causes the whole request to be rejected
+        // with "Input validation failed: Properties not allowed: ...".
+        const response = await this.send({ contracts_for: symbol });
         const available = response?.contracts_for?.available ?? [];
         return available.map((item: any) => ({
             contractType: item.contract_type,
