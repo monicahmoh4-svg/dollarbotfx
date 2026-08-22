@@ -294,6 +294,14 @@ export function computeDigitStats(quotes: number[], decimals: number, lookback =
 // false positives (still not zero — no statistical test ever is).
 const MIN_DIGIT_SAMPLE = 300;
 const Z_SCORE_GATE = 3.0;
+// analyzeOverUnder tests 6 barriers × 2 directions = 12 hypotheses per scan, and
+// analyzeMatchesDiffers tests 10 digits × 2 directions = 20. Picking the single
+// best result out of many tests inflates the false-positive rate (multiple-
+// comparisons problem) — scanning enough combinations WILL eventually turn up
+// something that looks "significant" by pure chance. We raise the bar for
+// exactly these two multi-hypothesis scans (approximate Bonferroni correction)
+// so a result has to be genuinely unlikely, not just the best of a big search.
+const MULTI_TEST_Z_GATE = 3.7;
 const MAX_DIGIT_CONFIDENCE_BUFFER = 0.06;
 
 function zScoreForProportion(observed: number, expected: number, n: number): number {
@@ -328,7 +336,7 @@ export function analyzeOverUnder(stats: DigitStats): AnalysisResult {
         if (!best || overZ > best.z) best = { barrier, type: 'DIGITOVER', z: overZ, observed: overObserved, expected: overExpected };
         if (!best || underZ > best.z) best = { barrier, type: 'DIGITUNDER', z: underZ, observed: underObserved, expected: underExpected };
     }
-    if (!best || best.z < Z_SCORE_GATE) return emptyResult('over_under', `no-significant-deviation z:${(best?.z ?? 0).toFixed(2)}`);
+    if (!best || best.z < MULTI_TEST_Z_GATE) return emptyResult('over_under', `no-significant-deviation z:${(best?.z ?? 0).toFixed(2)}`);
     const deviation = Math.abs(best.observed - best.expected);
     const confidence = best.expected + Math.min(MAX_DIGIT_CONFIDENCE_BUFFER, deviation);
     return { category: 'over_under', contractType: best.type, direction: null, barrier: best.barrier, confidence: Math.min(0.95, confidence), volatility: 0, sampleSize: stats.total, reason: `${best.type} barrier:${best.barrier} z:${best.z.toFixed(2)}` };
@@ -343,11 +351,11 @@ export function analyzeMatchesDiffers(stats: DigitStats): AnalysisResult {
     });
     const matchZ = zScoreForProportion(bestFreq, 0.1, stats.total);
     const differZ = zScoreForProportion(1 - worstFreq, 0.9, stats.total);
-    if (matchZ >= Z_SCORE_GATE) {
+    if (matchZ >= MULTI_TEST_Z_GATE) {
         const confidence = 0.1 + Math.min(MAX_DIGIT_CONFIDENCE_BUFFER, bestFreq - 0.1);
         return { category: 'matches_differs', contractType: 'DIGITMATCH', direction: null, barrier: bestDigit, confidence, volatility: 0, sampleSize: stats.total, reason: `DIGITMATCH digit:${bestDigit} z:${matchZ.toFixed(2)}` };
     }
-    if (differZ >= Z_SCORE_GATE) {
+    if (differZ >= MULTI_TEST_Z_GATE) {
         const confidence = 0.9 + Math.min(MAX_DIGIT_CONFIDENCE_BUFFER, (1 - worstFreq) - 0.9);
         return { category: 'matches_differs', contractType: 'DIGITDIFF', direction: null, barrier: worstDigit, confidence: Math.min(0.97, confidence), volatility: 0, sampleSize: stats.total, reason: `DIGITDIFF digit:${worstDigit} z:${differZ.toFixed(2)}` };
     }
