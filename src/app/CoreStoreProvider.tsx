@@ -5,6 +5,7 @@ import { toMoment } from '@/components/shared';
 import { FORM_ERROR_MESSAGES } from '@/components/shared/constants/form-error-messages';
 import { initFormErrorMessages } from '@/components/shared/utils/validation/declarative-validation-rules';
 import { api_base } from '@/external/bot-skeleton';
+import { updateAccountBalance } from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
 import { useApiBase } from '@/hooks/useApiBase';
 import { useLogout } from '@/hooks/useLogout';
 import { useStore } from '@/hooks/useStore';
@@ -142,6 +143,16 @@ const CoreStoreProvider: React.FC<{ children: React.ReactNode }> = observer(({ c
                     if (balance.currency) {
                         client.setCurrency(balance.currency);
                     }
+
+                    // Keep the header/account-switcher's data source (account_list$)
+                    // in sync too — it does NOT read from client.balance, so without
+                    // this the displayed balance would stay frozen at its login-time
+                    // value even while trades are executing correctly.
+                    updateAccountBalance(
+                        (balance as { loginid?: string }).loginid ?? client.loginid,
+                        balance.balance,
+                        balance.currency
+                    );
                 }
             }
         },
