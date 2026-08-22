@@ -401,40 +401,36 @@ class AutoTraderEngine extends EventTarget {
     private async getContractSpecs(symbol: string): Promise<Map<ContractType, DerivContractSpec> | null> {
         const cached = this.contractsCache.get(symbol);
         if (cached) return cached;
-        
-        const safeCurrency = this.client?.currency || this.settings.currency;
-        
-        // CRITICAL FIX: Try WITHOUT currency first. 
-        // When authorized, Deriv automatically uses the account's native currency.
-        // This prevents "InvalidCurrency" errors when the account is USDC but we send USD.
-        const payloadsToTry = [
-            { contracts_for: symbol, product_type: 'basic' },
-            { contracts_for: symbol, product_type: 'basic', currency: safeCurrency }
-        ];
-        
-        for (const payload of payloadsToTry) {
-            try {
-                const response = await this.sendRequest(payload);
-                const available = response?.contracts_for?.available ?? [];
-                
-                if (available.length > 0) {
-                    const map = new Map<ContractType, DerivContractSpec>();
-                    available.forEach((item: any) => {
-                        map.set(item.contract_type, {
-                            contractType: item.contract_type,
-                            minDuration: parseDuration(item.min_contract_duration),
-                            maxDuration: parseDuration(item.max_contract_duration),
-                        });
+
+        // ROOT-CAUSE FIX: the live `contracts_for` schema this app talks to is
+        // additionalProperties:false and only accepts `contracts_for` (+ optional
+        // `passthrough`/`req_id`). `product_type` and `currency` are NOT accepted
+        // and the server rejects the whole request with
+        // "Input validation failed: Properties not allowed: ...".
+        // This matches exactly how the app's own working bot-skeleton calls it:
+        // `api_base.api.send({ contracts_for: symbol })` (see
+        // src/external/bot-skeleton/services/api/contracts-for.js).
+        try {
+            const response = await this.sendRequest({ contracts_for: symbol });
+            const available = response?.contracts_for?.available ?? [];
+
+            if (available.length > 0) {
+                const map = new Map<ContractType, DerivContractSpec>();
+                available.forEach((item: any) => {
+                    map.set(item.contract_type, {
+                        contractType: item.contract_type,
+                        minDuration: parseDuration(item.min_contract_duration),
+                        maxDuration: parseDuration(item.max_contract_duration),
                     });
-                    this.contractsCache.set(symbol, map);
-                    return map;
-                }
-            } catch (e: any) {
-                console.warn(`[ENGINE] contracts_for failed with payload ${JSON.stringify(payload)}:`, e.message);
+                });
+                this.contractsCache.set(symbol, map);
+                return map;
             }
+        } catch (e: any) {
+            console.warn(`[ENGINE] contracts_for failed for ${symbol}:`, e.message);
         }
-        
-        this.log('warn', `Could not fetch specs for ${symbol} after trying all currency options`);
+
+        this.log('warn', `Could not fetch specs for ${symbol}`);
         return null;
     }
 
@@ -462,10 +458,18 @@ class AutoTraderEngine extends EventTarget {
         const duration = spec.minDuration?.value ?? 5;
         const durationUnit = (spec.minDuration?.unit ?? 't') as DurationUnit;
 
-        // CRITICAL FIX: Omit currency field. Let Deriv use the authorized account's default currency.
-        const payload: Record<string, unknown> = { 
-            amount: stake, basis: 'stake', contract_type: analysis.contractType, 
-            duration, duration_unit: durationUnit, symbol: symbol.symbol, product_type: 'basic' 
+        // ROOT-CAUSE FIX: the live `proposal` schema this app talks to has
+        // renamed `symbol` -> `underlying_symbol` and no longer accepts
+        // `product_type` (both were silently causing "Properties not allowed"
+        // rejections). `currency` IS required. This mirrors the app's own
+        // working proposal builder in
+        // src/external/bot-skeleton/services/tradeEngine/utils/helpers.js
+        // (tradeOptionToProposal), which sends `underlying_symbol` + `currency`
+        // and never sends `product_type`.
+        const currency = this.client?.currency || this.settings.currency || 'USD';
+        const payload: Record<string, unknown> = {
+            amount: stake, basis: 'stake', contract_type: analysis.contractType,
+            currency, duration, duration_unit: durationUnit, underlying_symbol: symbol.symbol,
         };
         if (analysis.barrier !== null) payload.barrier = String(analysis.barrier);
 
