@@ -58,7 +58,7 @@ export type AutoTraderSettings = {
     minConfidence: number; maxVolatility: number; maxConcurrentTrades: number; dailyLossLimit: number; takeProfit: number;
     martingaleEnabled: boolean; martingaleMultiplier: number; maxMartingaleSteps: number; maxStake: number; requireProfitProjection: boolean;
     minProjectedEdge: number; symbolsOverride: string; maxSymbols: number; scanIntervalMs: number; scanBatchDelayMs: number; cooldownMs: number;
-    enabledMarkets: string[]; tradeCategories: TradeCategory[];
+    enabledMarkets: string[]; tradeCategories: TradeCategory[]; maxConsecutiveLosses: number;
 };
 
 export type AutoTraderStats = {
@@ -76,11 +76,16 @@ type OpenTrade = PaperTrade | LiveTrade;
 
 export const DEFAULT_AUTOTRADER_SETTINGS: AutoTraderSettings = {
     mode: 'paper', appId: '1089', apiToken: '', stake: 1.0, currency: 'USD', duration: 5, durationUnit: 't',
-    minConfidence: 0.58, maxVolatility: 100, maxConcurrentTrades: 3, dailyLossLimit: 100, takeProfit: 200,
+    // Raised from 0.58 to match the stricter analysis.ts consensus thresholds.
+    minConfidence: 0.65, maxVolatility: 100, maxConcurrentTrades: 3, dailyLossLimit: 100, takeProfit: 200,
     martingaleEnabled: false, martingaleMultiplier: 2, maxMartingaleSteps: 3, maxStake: 50,
-    requireProfitProjection: false, minProjectedEdge: 0.01, symbolsOverride: '', maxSymbols: 0,
+    // requireProfitProjection is now ALWAYS enforced in code (see executeTrade) —
+    // kept here only so existing UI toggles/settings storage don't break; setting
+    // it to false no longer disables the underlying check.
+    requireProfitProjection: true, minProjectedEdge: 0.03, symbolsOverride: '', maxSymbols: 0,
     scanIntervalMs: 5000, scanBatchDelayMs: 300, cooldownMs: 15000,
-    enabledMarkets: ['synthetic_index'], tradeCategories: ['rise_fall']
+    enabledMarkets: ['synthetic_index'], tradeCategories: ['rise_fall'],
+    maxConsecutiveLosses: 5,
 };
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -309,6 +314,16 @@ class AutoTraderEngine extends EventTarget {
         if (!this.running) return false;
         if (!this.authorized) return false;
         if (this.limitsHit()) return false;
+        // Consecutive-loss circuit breaker: after N losses in a row, stop trading
+        // and require the operator to review before resuming. Losing streaks
+        // frequently indicate the current market regime doesn't match the
+        // strategy's assumptions — continuing to trade through it compounds risk.
+        const maxLosses = Math.max(1, this.settings.maxConsecutiveLosses || DEFAULT_AUTOTRADER_SETTINGS.maxConsecutiveLosses);
+        if (this.stats.lossStreak >= maxLosses) {
+            this.log('warn', `⛔ ${this.stats.lossStreak} consecutive losses — pausing bot for review.`);
+            this.stop(false);
+            return false;
+        }
         if (this.openTrades.size >= this.settings.maxConcurrentTrades) return false;
         if (this.openTrades.has(symbol)) return false;
         return Date.now() >= (this.cooldownUntil.get(symbol) ?? 0);
@@ -494,9 +509,14 @@ class AutoTraderEngine extends EventTarget {
 
             this.log('info', `💰 Ask=${askPrice.toFixed(2)}, Payout=${payout.toFixed(2)}, Edge=${(projectedEdge*100).toFixed(2)}%`);
 
-            if (this.settings.requireProfitProjection && projectedEdge < this.settings.minProjectedEdge) {
+            // Edge check is now MANDATORY (not gated behind requireProfitProjection).
+            // A trade only proceeds if the priced-in payout gives a calculable edge
+            // over break-even, floored at minProjectedEdge (never negative/zero).
+            const minEdge = Math.max(this.settings.minProjectedEdge, 0.005);
+            if (projectedEdge < minEdge) {
                 this.stats.skippedBelowEdge += 1;
                 this.emit();
+                this.log('info', `⏭ Skipped ${symbol.symbol}: edge ${(projectedEdge * 100).toFixed(2)}% < required ${(minEdge * 100).toFixed(2)}%`);
                 return false;
             }
 
