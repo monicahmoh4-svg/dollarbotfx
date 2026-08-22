@@ -191,7 +191,15 @@ class APIBase {
         const hasAccountID = V2GetActiveAccountId();
 
         if (!this.has_active_symbols && !hasAccountID) {
-            this.active_symbols_promise = this.getActiveSymbols().then(() => undefined);
+            this.active_symbols_promise = this.getActiveSymbols()
+                .then(() => undefined)
+                .catch(error => {
+                    // getActiveSymbols() already clears active_symbols_promise on
+                    // failure (see its own catch block) — this just prevents an
+                    // unhandled promise rejection from this fire-and-forget call.
+                    console.warn('Initial active symbols fetch failed, will retry on next request:', error);
+                    return undefined;
+                });
         }
 
         this.initEventListeners();
@@ -354,7 +362,14 @@ class APIBase {
             if (this.has_active_symbols) {
                 this.toggleRunButton(false);
             } else {
-                this.active_symbols_promise = this.getActiveSymbols();
+                this.active_symbols_promise = this.getActiveSymbols().catch(error => {
+                    // Same fix as above — avoid an unhandled rejection here;
+                    // getActiveSymbols() itself already resets
+                    // active_symbols_promise to null so the next caller retries
+                    // cleanly instead of re-awaiting a dead promise.
+                    console.warn('Post-auth active symbols fetch failed, will retry on next request:', error);
+                    return undefined;
+                });
             }
             this.subscribe();
         } catch (e) {
@@ -439,6 +454,16 @@ class APIBase {
             this.toggleRunButton(false);
             return this.active_symbols;
         } catch (error) {
+            // ROOT-CAUSE FIX for "No symbols found, attempting fresh fetch..."
+            // recurring indefinitely: without this, a single transient failure
+            // (timeout, empty response, WS/auth race on first load) left
+            // `active_symbols_promise` pointing at a permanently-rejected
+            // promise. Every later caller checks `if (!active_symbols_promise)`
+            // before retrying — since that stale rejected promise is still
+            // truthy, nothing ever actually retried; callers just kept
+            // re-awaiting the same dead promise and re-logging the warning.
+            // Clearing it here means the very next call gets a real fresh fetch.
+            this.active_symbols_promise = null;
             console.error('Failed to fetch and process active symbols:', error);
             throw error;
         }
