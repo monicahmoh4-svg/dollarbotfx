@@ -120,10 +120,13 @@ class AutoTraderEngine extends EventTarget {
     private apiInstance: any = null;
     private settings: AutoTraderSettings = { ...DEFAULT_AUTOTRADER_SETTINGS };
     private scanTimer: ReturnType<typeof setInterval> | null = null;
+    private balanceTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
     private logs: AutoTraderLog[] = [];
     private stats: AutoTraderStats = { wins: 0, losses: 0, net: 0, dailyNet: 0, open: 0, lossStreak: 0, sessionStart: Date.now(), day: new Date().toDateString(), scanCount: 0, tradesOpened: 0, lastScanAt: null, lastScanSummary: 'Not scanned yet.', signalsFound: 0, proposalsRequested: 0, proposalsRejectedByBroker: 0, skippedBelowEdge: 0, skippedContractUnavailable: 0 };
     private contractsCache = new Map<string, Map<ContractType, DerivContractSpec>>();
+    // Tracks consecutive-scan signal confirmation per symbol — see scan().
+    private pendingSignals = new Map<string, { key: string; count: number }>();
     private activeSymbols: DerivActiveSymbol[] = SYNTHETIC_INDICES;
     private openTrades = new Map<string, OpenTrade>();
     private cooldownUntil = new Map<string, number>();
@@ -186,6 +189,7 @@ class AutoTraderEngine extends EventTarget {
             this.updateSettings(patch);
             this.stop(false);
             this.contractsCache.clear();
+            this.pendingSignals.clear();
 
             this.client = patch.client;
             this.apiInstance = patch.apiInstance;
@@ -242,6 +246,13 @@ class AutoTraderEngine extends EventTarget {
                 void this.refreshBalance(); // sync the true balance the moment the bot goes live
             }
             this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
+            if (this.settings.mode === 'live') {
+                // Safety-net poll: re-syncs the displayed balance every 10s
+                // regardless of trade/settlement events, so it can never drift
+                // from the real account balance for long even if a push update
+                // or event-triggered refresh is ever missed.
+                this.balanceTimer = setInterval(() => { void this.refreshBalance(); }, 10000);
+            }
             this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices`);
             
             setTimeout(() => void this.scan(), 100);
@@ -329,6 +340,7 @@ class AutoTraderEngine extends EventTarget {
 
     stop(emitLog = true) {
         if (this.scanTimer) { clearInterval(this.scanTimer); this.scanTimer = null; }
+        if (this.balanceTimer) { clearInterval(this.balanceTimer); this.balanceTimer = null; }
         this.paperMonitors.forEach(monitor => clearInterval(monitor));
         this.paperMonitors.clear();
         if (this.api) { this.api.close(); this.api = null; }
@@ -423,19 +435,40 @@ class AutoTraderEngine extends EventTarget {
                     candidates.sort((a, b) => b.confidence - a.confidence);
                     const best = candidates[0];
                     this.log('info', `📊 ${symbol.display_name}: ${best.contractType} @ ${(best.confidence * 100).toFixed(1)}%`);
-                    
-                    if (this.canTrade(symbol.symbol)) {
+
+                    // SIGNAL PERSISTENCE GATE: a signal must be produced by the SAME
+                    // contract/barrier on two consecutive scans (~scanIntervalMs apart)
+                    // before we act on it. A single scan can catch a momentary
+                    // statistical blip; requiring it to still hold true on independent,
+                    // freshly-fetched data materially cuts false positives.
+                    const sigKey = `${best.contractType}|${best.barrier ?? ''}`;
+                    const pending = this.pendingSignals.get(symbol.symbol);
+                    if (pending && pending.key === sigKey) {
+                        pending.count += 1;
+                    } else {
+                        this.pendingSignals.set(symbol.symbol, { key: sigKey, count: 1 });
+                    }
+                    const confirmed = (this.pendingSignals.get(symbol.symbol)?.count ?? 0) >= 2;
+
+                    if (!confirmed) {
+                        this.log('info', `⏳ ${symbol.display_name}: signal not yet confirmed (1/2 scans)`);
+                    } else if (this.canTrade(symbol.symbol)) {
                         this.log('info', `🎯 Attempting trade on ${symbol.display_name}...`);
                         try {
                             const opened = await this.executeTrade(symbol, quotes, decimals, best);
                             if (opened) {
                                 tradesThisCycle += 1;
                                 this.log('success', `✓ Trade executed on ${symbol.display_name}`);
+                                this.pendingSignals.delete(symbol.symbol);
                             }
                         } catch (error: any) {
                             this.log('error', `Trade failed: ${error.message}`);
                         }
                     }
+                } else {
+                    // No qualifying signal this scan — any prior partial confirmation
+                    // is stale and must not carry over.
+                    this.pendingSignals.delete(symbol.symbol);
                 }
                 await sleep(this.settings.scanBatchDelayMs);
             }
