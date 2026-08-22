@@ -1,4 +1,5 @@
 import { DerivAPI, DerivActiveSymbol, DerivContractSpec, DerivTick } from './deriv-api';
+import { updateAccountBalance } from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
 import {
     analyzeMarket,
     AnalysisResult,
@@ -233,6 +234,9 @@ class AutoTraderEngine extends EventTarget {
 
             this.running = true;
             this.saveSettings();
+            if (this.settings.mode === 'live') {
+                void this.refreshBalance(); // sync the true balance the moment the bot goes live
+            }
             this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
             this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices`);
             
@@ -286,6 +290,37 @@ class AutoTraderEngine extends EventTarget {
         }
         
         throw new Error('No API available');
+    }
+
+    // ROOT-CAUSE FIX for "balance is fixed and doesn't reflect trades":
+    // Live trades may execute over this engine's OWN separate authorized
+    // WebSocket connection (this.api) or over the shared App Builder connection
+    // (this.apiInstance). The header/account UI's live balance stream only
+    // listens on the app's shared connection — so a trade settled purely over
+    // this engine's own connection can change the real account balance on
+    // Deriv's servers without the UI ever hearing about it. To guarantee the
+    // displayed balance is always correct, we explicitly re-fetch the
+    // authoritative balance after every live buy and every live settlement and
+    // push it into both the mobx client-store and the account_list$ stream that
+    // the header actually renders from.
+    private async refreshBalance() {
+        try {
+            const response = await this.sendRequest({ balance: 1 });
+            const balance = response?.balance;
+            if (!balance || typeof balance.balance !== 'number') return;
+
+            if (this.client && typeof this.client.setBalance === 'function') {
+                this.client.setBalance(String(balance.balance));
+                if (balance.currency && typeof this.client.setCurrency === 'function') {
+                    this.client.setCurrency(balance.currency);
+                }
+            }
+
+            const loginid = balance.loginid || this.client?.loginid;
+            updateAccountBalance(loginid, balance.balance, balance.currency);
+        } catch (e: any) {
+            console.warn('[ENGINE] balance refresh failed:', e.message);
+        }
     }
 
     stop(emitLog = true) {
@@ -527,6 +562,7 @@ class AutoTraderEngine extends EventTarget {
                     this.log('error', `Live buy failed: no contract id`);
                     return false;
                 }
+                void this.refreshBalance(); // stake was just deducted — reflect it immediately
 
                 const trade: LiveTrade = { 
                     id: String(contractId), symbol: symbol.symbol, category: analysis.category, 
@@ -543,6 +579,7 @@ class AutoTraderEngine extends EventTarget {
                         if (poc && (poc.is_sold || poc.status === 'sold' || poc.status === 'won' || poc.status === 'lost')) {
                             const profit = Number(poc.profit ?? 0);
                             this.settleTrade(symbol.symbol, profit > 0, profit, `live-${poc.status || 'closed'}`);
+                            void this.refreshBalance(); // payout/loss just settled — reflect it immediately
                             clearInterval(monitor);
                         }
                     } catch (e) {
