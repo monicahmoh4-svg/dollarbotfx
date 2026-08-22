@@ -1,5 +1,9 @@
 import { DerivAPI, DerivActiveSymbol, DerivContractSpec, DerivTick } from './deriv-api';
-import { updateAccountBalance } from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
+// Defensive namespace import: if this file is ever deployed out of sync with
+// connection-status-stream.ts (e.g. only engine.ts gets redeployed), a missing
+// named export becomes a silent no-op at runtime instead of a hard build
+// failure like "export 'updateAccountBalance' was not found".
+import * as ConnectionStream from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
 import {
     analyzeMarket,
     AnalysisResult,
@@ -317,7 +321,7 @@ class AutoTraderEngine extends EventTarget {
             }
 
             const loginid = balance.loginid || this.client?.loginid;
-            updateAccountBalance(loginid, balance.balance, balance.currency);
+            ConnectionStream.updateAccountBalance?.(loginid, balance.balance, balance.currency);
         } catch (e: any) {
             console.warn('[ENGINE] balance refresh failed:', e.message);
         }
