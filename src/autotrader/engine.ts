@@ -1,226 +1,102 @@
-import { DerivWSManager } from './deriv-ws-manager';
-import { RiskManager } from './risk-manager';
-import { ledger } from './ledger';
-import { analyzeMarket } from './analysis';
-import type { BotState, RiskLimits, BalanceReconciliation } from './types';
+export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
+export type ContractType = 'CALL' | 'PUT' | 'DIGITEVEN' | 'DIGITODD' | 'DIGITOVER' | 'DIGITUNDER' | 'DIGITMATCH' | 'DIGITDIFF';
 
-const DEFAULT_LIMITS: RiskLimits = {
-    maxStakePerTrade: 100,
-    maxPercentRiskPerTrade: 0.01,
-    maxDailyLoss: 50,
-    maxConsecutiveLosses: 3,
-    maxConcurrentTrades: 1,
-    maxBalanceTolerance: 0.50,
-};
+export interface AnalysisResult { 
+    category: TradeCategory; 
+    contractType: ContractType | null; 
+    direction: 'CALL' | 'PUT' | null; 
+    barrier: number | null; 
+    confidence: number; 
+    estimatedWinProbability: number;
+    volatility: number; 
+    sampleSize: number; 
+    reason: string; 
+}
 
-export class AutoTraderEngine extends EventTarget {
-    private ws: DerivWSManager;
-    private riskManager: RiskManager;
-    private state: BotState = 'DISCONNECTED';
-    private isRunning = false;
-    private scanInterval: ReturnType<typeof setInterval> | null = null;
-    private reconInterval: ReturnType<typeof setInterval> | null = null;
-    private consecutiveLosses = 0;
-    private dailyNet = 0;
-    private openTrades = new Map<string, any>();
-    
-    // Configuration
-    private appId: string;
-    private token: string;
-    private paperMode: boolean;
+function emptyResult(category: TradeCategory, reason: string): AnalysisResult {
+    return { 
+        category, 
+        contractType: null, 
+        direction: null, 
+        barrier: null, 
+        confidence: 0, 
+        estimatedWinProbability: 0, 
+        volatility: 0, 
+        sampleSize: 0, 
+        reason 
+    };
+}
 
-    constructor(appId: string, token: string, paperMode: boolean) {
-        super();
-        this.appId = appId;
-        this.token = token;
-        this.paperMode = paperMode;
-        this.ws = new DerivWSManager(appId);
-        this.riskManager = new RiskManager(DEFAULT_LIMITS);
-        
-        this.ws.addEventListener('stateChange', (e: any) => {
-            this.state = e.detail;
-            this.emit();
-            if (this.state === 'HALTED' || this.state === 'ERROR') {
-                this.emergencyStop('WebSocket state critical');
-            }
-        });
+// ============================================================================
+// UTILITY FUNCTIONS 
+// (Required by engine.ts and other modules for data parsing and evaluation)
+// ============================================================================
+
+export function pipToDecimals(pip?: number | null): number {
+    if (!pip || pip <= 0) return 2;
+    const decimals = Math.round(-Math.log10(pip));
+    return Number.isFinite(decimals) && decimals >= 0 && decimals <= 6 ? decimals : 2;
+}
+
+export function inferDecimalsFromQuotes(quotes: number[]): number {
+    let maxDecimals = 0;
+    for (const quote of quotes) {
+        const text = quote.toString();
+        const dotIndex = text.indexOf('.');
+        if (dotIndex >= 0) maxDecimals = Math.max(maxDecimals, text.length - dotIndex - 1);
     }
+    return maxDecimals > 0 ? Math.min(maxDecimals, 6) : 2;
+}
 
-    private emit() {
-        this.dispatchEvent(new CustomEvent('state', { detail: { 
-            state: this.state, 
-            isRunning: this.isRunning,
-            reconciliation: ledger.getReconciliation(),
-            logs: ledger.getEntries().slice(0, 50)
-        }}));
-    }
+export function lastDigitOf(quote: number, decimals: number): number {
+    const scaled = Math.round(quote * Math.pow(10, decimals));
+    return Math.abs(scaled % 10);
+}
 
-    async start() {
-        if (this.isRunning) return;
-        this.isRunning = true;
-        
-        try {
-            await this.ws.connect(this.token);
-            await this.synchronizeBalance();
-            
-            this.state = 'TRADING';
-            this.emit();
-            
-            // Start periodic reconciliation
-            this.reconInterval = setInterval(() => this.synchronizeBalance(), 30000);
-            
-            // Start scanning
-            this.scanInterval = setInterval(() => this.scan(), 5000);
-            
-            ledger.append({ type: 'SIGNAL', symbol: 'SYSTEM', message: 'Bot started. State: TRADING' });
-        } catch (error: any) {
-            this.emergencyStop(`Failed to start: ${error.message}`);
-        }
-    }
-
-    private async synchronizeBalance() {
-        try {
-            const response = await this.ws.send({ balance: 1, subscribe: 0 });
-            const bal = response?.balance;
-            if (!bal || typeof bal.balance !== 'number') throw new Error('Invalid balance response');
-
-            const recon: BalanceReconciliation = {
-                localBalance: this.calculateLocalBalance(),
-                derivBalance: bal.balance,
-                balanceDifference: Math.abs(this.calculateLocalBalance() - bal.balance),
-                lastSyncTime: Date.now(),
-                lastTransactionId: bal.transaction_id || null,
-                isHealthy: Math.abs(this.calculateLocalBalance() - bal.balance) <= DEFAULT_LIMITS.maxBalanceTolerance
-            };
-
-            ledger.updateReconciliation(recon);
-
-            if (!recon.isHealthy) {
-                this.emergencyStop(`Balance mismatch detected: Diff=${recon.balanceDifference.toFixed(2)}`);
-            }
-        } catch (error: any) {
-            ledger.append({ type: 'ERROR', symbol: 'SYSTEM', message: `Reconciliation failed: ${error.message}` });
-        }
-    }
-
-    private calculateLocalBalance(): number {
-        // In production, this is derived from the immutable ledger's starting balance + all settled P&L
-        return 1000; // Placeholder for ledger-based calculation
-    }
-
-    private async scan() {
-        if (this.state !== 'TRADING' || !this.isRunning) return;
-
-        const symbols = ['R_100', 'R_50', 'R_25']; // Example synthetic indices
-        
-        for (const symbol of symbols) {
-            if (this.state !== 'TRADING') break;
-
-            const analysis = analyzeMarket(symbol, 'rise_fall');
-            
-            ledger.append({
-                type: 'SIGNAL',
-                symbol,
-                message: analysis.reason
-            });
-
-            if (!analysis.canTrade) {
-                continue; // NO TRADE
-            }
-
-            // Pre-trade validation gate
-            const riskCheck = this.riskManager.validatePreTrade(1.0, this.consecutiveLosses, ledger.getReconciliation());
-            if (!riskCheck.allowed) {
-                ledger.append({ type: 'ERROR', symbol, message: `Risk blocked: ${riskCheck.reason}` });
-                continue;
-            }
-
-            await this.executeTrade(symbol, analysis);
-        }
-    }
-
-    private async executeTrade(symbol: string, analysis: any) {
-        const uniqueTradeId = crypto.randomUUID();
-        
-        try {
-            ledger.append({
-                type: 'ORDER_REQUEST',
-                symbol,
-                contractType: analysis.contractType || 'CALL',
-                stake: 1.0,
-                message: `Attempting trade. ID: ${uniqueTradeId}`
-            });
-
-            if (this.paperMode) {
-                // Simulate paper trade
-                await new Promise(r => setTimeout(r, 1000));
-                this.settleTrade(uniqueTradeId, symbol, false, -1.0, 'paper');
-                return;
-            }
-
-            // Live execution would go here, using uniqueTradeId to prevent duplicates
-            // const response = await this.ws.send({ buy: 1, ... });
-            
-        } catch (error: any) {
-            ledger.append({
-                type: 'ERROR',
-                symbol,
-                derivRequestId: uniqueTradeId,
-                message: `Execution failed: ${error.message}`
-            });
-        }
-    }
-
-    private settleTrade(tradeId: string, symbol: string, isWin: boolean, profit: number, mode: string) {
-        if (!isWin) this.consecutiveLosses++;
-        else this.consecutiveLosses = 0;
-        
-        this.dailyNet += profit;
-        
-        if (this.dailyNet <= -DEFAULT_LIMITS.maxDailyLoss) {
-            this.emergencyStop(`Daily loss limit reached: ${this.dailyNet}`);
-            return;
-        }
-        if (this.consecutiveLosses >= DEFAULT_LIMITS.maxConsecutiveLosses) {
-            this.emergencyStop(`Consecutive loss limit reached: ${this.consecutiveLosses}`);
-            return;
-        }
-
-        ledger.append({
-            type: 'SETTLEMENT',
-            symbol,
-            result: isWin ? 'WIN' : 'LOSS',
-            profit,
-            message: `${mode.toUpperCase()} trade settled. P/L: ${profit}`
-        });
-        
-        this.emit();
-    }
-
-    private emergencyStop(reason: string) {
-        this.isRunning = false;
-        this.state = 'HALTED';
-        if (this.scanInterval) clearInterval(this.scanInterval);
-        if (this.reconInterval) clearInterval(this.reconInterval);
-        this.ws.halt();
-        
-        ledger.append({ type: 'ERROR', symbol: 'SYSTEM', message: `KILL SWITCH TRIGGERED: ${reason}` });
-        this.emit();
-    }
-
-    stop() {
-        this.isRunning = false;
-        if (this.scanInterval) clearInterval(this.scanInterval);
-        if (this.reconInterval) clearInterval(this.reconInterval);
-        this.ws.halt();
-        ledger.append({ type: 'SIGNAL', symbol: 'SYSTEM', message: 'Bot stopped by user.' });
-        this.emit();
+export function isDigitContractWin(contractType: ContractType, barrier: number | null, digit: number): boolean {
+    switch (contractType) {
+        case 'DIGITEVEN': return digit % 2 === 0;
+        case 'DIGITODD': return digit % 2 === 1;
+        case 'DIGITOVER': return barrier !== null && digit > barrier;
+        case 'DIGITUNDER': return barrier !== null && digit < barrier;
+        case 'DIGITMATCH': return barrier !== null && digit === barrier;
+        case 'DIGITDIFF': return barrier !== null && digit !== barrier;
+        default: return false;
     }
 }
 
-// Export singleton configured from env
-export const autoTrader = new AutoTraderEngine(
-    import.meta.env.VITE_DERIV_APP_ID || '1089',
-    'USER_TOKEN_INJECTED_AT_RUNTIME',
-    import.meta.env.VITE_PAPER_TRADING === 'true'
-);
+// ============================================================================
+// STRATEGY ANALYSIS
+// ============================================================================
+
+/**
+ * SENIOR QUANT ENGINEER NOTE:
+ * Deriv synthetic volatility indices are Cryptographically Secure Pseudo-Random 
+ * Number Generators (CSPRNG). They have no memory, no order flow, and no 
+ * structural market dynamics.
+ * 
+ * Technical Analysis (EMA, RSI, MACD) and historical digit frequency analysis 
+ * have exactly ZERO predictive power on these markets. Any perceived "edge" is 
+ * statistical noise (multiple-comparisons fallacy).
+ * 
+ * To comply with production-grade risk management, this system defaults to NO TRADE.
+ * Trading this market with TA is mathematically guaranteed to lose money long-term 
+ * due to negative expectancy (broker payout spread).
+ */
+export function analyzeMarket(category: TradeCategory, quotes: number[], decimals: number): AnalysisResult {
+    // Hardcoded NO TRADE for synthetic indices to prevent guaranteed capital depletion.
+    // If you wish to trade, you must connect this engine to real forex/stock APIs 
+    // where edges can exist, and develop a strategy that passes strict out-of-sample testing.
+    
+    return {
+        category,
+        contractType: null,
+        direction: null,
+        barrier: null,
+        confidence: 0,
+        estimatedWinProbability: 0.5,
+        volatility: 0,
+        sampleSize: quotes.length,
+        reason: 'NO VALIDATED EDGE — LIVE TRADING DISABLED. Synthetic indices are CSPRNG markets with no statistical memory. TA and digit analysis have zero predictive power.'
+    };
+}
