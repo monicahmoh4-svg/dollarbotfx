@@ -609,7 +609,12 @@ class AutoTraderEngine extends EventTarget {
             const askPrice = Number(proposal.ask_price);
             const payout = Number(proposal.payout);
             const breakEven = askPrice / payout;
-            const projectedEdge = analysis.confidence - breakEven;
+            // Uses estimatedWinProbability, NOT confidence — confidence is an
+            // entry-filter/ranking heuristic; estimatedWinProbability is the
+            // (conservative, data-grounded for digit contracts / honest 0.5
+            // baseline for rise_fall) actual probability estimate. See
+            // analysis.ts for why these are deliberately different fields.
+            const projectedEdge = analysis.estimatedWinProbability - breakEven;
 
             this.log('info', `💰 Ask=${askPrice.toFixed(2)}, Payout=${payout.toFixed(2)}, Edge=${(projectedEdge*100).toFixed(2)}%`);
 
