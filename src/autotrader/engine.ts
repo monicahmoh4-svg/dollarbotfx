@@ -70,6 +70,11 @@ export type AutoTraderStats = {
     wins: number; losses: number; net: number; dailyNet: number; open: number; lossStreak: number; sessionStart: number; day: string;
     scanCount: number; tradesOpened: number; lastScanAt: number | null; lastScanSummary: string; signalsFound: number; proposalsRequested: number;
     proposalsRejectedByBroker: number; skippedBelowEdge: number; skippedContractUnavailable: number;
+    // Paper mode NEVER touches the real account balance (deliberately — a
+    // simulation must not be mistaken for real money moving). This field is
+    // the bot's own tracked virtual balance so paper-mode P&L is still visible
+    // somewhere concrete instead of only as a running net-P/L counter.
+    paperBalance: number | null; paperBalanceSeeded: boolean;
 };
 
 export type AutoTraderLog = { time: string; level: 'info' | 'warn' | 'error' | 'success'; message: string; };
@@ -123,7 +128,7 @@ class AutoTraderEngine extends EventTarget {
     private balanceTimer: ReturnType<typeof setInterval> | null = null;
     private scanning = false; private running = false; private connected = false; private authorized = false;
     private logs: AutoTraderLog[] = [];
-    private stats: AutoTraderStats = { wins: 0, losses: 0, net: 0, dailyNet: 0, open: 0, lossStreak: 0, sessionStart: Date.now(), day: new Date().toDateString(), scanCount: 0, tradesOpened: 0, lastScanAt: null, lastScanSummary: 'Not scanned yet.', signalsFound: 0, proposalsRequested: 0, proposalsRejectedByBroker: 0, skippedBelowEdge: 0, skippedContractUnavailable: 0 };
+    private stats: AutoTraderStats = { wins: 0, losses: 0, net: 0, dailyNet: 0, open: 0, lossStreak: 0, sessionStart: Date.now(), day: new Date().toDateString(), scanCount: 0, tradesOpened: 0, lastScanAt: null, lastScanSummary: 'Not scanned yet.', signalsFound: 0, proposalsRequested: 0, proposalsRejectedByBroker: 0, skippedBelowEdge: 0, skippedContractUnavailable: 0, paperBalance: null, paperBalanceSeeded: false };
     private contractsCache = new Map<string, Map<ContractType, DerivContractSpec>>();
     // Tracks consecutive-scan signal confirmation per symbol — see scan().
     private pendingSignals = new Map<string, { key: string; count: number }>();
@@ -244,6 +249,8 @@ class AutoTraderEngine extends EventTarget {
             this.saveSettings();
             if (this.settings.mode === 'live') {
                 void this.refreshBalance(); // sync the true balance the moment the bot goes live
+            } else if (this.settings.mode === 'paper' && !this.stats.paperBalanceSeeded) {
+                void this.seedPaperBalance();
             }
             this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
             if (this.settings.mode === 'live') {
@@ -335,6 +342,25 @@ class AutoTraderEngine extends EventTarget {
             ConnectionStream.updateAccountBalance?.(loginid, balance.balance, balance.currency);
         } catch (e: any) {
             console.warn('[ENGINE] balance refresh failed:', e.message);
+        }
+    }
+
+    // Paper mode's virtual balance starts from your REAL current balance (a
+    // read-only lookup — this never writes anything back) so the simulation is
+    // grounded in your actual account size. It is then only ever adjusted by
+    // simulated P&L locally — it never sends a buy/sell and never touches the
+    // real account_list$/client.balance that the header reads from.
+    private async seedPaperBalance() {
+        try {
+            const response = await this.sendRequest({ balance: 1 });
+            const balance = response?.balance;
+            this.stats.paperBalance = typeof balance?.balance === 'number' ? balance.balance : 1000;
+        } catch (e: any) {
+            console.warn('[ENGINE] paper balance seed failed, defaulting to 1000:', e.message);
+            this.stats.paperBalance = 1000;
+        } finally {
+            this.stats.paperBalanceSeeded = true;
+            this.emit();
         }
     }
 
@@ -719,6 +745,9 @@ class AutoTraderEngine extends EventTarget {
         
         if (win) { this.stats.wins += 1; this.stats.lossStreak = 0; } else { this.stats.losses += 1; this.stats.lossStreak += 1; }
         this.stats.net += profit; this.stats.dailyNet += profit;
+        if (trade.mode === 'paper' && typeof this.stats.paperBalance === 'number') {
+            this.stats.paperBalance += profit;
+        }
         this.cooldownUntil.set(symbol, Date.now() + this.settings.cooldownMs);
         this.log(win ? 'success' : 'warn', `${trade.mode.toUpperCase()} ${trade.contractType} ${win ? 'WON' : 'LOST'} | P/L ${profit.toFixed(2)}`);
         this.limitsHit(); this.emit();
