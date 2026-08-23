@@ -1,15 +1,70 @@
-import { analyzeMarket, inferDecimalsFromQuotes } from './quant-analysis';
-import { RiskManager } from './risk-manager';
-import type { BotState, AnalysisSignal, RiskLimits, BalanceReconciliation, AutoTraderStats, TradeCategory } from './types';
+import { analyzeMarket, inferDecimalsFromQuotes, lastDigitOf } from './analysis';
 
-// --- CONSTANTS EXPORTED FOR UI COMPATIBILITY ---
+// ============================================================================
+// TYPES (Self-contained to prevent "Module not found" build errors)
+// ============================================================================
+
+export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'SYNCING' | 'READY' | 'TRADING' | 'RECONNECTING' | 'ERROR' | 'HALTED';
+export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
+export type ContractType = 'CALL' | 'PUT' | 'DIGITEVEN' | 'DIGITODD' | 'DIGITOVER' | 'DIGITUNDER' | 'DIGITMATCH' | 'DIGITDIFF';
+export type DurationUnit = 't' | 's' | 'm' | 'h' | 'd';
+
+export interface AnalysisSignal {
+    canTrade: boolean;
+    contractType: ContractType | null;
+    direction: 'CALL' | 'PUT' | null;
+    barrier: number | null;
+    confidenceScore: number;
+    expectedEdge: number;
+    reason: string;
+}
+
+export interface BalanceReconciliation {
+    localBalance: number;
+    derivBalance: number;
+    balanceDifference: number;
+    lastSyncTime: number;
+    lastTransactionId: string | null;
+    isHealthy: boolean;
+}
+
+export interface RiskLimits {
+    maxStakePerTrade: number;
+    maxPercentRiskPerTrade: number;
+    maxDailyLoss: number;
+    maxConsecutiveLosses: number;
+    maxConcurrentTrades: number;
+    maxBalanceTolerance: number;
+    minConfidenceThreshold: number;
+}
+
+export interface AutoTraderStats {
+    wins: number;
+    losses: number;
+    net: number;
+    dailyNet: number;
+    lossStreak: number;
+    sessionStart: number;
+    scanCount: number;
+    tradesOpened: number;
+    derivBalance: number | null;
+    balanceDifference: number;
+    isBalanceHealthy: boolean;
+}
+
+// ============================================================================
+// CONSTANTS EXPORTED FOR UI COMPATIBILITY
+// ============================================================================
+
 export const TRADE_CATEGORIES: { label: string; value: TradeCategory }[] = [
     { label: 'Rise/Fall', value: 'rise_fall' },
     { label: 'Even/Odd', value: 'even_odd' },
     { label: 'Over/Under', value: 'over_under' },
     { label: 'Matches/Differs', value: 'matches_differs' },
 ];
+
 export const MARKETS = [{ label: 'Synthetic Indices', value: 'synthetic_index' }];
+
 export const SYNTHETIC_INDICES = [
     { symbol: 'R_100', display_name: 'Volatility 100 Index' },
     { symbol: 'R_75', display_name: 'Volatility 75 Index' },
@@ -17,9 +72,43 @@ export const SYNTHETIC_INDICES = [
     { symbol: 'R_25', display_name: 'Volatility 25 Index' },
     { symbol: 'R_10', display_name: 'Volatility 10 Index' },
 ];
+
 export const SYNTHETIC_SYMBOL_PRESETS = SYNTHETIC_INDICES.map((s) => s.symbol).join(',');
 
-// --- DEFAULT CONFIGURATION ---
+// ============================================================================
+// RISK MANAGER (Self-contained)
+// ============================================================================
+
+class RiskManager {
+    constructor(private limits: RiskLimits) {}
+
+    validatePreTrade(stake: number, currentConsecutiveLosses: number, recon: BalanceReconciliation | null, currentOpenTrades: number): { allowed: boolean; reason: string } {
+        if (!recon || !recon.isHealthy) {
+            return { allowed: false, reason: 'ACCOUNT_SYNC_UNHEALTHY: Balance reconciliation failed or is pending.' };
+        }
+        if (recon.balanceDifference > this.limits.maxBalanceTolerance) {
+            return { allowed: false, reason: `BALANCE_MISMATCH: Diff=${recon.balanceDifference.toFixed(2)} exceeds tolerance. HALTED.` };
+        }
+        if (currentConsecutiveLosses >= this.limits.maxConsecutiveLosses) {
+            return { allowed: false, reason: `MAX_CONSECUTIVE_LOSSES: ${currentConsecutiveLosses} reached. Cooldown active.` };
+        }
+        if (currentOpenTrades >= this.limits.maxConcurrentTrades) {
+            return { allowed: false, reason: `MAX_CONCURRENT_TRADES: ${currentOpenTrades} active.` };
+        }
+        if (stake > this.limits.maxStakePerTrade) {
+            return { allowed: false, reason: `STAKE_EXCEEDED: ${stake} > ${this.limits.maxStakePerTrade}.` };
+        }
+        if (stake > recon.localBalance * this.limits.maxPercentRiskPerTrade) {
+            return { allowed: false, reason: `RISK_EXCEEDED: Stake is > ${(this.limits.maxPercentRiskPerTrade * 100).toFixed(1)}% of balance.` };
+        }
+        return { allowed: true, reason: 'RISK_CHECKS_PASSED' };
+    }
+}
+
+// ============================================================================
+// ENGINE IMPLEMENTATION
+// ============================================================================
+
 const DEFAULT_LIMITS: RiskLimits = {
     maxStakePerTrade: 10,
     maxPercentRiskPerTrade: 0.02, // 2% max risk per trade
@@ -45,9 +134,9 @@ export class AutoTraderEngine extends EventTarget {
         derivBalance: null, balanceDifference: 0, isBalanceHealthy: true,
     };
 
-    // Rolling data windows for live analysis: Map<Symbol, number[]>
     private rollingTicks = new Map<string, number[]>();
     private activeSubscriptions = new Set<string>();
+    private logs: { time: string; level: string; message: string }[] = [];
 
     constructor() {
         super();
@@ -67,6 +156,7 @@ export class AutoTraderEngine extends EventTarget {
             stats: { ...this.stats },
             state: this.state,
             isRunning: this.isRunning,
+            logs: [...this.logs]
         };
     }
 
@@ -76,7 +166,16 @@ export class AutoTraderEngine extends EventTarget {
 
     private log(level: 'info' | 'warn' | 'error' | 'success', message: string) {
         console.log(`[ENGINE ${level.toUpperCase()}] ${message}`);
-        // In production, route this to a structured logging service
+        this.logs.unshift({ time: new Date().toLocaleTimeString(), level, message });
+        if (this.logs.length > 150) this.logs.pop();
+        this.emit();
+    }
+
+    updateLimits(patch: Partial<RiskLimits>) {
+        this.limits = { ...this.limits, ...patch };
+        localStorage.setItem('bot-risk-limits', JSON.stringify(this.limits));
+        this.emit();
+        this.log('info', 'Risk limits updated dynamically.');
     }
 
     async start(patch: { client?: any; apiInstance?: any } = {}) {
@@ -97,17 +196,15 @@ export class AutoTraderEngine extends EventTarget {
 
         try {
             await this.synchronizeBalance();
-            if (this.state === 'HALTED') return; // Killed during sync
+            if (this.state === 'HALTED') return;
 
             this.state = 'TRADING';
             this.log('success', 'System READY. Initiating live market subscriptions...');
             
-            // Start live tick subscriptions
             for (const symbol of SYNTHETIC_INDICES) {
                 await this.subscribeToLiveTicks(symbol.symbol);
             }
 
-            // Start periodic reconciliation (every 15 seconds)
             this.reconciliationTimer = setInterval(() => this.synchronizeBalance(), 15000);
             this.emit();
 
@@ -120,10 +217,9 @@ export class AutoTraderEngine extends EventTarget {
         if (this.activeSubscriptions.has(symbol)) return;
         
         this.log('info', `Subscribing to live ticks: ${symbol}`);
-        this.rollingTicks.set(symbol, []); // Initialize window
+        this.rollingTicks.set(symbol, []);
 
         try {
-            // This requests the last 300 ticks AND subscribes to future ticks
             await this.apiInstance.send({
                 ticks_history: symbol,
                 adjust_start_time: 1,
@@ -138,38 +234,44 @@ export class AutoTraderEngine extends EventTarget {
         }
     }
 
-    // Called by the UI or WS manager when a new tick arrives
     public processLiveTick(symbol: string, price: number) {
         if (!this.isRunning || this.state !== 'TRADING') return;
 
         const window = this.rollingTicks.get(symbol) || [];
         window.push(price);
-        if (window.length > 500) window.shift(); // Maintain fixed-size rolling window
+        if (window.length > 500) window.shift();
         this.rollingTicks.set(symbol, window);
 
-        // Only analyze when we have enough data
         if (window.length >= 100) {
             this.evaluateAndExecute(symbol, window);
         }
     }
 
     private async evaluateAndExecute(symbol: string, ticks: number[]) {
-        const signal: AnalysisSignal = analyzeMarket('rise_fall', ticks);
+        const rawSignal = analyzeMarket('rise_fall', ticks);
         
+        const signal: AnalysisSignal = {
+            canTrade: rawSignal.contractType !== null && rawSignal.confidence >= this.limits.minConfidenceThreshold,
+            contractType: rawSignal.contractType,
+            direction: rawSignal.direction,
+            barrier: rawSignal.barrier,
+            confidenceScore: rawSignal.confidence,
+            expectedEdge: rawSignal.confidence - 0.53,
+            reason: rawSignal.reason
+        };
+
         if (!signal.canTrade) {
-            // Silent skip for low confidence to prevent log spam, or log occasionally
             return; 
         }
 
         this.log('info', `SIGNAL DETECTED: ${symbol} | ${signal.contractType} | Conf: ${(signal.confidenceScore * 100).toFixed(1)}% | Edge: ${(signal.expectedEdge * 100).toFixed(1)}%`);
 
-        // 1. Risk Validation Gate
         const recon = this.getCurrentReconciliation();
         const riskCheck = new RiskManager(this.limits).validatePreTrade(
             this.limits.maxStakePerTrade, 
             this.stats.lossStreak, 
             recon, 
-            0 // currentOpenTrades (simplified for this example)
+            0
         );
 
         if (!riskCheck.allowed) {
@@ -177,15 +279,12 @@ export class AutoTraderEngine extends EventTarget {
             return;
         }
 
-        // 2. Execution (Paper mode for safety by default, as per quant best practices for CSPRNG)
         this.log('success', `EXECUTING PAPER TRADE: ${symbol} ${signal.contractType}`);
         this.stats.tradesOpened += 1;
         this.stats.scanCount += 1;
         
-        // Simulate trade outcome (In a real live setup, this is where apiInstance.send({ buy: ... }) goes)
-        // We simulate a realistic negative expectancy to demonstrate risk management
         setTimeout(() => {
-            const isWin = Math.random() < 0.48; // 48% win rate reflects broker edge
+            const isWin = Math.random() < 0.48;
             const profit = isWin ? this.limits.maxStakePerTrade * 0.95 : -this.limits.maxStakePerTrade;
             
             this.stats.net += profit;
@@ -214,9 +313,6 @@ export class AutoTraderEngine extends EventTarget {
 
             this.stats.derivBalance = bal.balance;
             
-            // Reconciliation Logic
-            // In a full system, localBalance is derived from an immutable ledger of all trades.
-            // Here, we approximate it to check for drift.
             const expectedLocal = (this.stats.derivBalance || 1000) + this.stats.net; 
             this.stats.balanceDifference = Math.abs(expectedLocal - bal.balance);
             this.stats.isBalanceHealthy = this.stats.balanceDifference <= this.limits.maxBalanceTolerance;
@@ -226,7 +322,6 @@ export class AutoTraderEngine extends EventTarget {
                 return;
             }
 
-            // Sync to UI Store
             if (this.client && typeof this.client.setBalance === 'function') {
                 this.client.setBalance(String(bal.balance));
             }
@@ -235,7 +330,7 @@ export class AutoTraderEngine extends EventTarget {
         }
     }
 
-    private getCurrentReconciliation(): BalanceReconciliation | null {
+    private getCurrentReconciliation(): BalanceReconciliation {
         return {
             localBalance: (this.stats.derivBalance || 1000) + this.stats.net,
             derivBalance: this.stats.derivBalance || 0,
@@ -259,7 +354,6 @@ export class AutoTraderEngine extends EventTarget {
         this.isRunning = false;
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
         
-        // Unsubscribe from all ticks
         this.activeSubscriptions.clear();
         this.rollingTicks.clear();
 
