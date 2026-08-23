@@ -42,7 +42,7 @@ export interface AutoTraderSettings {
     maxConcurrentTrades: number;
     dailyLossLimit: number;
     takeProfit: number;
-    martingaleEnabled: boolean; // Kept for UI compatibility, but strictly ignored in execution
+    martingaleEnabled: boolean;
     martingaleMultiplier: number;
     maxMartingaleSteps: number;
     maxStake: number;
@@ -131,7 +131,7 @@ export class AutoTraderEngine extends EventTarget {
     private running = false;
     private connected = false;
     private authorized = false;
-    private halted = false; // Kill switch state
+    private halted = false;
     
     private logs: AutoTraderLog[] = [];
     private stats: AutoTraderStats = {
@@ -165,7 +165,7 @@ export class AutoTraderEngine extends EventTarget {
                 tradeCategories: Array.isArray(saved.tradeCategories) && saved.tradeCategories.length 
                     ? saved.tradeCategories 
                     : DEFAULT_AUTOTRADER_SETTINGS.tradeCategories,
-                apiToken: '', // Never load token from localStorage for security
+                apiToken: '',
             };
         } catch {
             this.settings = { ...DEFAULT_AUTOTRADER_SETTINGS };
@@ -236,7 +236,6 @@ export class AutoTraderEngine extends EventTarget {
             this.running = true;
             this.saveSettings();
 
-            // Initial balance sync
             await this.refreshBalance();
 
             if (this.settings.mode === 'paper' && !this.stats.paperBalanceSeeded) {
@@ -245,8 +244,6 @@ export class AutoTraderEngine extends EventTarget {
             }
 
             this.scanTimer = setInterval(() => { void this.scan(); }, this.settings.scanIntervalMs);
-            
-            // Safety-net poll: re-syncs the displayed balance every 15s
             this.balanceTimer = setInterval(() => { void this.refreshBalance(); }, 15000);
 
             this.log('success', `✓ AI bot started - Scanning ${SYNTHETIC_INDICES.length} synthetic indices`);
@@ -288,17 +285,15 @@ export class AutoTraderEngine extends EventTarget {
             this.stats.derivBalance = bal.balance;
             this.stats.lastSyncTime = Date.now();
 
-            // Reconciliation logic
             const expectedLocal = this.stats.paperBalance ?? bal.balance;
             this.stats.balanceDifference = Math.abs(expectedLocal - bal.balance);
-            this.stats.isBalanceHealthy = this.stats.balanceDifference <= 0.50; // $0.50 tolerance
+            this.stats.isBalanceHealthy = this.stats.balanceDifference <= 0.50;
 
             if (!this.stats.isBalanceHealthy) {
                 this.triggerKillSwitch(`Balance mismatch detected: Diff=${this.stats.balanceDifference.toFixed(2)}`);
                 return;
             }
 
-            // Update UI store if available
             if (this.client && typeof this.client.setBalance === 'function') {
                 this.client.setBalance(String(bal.balance));
                 if (bal.currency && typeof this.client.setCurrency === 'function') {
@@ -364,13 +359,14 @@ export class AutoTraderEngine extends EventTarget {
             for (const symbol of SYNTHETIC_INDICES) {
                 if (!this.running || this.halted) break;
 
-                // Fetch minimal history for analysis function compatibility
                 let quotes: number[] = [];
                 try {
+                    // FIX: Increased count to 400 to satisfy analysis.ts requirements 
+                    // (MIN_DIGIT_SAMPLE = 300, rise_fall requires >= 120)
                     const response = await this.sendRequest({ 
                         ticks_history: symbol.symbol, 
                         adjust_start_time: 1, 
-                        count: 50, 
+                        count: 400, 
                         end: 'latest', 
                         style: 'ticks' 
                     });
@@ -380,7 +376,6 @@ export class AutoTraderEngine extends EventTarget {
                     continue;
                 }
 
-                // Analyze market (Will return NO TRADE for synthetic indices)
                 const results = this.settings.tradeCategories.map(category => {
                     try { return analyzeMarket(category, quotes, 2); } catch { return null; }
                 }).filter(r => r !== null) as AnalysisResult[];
@@ -390,7 +385,7 @@ export class AutoTraderEngine extends EventTarget {
                     
                     if (!analysis.contractType) {
                         this.log('info', `⏭ ${symbol.display_name}: ${analysis.reason}`);
-                        continue; // NO TRADE
+                        continue;
                     }
 
                     if (this.openTrades.size >= this.settings.maxConcurrentTrades) {
@@ -400,7 +395,6 @@ export class AutoTraderEngine extends EventTarget {
 
                     if (this.limitsHit()) break;
 
-                    // Execute simulated paper trade (Live trades blocked by analysis returning null contractType)
                     if (this.settings.mode === 'paper') {
                         await this.executePaperTrade(symbol, analysis);
                         tradesThisCycle += 1;
@@ -420,16 +414,14 @@ export class AutoTraderEngine extends EventTarget {
 
     private async executePaperTrade(symbol: any, analysis: AnalysisResult) {
         const stake = this.settings.stake;
-        const payoutRatio = 0.95; // Simulated realistic payout for synthetic indices
+        const payoutRatio = 0.95;
         
         this.log('info', `📝 PAPER ${analysis.contractType} opened on ${symbol.display_name} | stake=${stake}`);
         
-        // Simulate trade duration
         const durationMs = this.settings.durationUnit === 't' ? this.settings.duration * 1000 : this.settings.duration * (this.settings.durationUnit === 'm' ? 60000 : 1000);
         
         setTimeout(() => {
-            // Simulate random outcome with negative expectancy (realistic for synthetic indices)
-            const win = Math.random() < 0.48; // 48% win rate reflects broker edge
+            const win = Math.random() < 0.48; // Simulated realistic payout edge
             const profit = win ? stake * (payoutRatio - 1) : -stake;
             
             if (win) {
@@ -449,7 +441,7 @@ export class AutoTraderEngine extends EventTarget {
             this.log(win ? 'success' : 'warn', `PAPER ${analysis.contractType} ${win ? 'WON' : 'LOST'} | P/L ${profit.toFixed(2)}`);
             this.limitsHit();
             this.emit();
-        }, Math.min(durationMs, 2000)); // Cap simulation time for UI responsiveness
+        }, Math.min(durationMs, 2000));
     }
 }
 
