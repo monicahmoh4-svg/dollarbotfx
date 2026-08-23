@@ -1,11 +1,8 @@
 import { useEffect, useState } from 'react';
 import { observer } from 'mobx-react-lite';
-import { useAutoTrader } from '@/hooks/useAutoTrader';
-import { useAutoTraderUI } from '@/hooks/useAutoTraderUI';
 import { useStore } from '@/hooks/useStore';
-import type { AutoTraderSettings } from '@/autotrader/engine';
-import { MARKETS, SYNTHETIC_SYMBOL_PRESETS, TRADE_CATEGORIES } from '@/autotrader/engine';
-import type { TradeCategory } from '@/autotrader/analysis';
+import { useAutoTraderUI } from '@/hooks/useAutoTraderUI';
+import { autoTrader, TRADE_CATEGORIES, SYNTHETIC_INDICES } from '@/autotrader/engine';
 
 function getSessionCurrency(client: any): string {
   if (!client) return 'USD';
@@ -17,328 +14,324 @@ function getSessionCurrency(client: any): string {
 }
 
 const styles = `
-.at-overlay { position: fixed; inset: 0; z-index: 2147483300; background: rgba(9, 12, 20, 0.6); backdrop-filter: blur(6px); display: flex; align-items: flex-end; justify-content: center; animation: atFadeIn 0.18s ease; }
-@media (min-width: 900px) { .at-overlay { align-items: center; padding: 24px; } }
-.at-panel { width: 100%; max-width: 1080px; max-height: 94vh; max-height: 94dvh; overflow: hidden; display: flex; flex-direction: column; background: #0b1220; color: #e5e7eb; border-radius: 20px 20px 0 0; box-shadow: 0 40px 100px rgba(0,0,0,.5); animation: atSlideUp 0.25s ease; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
-@media (min-width: 900px) { .at-panel { border-radius: 20px; max-height: 90vh; } }
-.at-header { padding: 18px 20px 14px; border-bottom: 1px solid rgba(255,255,255,.08); display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; background: linear-gradient(135deg, rgba(37,99,235,.16), rgba(124,58,237,.10)); }
-.at-title { margin: 0; font-size: 19px; font-weight: 900; color: #fff; display: flex; align-items: center; gap: 10px; }
-.at-title-dot { width: 9px; height: 9px; border-radius: 50%; background: #6b7280; flex-shrink: 0; }
-.at-title-dot.running { background: #4ade80; box-shadow: 0 0 0 4px rgba(74,222,128,.18); animation: atPulse 2s infinite; }
-.at-subtitle { margin-top: 4px; color: #9ca3af; font-size: 12px; line-height: 1.5; max-width: 640px; }
-.at-close { border: none; border-radius: 10px; padding: 9px 13px; background: rgba(255,255,255,.08); color: #e5e7eb; font-weight: 800; cursor: pointer; transition: background .15s ease; }
-.at-close:hover { background: rgba(255,255,255,.15); }
-.at-banner { margin: 14px 20px 0; background: rgba(74,222,128,.08); border: 1px solid rgba(74,222,128,.35); color: #bbf7d0; border-radius: 12px; padding: 10px 12px; font-size: 11.5px; line-height: 1.5; }
-.at-session { margin: 10px 20px 0; border-radius: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.5; border: 1px solid; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.at-session-ok { background: rgba(74,222,128,.08); border-color: rgba(74,222,128,.35); color: #bbf7d0; }
-.at-session-warn { background: rgba(248,113,113,.08); border-color: rgba(248,113,113,.35); color: #fecaca; }
-.at-session-badge { font-weight: 900; border-radius: 999px; padding: 4px 10px; font-size: 10.5px; background: rgba(255,255,255,.08); }
-.at-tabbar { display: flex; gap: 4px; margin: 14px 20px 0; border-bottom: 1px solid rgba(255,255,255,.08); overflow-x: auto; }
-.at-tab { border: none; background: none; color: #9ca3af; font-weight: 800; font-size: 12.5px; padding: 10px 14px; cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; transition: color .15s ease, border-color .15s ease; }
-.at-tab.active { color: #fff; border-color: #6366f1; }
-.at-tab:hover { color: #e5e7eb; }
-.at-body { flex: 1; overflow: auto; padding: 16px 20px 20px; }
-.at-section-title { font-size: 12px; font-weight: 900; color: #9ca3af; text-transform: uppercase; letter-spacing: .04em; margin: 18px 0 10px; }
+.at-overlay { position: fixed; inset: 0; z-index: 2147483300; background: rgba(9, 12, 20, 0.85); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; animation: atFadeIn 0.2s ease; }
+.at-panel { width: 100%; max-width: 900px; max-height: 90vh; overflow: hidden; display: flex; flex-direction: column; background: #0f172a; color: #e2e8f0; border-radius: 16px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.1); }
+.at-header { padding: 20px 24px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: space-between; background: linear-gradient(135deg, rgba(30, 64, 175, 0.2), rgba(15, 23, 42, 0)); }
+.at-title { margin: 0; font-size: 18px; font-weight: 700; color: #f8fafc; display: flex; align-items: center; gap: 10px; }
+.at-status-dot { width: 10px; height: 10px; border-radius: 50%; background: #64748b; flex-shrink: 0; }
+.at-status-dot.trading { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.2); animation: atPulse 2s infinite; }
+.at-status-dot.halted { background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2); }
+.at-status-dot.ready { background: #3b82f6; }
+.at-close { border: none; border-radius: 8px; padding: 8px 12px; background: rgba(255,255,255,0.1); color: #e2e8f0; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+.at-close:hover { background: rgba(255,255,255,0.2); }
+.at-banner { margin: 16px 24px 0; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd; border-radius: 8px; padding: 12px 16px; font-size: 13px; line-height: 1.5; display: flex; align-items: center; gap: 8px; }
+.at-banner.warn { background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); color: #fca5a5; }
+.at-tabbar { display: flex; gap: 4px; margin: 20px 24px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+.at-tab { border: none; background: none; color: #94a3b8; font-weight: 600; font-size: 13px; padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+.at-tab.active { color: #f8fafc; border-color: #3b82f6; }
+.at-tab:hover { color: #e2e8f0; }
+.at-body { flex: 1; overflow-y: auto; padding: 20px 24px 24px; }
+.at-section-title { font-size: 12px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; margin: 20px 0 12px; }
 .at-section-title:first-child { margin-top: 0; }
-.at-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
-@media (min-width: 640px) { .at-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
-@media (min-width: 980px) { .at-grid { grid-template-columns: repeat(3, minmax(0,1fr)); } }
-.at-field label { display: block; font-size: 11.5px; font-weight: 800; color: #9ca3af; margin-bottom: 5px; }
-.at-input { width: 100%; min-height: 38px; border-radius: 10px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.04); color: #f3f4f6; padding: 9px 10px; outline: none; transition: border-color .15s ease, box-shadow .15s ease; }
-.at-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.18); }
-.at-checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: #d1d5db; padding: 10px 0; }
-.at-chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
-.at-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255,255,255,.16); border-radius: 999px; padding: 7px 12px; font-size: 11.5px; font-weight: 800; cursor: pointer; user-select: none; color: #d1d5db; background: rgba(255,255,255,.03); transition: border-color .15s ease, background .15s ease, color .15s ease; }
-.at-chip input { display: none; }
-.at-chip-active { border-color: #6366f1; background: #6366f1; color: #fff; }
-.at-preset-chip { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 6px 11px; font-size: 11px; font-weight: 700; color: #a5b4fc; background: rgba(99,102,241,.08); cursor: pointer; }
-.at-preset-chip:hover { background: rgba(99,102,241,.16); }
-.at-hint { font-size: 11px; color: #6b7280; margin-top: 6px; line-height: 1.5; }
-.at-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 20px; border-top: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.02); }
-.at-button { border: none; border-radius: 12px; padding: 12px 20px; font-weight: 900; cursor: pointer; font-size: 13.5px; transition: transform .15s ease, opacity .15s ease; }
-.at-button:hover { transform: translateY(-1px); opacity: .95; }
-.at-button-primary { background: linear-gradient(135deg, #16a34a, #22c55e); color: #fff; box-shadow: 0 10px 24px rgba(22,163,74,.28); }
-.at-button-danger { background: linear-gradient(135deg, #dc2626, #ef4444); color: #fff; box-shadow: 0 10px 24px rgba(220,38,38,.28); }
-.at-status { font-size: 11.5px; color: #9ca3af; line-height: 1.6; }
-.at-status b { color: #e5e7eb; }
-.at-activity-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #d1d5db; margin-bottom: 10px; flex-wrap: wrap; }
-.at-scan-dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; flex-shrink: 0; }
-.at-scan-dot.active { background: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.22); animation: atPulse 1.2s infinite; }
-.at-stats { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; margin-top: 6px; }
-@media (min-width: 700px) { .at-stats { grid-template-columns: repeat(3, minmax(0,1fr)); } }
-@media (min-width: 980px) { .at-stats { grid-template-columns: repeat(6, minmax(0,1fr)); } }
-.at-stat-card { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 10px 12px; }
-.at-stat-label { color: #9ca3af; font-size: 10.5px; font-weight: 800; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .03em; }
-.at-stat-value { font-size: 16px; font-weight: 950; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.at-trades { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
-.at-trade-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.28); border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 700; color: #c7d2fe; }
-.at-logs { margin-top: 4px; max-height: 420px; overflow: auto; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 10px; font-size: 12px; line-height: 1.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.at-log-line { margin-bottom: 4px; word-break: break-word; }
+.at-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+.at-field label { display: block; font-size: 12px; font-weight: 600; color: #94a3b8; margin-bottom: 6px; }
+.at-input { width: 100%; height: 38px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.05); color: #f8fafc; padding: 0 12px; outline: none; transition: all 0.15s; font-size: 13px; box-sizing: border-box; }
+.at-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15); }
+.at-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 16px; }
+.at-stat-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 14px; }
+.at-stat-label { color: #94a3b8; font-size: 11px; font-weight: 700; margin-bottom: 6px; text-transform: uppercase; }
+.at-stat-value { font-size: 20px; font-weight: 700; color: #f8fafc; }
+.at-actions { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; border-top: 1px solid rgba(255,255,255,0.1); background: rgba(15, 23, 42, 0.5); flex-wrap: wrap; gap: 12px; }
+.at-button { border: none; border-radius: 8px; padding: 10px 20px; font-weight: 700; cursor: pointer; font-size: 14px; transition: all 0.15s; }
+.at-button:hover { transform: translateY(-1px); }
+.at-button-primary { background: #22c55e; color: #fff; }
+.at-button-primary:hover { background: #16a34a; }
+.at-button-danger { background: #ef4444; color: #fff; }
+.at-button-danger:hover { background: #dc2626; }
+.at-button-secondary { background: rgba(255,255,255,0.1); color: #e2e8f0; }
+.at-button-secondary:hover { background: rgba(255,255,255,0.15); }
+.at-logs { max-height: 350px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; font-size: 12px; font-family: ui-monospace, monospace; }
+.at-log-line { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); word-break: break-word; display: flex; gap: 8px; }
+.at-log-line:last-child { border-bottom: none; margin-bottom: 0; }
+.at-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 700; }
+.at-badge-ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+.at-badge-warn { background: rgba(239, 68, 68, 0.15); color: #f87171; }
 @keyframes atFadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes atSlideUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes atPulse { 0% { box-shadow: 0 0 0 0 rgba(99,102,241,.4); } 70% { box-shadow: 0 0 0 8px rgba(99,102,241,0); } 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); } }
+@keyframes atPulse { 0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); } 70% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
 `;
 
-function toNumber(value: string, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-type Section = 'rules' | 'markets' | 'activity' | 'logs';
+type Tab = 'dashboard' | 'config' | 'logs';
 
 function AutoTraderPanel() {
   const { open, hide } = useAutoTraderUI();
-  const { state, start, stop } = useAutoTrader();
   const store = useStore();
   const client = store?.client;
   
+  const [state, setState] = useState(autoTrader.getState());
+  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  const [limits, setLimits] = useState(state.limits || {});
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const newState = (event as CustomEvent).detail;
+      setState(newState);
+      if (newState.limits) setLimits(newState.limits);
+    };
+    autoTrader.addEventListener('state', handler);
+    return () => autoTrader.removeEventListener('state', handler);
+  }, []);
+
+  if (!open) return null;
+
   const isLoggedIn = Boolean(client?.is_logged_in && client?.loginid);
   const sessionCurrency = getSessionCurrency(client);
   const sessionLoginId = isLoggedIn ? client?.loginid : '';
   const isVirtualAccount = Boolean(client?.is_virtual);
 
-  const [form, setForm] = useState<AutoTraderSettings>(state.settings);
-  const [section, setSection] = useState<Section>('rules');
-
-  useEffect(() => {
-    if (open) {
-      setForm(previous => ({
-        ...state.settings,
-        currency: sessionCurrency || previous.currency || 'USD',
-      }));
-    }
-  }, [open, sessionCurrency]);
-
-  if (!open) return null;
-
-  const set = (patch: Partial<AutoTraderSettings>) => {
-    setForm(previous => ({ ...previous, ...patch }));
-  };
-
-  const toggleMarket = (value: string) => {
-    setForm(previous => {
-      const has = previous.enabledMarkets.includes(value);
-      const next = has ? previous.enabledMarkets.filter(item => item !== value) : [...previous.enabledMarkets, value];
-      return { ...previous, enabledMarkets: next.length ? next : previous.enabledMarkets };
-    });
-  };
-
-  const toggleCategory = (value: TradeCategory) => {
-    setForm(previous => {
-      const has = previous.tradeCategories.includes(value);
-      const next = has ? previous.tradeCategories.filter(item => item !== value) : [...previous.tradeCategories, value];
-      return { ...previous, tradeCategories: next.length ? next : previous.tradeCategories };
-    });
-  };
-
-  const addSymbolPreset = (symbol: string) => {
-    setForm(previous => {
-      const existing = previous.symbolsOverride.split(',').map(item => item.trim()).filter(Boolean);
-      if (existing.includes(symbol)) return previous;
-      return { ...previous, symbolsOverride: [...existing, symbol].join(',') };
-    });
-  };
-
   const handleStart = async () => {
-    console.log('[PANEL] === STARTING BOT ===');
-    
-    let apiInstance = null;
-    if (store) {
-        // 1. Try known paths first (including the .ws property that was found previously)
-        const candidates = [
-            store.app?.api_helpers_store?.ws,
-            store.app?.api_helpers_store,
-            store.client?.root_store?.common?.api,
-            store.client?.common?.api,
-            store.common?.api,
-            store.core?.api,
-        ];
-        
-        for (const cand of candidates) {
-            if (cand && typeof cand.send === 'function') {
-                apiInstance = cand;
-                console.log('[PANEL] Found valid API instance at known path');
-                break;
-            }
-        }
-
-        // 2. If not found, do a deep search (up to depth 4)
-        if (!apiInstance) {
-            console.log('[PANEL] API not found in known locations, doing deep search...');
-            const findApi = (obj: any, path: string = '', depth: number = 0): any => {
-                if (!obj || depth > 4) return null;
-                if (typeof obj === 'object' && typeof obj.send === 'function') {
-                    console.log('[PANEL] ✓ Found API at path:', path || 'root');
-                    return obj;
-                }
-                if (typeof obj === 'object') {
-                    for (const key in obj) {
-                        try {
-                            const found = findApi(obj[key], path ? `${path}.${key}` : key, depth + 1);
-                            if (found) return found;
-                        } catch {}
-                    }
-                }
-                return null;
-            };
-            apiInstance = findApi(store);
-        }
-    }
-    
-    console.log('[PANEL] Final API instance found:', !!apiInstance);
-    
     if (!isLoggedIn) {
-      alert('⚠️ Please log in to your Deriv account first (top-right corner)');
+      alert('⚠️ Please log in to your Deriv account first.');
       return;
     }
     
-    await start({ 
-        ...form, 
-        currency: sessionCurrency || form.currency,
-        client: client,
-        apiInstance: apiInstance,
-    });
-    setSection('activity');
+    let apiInstance = null;
+    if (store) {
+      const candidates = [
+        store.app?.api_helpers_store?.ws,
+        store.app?.api_helpers_store,
+        store.client?.root_store?.common?.api,
+        store.client?.common?.api,
+        store.common?.api,
+        store.core?.api,
+      ];
+      for (const cand of candidates) {
+        if (cand && typeof cand.send === 'function') {
+          apiInstance = cand;
+          break;
+        }
+      }
+    }
+    
+    await autoTrader.start({ client, apiInstance });
+    setActiveTab('dashboard');
   };
 
-  const handleStop = () => stop();
+  const handleStop = () => {
+    autoTrader.stop();
+  };
+
+  const handleSaveLimits = () => {
+    // Safely update limits if the method exists, otherwise fallback to localStorage
+    if ((autoTrader as any).updateLimits) {
+      (autoTrader as any).updateLimits(limits);
+    } else {
+      localStorage.setItem('bot-risk-limits', JSON.stringify(limits));
+      alert('Risk limits saved to local storage. Restart the bot to apply.');
+    }
+  };
+
+  const isHalted = state.state === 'HALTED';
+  const isTrading = state.state === 'TRADING' || state.state === 'READY';
+  const dotClass = isHalted ? 'halted' : isTrading ? 'trading' : 'ready';
 
   return (
     <div className='at-overlay' onClick={hide}>
       <style>{styles}</style>
-      <div className='at-panel' onClick={event => event.stopPropagation()}>
+      <div className='at-panel' onClick={e => e.stopPropagation()}>
         <div className='at-header'>
           <div>
             <h2 className='at-title'>
-              <span className={`at-title-dot ${state.running ? 'running' : ''}`} />
-              Autonomous Trading Agent
+              <span className={`at-status-dot ${dotClass}`} />
+              Quantitative Trading Engine
             </h2>
-            <div className='at-subtitle'>Fetches live Deriv market data, analyzes it, and executes trades autonomously.</div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+              Live market streaming, multi-factor analysis, and strict risk enforcement.
+            </div>
           </div>
           <button className='at-close' onClick={hide}>Close</button>
         </div>
-        <div className='at-banner'>
-          ✓ <b>No API token needed</b> — uses your logged-in Deriv session automatically.
+
+        <div className={`at-banner ${isHalted ? 'warn' : ''}`}>
+          {isHalted ? (
+            <>🚨 <b>KILL SWITCH ACTIVE:</b> Trading halted due to risk limits or balance mismatch. Review logs.</>
+          ) : isLoggedIn ? (
+            <>✓ Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b> ({isVirtualAccount ? 'DEMO' : 'REAL'} | {sessionCurrency})</>
+          ) : (
+            <>⚠️ Not logged into a Deriv account. Please log in first to enable trading.</>
+          )}
         </div>
-        <div className={`at-session ${isLoggedIn ? 'at-session-ok' : 'at-session-warn'}`}>
-          <div>
-            {isLoggedIn ? (
-              <>Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b>{sessionCurrency ? ` (${sessionCurrency})` : ''}.</>
-            ) : (
-              <>Not logged into a Deriv account. Please log in first.</>
-            )}
-          </div>
-          <span className='at-session-badge'>{isLoggedIn ? (isVirtualAccount ? 'DEMO ACCOUNT' : 'REAL ACCOUNT') : 'NOT LOGGED IN'}</span>
-        </div>
+
         <div className='at-tabbar'>
-          {(['rules', 'markets', 'activity', 'logs'] as Section[]).map(id => (
-            <button key={id} className={`at-tab ${section === id ? 'active' : ''}`} onClick={() => setSection(id)}>
+          {(['dashboard', 'config', 'logs'] as Tab[]).map(id => (
+            <button 
+              key={id} 
+              className={`at-tab ${activeTab === id ? 'active' : ''}`} 
+              onClick={() => setActiveTab(id)}
+            >
               {id.charAt(0).toUpperCase() + id.slice(1)}
             </button>
           ))}
         </div>
+
         <div className='at-body'>
-          {section === 'rules' && (
+          {activeTab === 'dashboard' && (
             <>
-              <div className='at-section-title'>Mode &amp; Connection</div>
+              <div className='at-section-title'>System Status & Reconciliation</div>
               <div className='at-grid'>
                 <div className='at-field'>
-                  <label>Mode</label>
-                  <select className='at-input' value={form.mode} onChange={e => set({ mode: e.target.value as AutoTraderSettings['mode'] })}>
-                    <option value='paper'>Paper / Simulation</option>
-                    <option value='live' disabled={!isLoggedIn}>Live Trading{!isLoggedIn ? ' (log in first)' : ''}</option>
-                  </select>
-                </div>
-                <div className='at-field'>
-                  <label>Currency</label>
-                  <input className='at-input' value={form.currency} onChange={e => set({ currency: e.target.value })} />
-                </div>
-              </div>
-              <div className='at-section-title'>Stake &amp; Profit/Loss Rules</div>
-              <div className='at-grid'>
-                <div className='at-field'><label>Base Stake</label><input className='at-input' type='number' step='0.01' value={form.stake} onChange={e => set({ stake: toNumber(e.target.value, form.stake) })} /></div>
-                <div className='at-field'><label>Take Profit</label><input className='at-input' type='number' value={form.takeProfit} onChange={e => set({ takeProfit: toNumber(e.target.value, form.takeProfit) })} /></div>
-                <div className='at-field'><label>Max Loss</label><input className='at-input' type='number' value={form.dailyLossLimit} onChange={e => set({ dailyLossLimit: toNumber(e.target.value, form.dailyLossLimit) })} /></div>
-                <div className='at-field'><label>Max Concurrent Trades</label><input className='at-input' type='number' value={form.maxConcurrentTrades} onChange={e => set({ maxConcurrentTrades: toNumber(e.target.value, form.maxConcurrentTrades) })} /></div>
-              </div>
-            </>
-          )}
-          {section === 'markets' && (
-            <>
-              <div className='at-section-title'>Trade Categories</div>
-              <div className='at-chip-group'>
-                {TRADE_CATEGORIES.map(category => (
-                  <label key={category.value} className={`at-chip ${form.tradeCategories.includes(category.value) ? 'at-chip-active' : ''}`}>
-                    <input type='checkbox' checked={form.tradeCategories.includes(category.value)} onChange={() => toggleCategory(category.value)} />
-                    {category.label}
-                  </label>
-                ))}
-              </div>
-              <div className='at-section-title'>Signal Rules</div>
-              <div className='at-grid'>
-                <div className='at-field'><label>Minimum Confidence</label><input className='at-input' type='number' step='0.01' min='0.5' max='0.95' value={form.minConfidence} onChange={e => set({ minConfidence: toNumber(e.target.value, form.minConfidence) })} /></div>
-                <div className='at-field'><label>Duration</label><input className='at-input' type='number' value={form.duration} onChange={e => set({ duration: toNumber(e.target.value, form.duration) })} /></div>
-                <div className='at-field'>
-                  <label>Duration Unit</label>
-                  <select className='at-input' value={form.durationUnit} onChange={e => set({ durationUnit: e.target.value as AutoTraderSettings['durationUnit'] })}>
-                    <option value='t'>Ticks</option>
-                    <option value='s'>Seconds</option>
-                    <option value='m'>Minutes</option>
-                  </select>
-                </div>
-              </div>
-            </>
-          )}
-          {section === 'activity' && (
-            <>
-              <div className='at-activity-row'>
-                <span className={`at-scan-dot ${state.scanning ? 'active' : ''}`} />
-                {state.scanning ? 'Scanning markets right now…' : state.running ? 'Idle between scans.' : 'Agent is stopped.'}
-                {' · '} {state.stats.scanCount} scan(s) run
-              </div>
-              <div className='at-section-title'>Results</div>
-              {state.settings.mode === 'paper' && (
-                <div className='at-hint' style={{ opacity: 0.7, fontSize: '0.85em', marginBottom: 6 }}>
-                  Paper mode simulates trades only — your real Deriv account balance is never touched.
-                  "Simulated Balance" below started from your real balance and moves only with simulated results.
-                </div>
-              )}
-              <div className='at-stats'>
-                <div className='at-stat-card'><div className='at-stat-label'>Net P/L</div><div className='at-stat-value' style={{ color: state.stats.net >= 0 ? '#4ade80' : '#f87171' }}>{state.stats.net.toFixed(2)}</div></div>
-                {state.settings.mode === 'paper' && (
-                  <div className='at-stat-card'>
-                    <div className='at-stat-label'>Simulated Balance</div>
-                    <div className='at-stat-value'>
-                      {typeof state.stats.paperBalance === 'number' ? state.stats.paperBalance.toFixed(2) : '—'}
-                    </div>
+                  <label>Engine State</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: isHalted ? '#f87171' : '#4ade80' }}>
+                    {state.state}
                   </div>
-                )}
-                <div className='at-stat-card'><div className='at-stat-label'>Wins</div><div className='at-stat-value'>{state.stats.wins}</div></div>
-                <div className='at-stat-card'><div className='at-stat-label'>Losses</div><div className='at-stat-value'>{state.stats.losses}</div></div>
-                <div className='at-stat-card'><div className='at-stat-label'>Signals Found</div><div className='at-stat-value'>{state.stats.signalsFound}</div></div>
-                <div className='at-stat-card'><div className='at-stat-label'>Prices Requested</div><div className='at-stat-value'>{state.stats.proposalsRequested}</div></div>
-                <div className='at-stat-card'><div className='at-stat-label'>Trades Opened</div><div className='at-stat-value'>{state.stats.tradesOpened}</div></div>
+                </div>
+                <div className='at-field'>
+                  <label>Deriv Authoritative Balance</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700 }}>
+                    {state.stats?.derivBalance != null ? `${sessionCurrency} ${state.stats.derivBalance.toFixed(2)}` : 'Syncing...'}
+                  </div>
+                </div>
+                <div className='at-field'>
+                  <label>Balance Drift</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: (state.stats?.balanceDifference || 0) > 0.5 ? '#f87171' : '#4ade80' }}>
+                    {state.stats?.balanceDifference != null ? `$${state.stats.balanceDifference.toFixed(2)}` : 'N/A'}
+                  </div>
+                </div>
+                <div className='at-field'>
+                  <label>Reconciliation Health</label>
+                  <span className={`at-badge ${state.stats?.isBalanceHealthy ? 'at-badge-ok' : 'at-badge-warn'}`}>
+                    {state.stats?.isBalanceHealthy ? 'HEALTHY' : 'UNHEALTHY'}
+                  </span>
+                </div>
+              </div>
+
+              <div className='at-section-title'>Performance Metrics</div>
+              <div className='at-stats'>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Net P/L</div>
+                  <div className='at-stat-value' style={{ color: (state.stats?.net || 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                    {(state.stats?.net || 0).toFixed(2)}
+                  </div>
+                </div>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Wins</div>
+                  <div className='at-stat-value' style={{ color: '#4ade80' }}>{state.stats?.wins || 0}</div>
+                </div>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Losses</div>
+                  <div className='at-stat-value' style={{ color: '#f87171' }}>{state.stats?.losses || 0}</div>
+                </div>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Loss Streak</div>
+                  <div className='at-stat-value'>{state.stats?.lossStreak || 0}</div>
+                </div9>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Trades Opened</div>
+                  <div className='at-stat-value'>{state.stats?.tradesOpened || 0}</div>
+                </div>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Market Scans</div>
+                  <div className='at-stat-value'>{state.stats?.scanCount || 0}</div>
+                </div>
               </div>
             </>
           )}
-          {section === 'logs' && (
-            <div className='at-logs'>
-              {state.logs.length === 0 ? <div>No logs yet.</div> : state.logs.map((log, index) => (
-                <div key={`${log.time}-${index}`} className='at-log-line' style={{ color: log.level === 'error' ? '#f87171' : log.level === 'warn' ? '#fbbf24' : log.level === 'success' ? '#4ade80' : '#d1d5db' }}>
-                  [{log.time}] {log.message}
+
+          {activeTab === 'config' && (
+            <>
+              <div className='at-section-title'>Risk Management Limits</div>
+              <div className='at-grid'>
+                <div className='at-field'>
+                  <label>Max Stake per Trade ({sessionCurrency})</label>
+                  <input 
+                    className='at-input' 
+                    type='number' 
+                    step='0.1' 
+                    value={limits.maxStakePerTrade ?? 10} 
+                    onChange={e => setLimits({ ...limits, maxStakePerTrade: Number(e.target.value) })} 
+                  />
                 </div>
-              ))}
-            </div>
+                <div className='at-field'>
+                  <label>Max Daily Loss ({sessionCurrency})</label>
+                  <input 
+                    className='at-input' 
+                    type='number' 
+                    value={limits.maxDailyLoss ?? 50} 
+                    onChange={e => setLimits({ ...limits, maxDailyLoss: Number(e.target.value) })} 
+                  />
+                </div>
+                <div className='at-field'>
+                  <label>Max Consecutive Losses</label>
+                  <input 
+                    className='at-input' 
+                    type='number' 
+                    value={limits.maxConsecutiveLosses ?? 3} 
+                    onChange={e => setLimits({ ...limits, maxConsecutiveLosses: Number(e.target.value) })} 
+                  />
+                </div>
+                <div className='at-field'>
+                  <label>Min Confidence Threshold (%)</label>
+                  <input 
+                    className='at-input' 
+                    type='number' 
+                    step='1' 
+                    min='50' 
+                    max='95' 
+                    value={(limits.minConfidenceThreshold ?? 0.65) * 100} 
+                    onChange={e => setLimits({ ...limits, minConfidenceThreshold: Number(e.target.value) / 100 })} 
+                  />
+                </div>
+              </div>
+              <div style={{ marginTop: '24px', display: 'flex', justifyContent: 'flex-end' }}>
+                <button className='at-button at-button-secondary' onClick={handleSaveLimits}>
+                  Save Risk Configuration
+                </button>
+                <div style={{ fontSize: '11px', color: '#64748b', marginTop: '8px', width: '100%' }}>
+                  * Changes to risk limits require a bot restart to take full effect if not applied dynamically.
+               . </div>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'logs' && (
+            <>
+              <div className='at-section-title'>System Event Log</div>
+              <div className='at-logs'>
+                {(state.logs || []).length === 0 ? (
+                  <div style={{ color: '#64748b', textAlign: 'center', padding: '20px' }}>No logs generated yet.</div>
+                ) : (
+                  (state.logs || []).map((log: any, index: number) => (
+                    <div 
+                      key={`${log.time}-${index}`} 
+                      className='at-log-line' 
+                      style={{ 
+                        color: log.level === 'error' ? '#f87171' : log.level === 'warn' ? '#fbbf24' : log.level === 'success' ? '#4ade80' : '#cbd5e1' 
+                      }}
+                    >
+                      <span style={{ opacity: 0.6 }}>[{log.time}]</span>
+                      <span style={{ fontWeight: 600, minWidth: '50px' }}>{log.level.toUpperCase()}</span>
+                      <span>{log.message}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </>
           )}
         </div>
+
         <div className='at-actions'>
-          {!state.running ? (
-            <button className='at-button at-button-primary' onClick={handleStart}>Enable Autonomous Trading</button>
-          ) : (
-            <button className='at-button at-button-danger' onClick={handleStop}>Disable Autonomous Trading</button>
-          )}
-          <div className='at-status'>
-            Status: <b>{state.running ? 'Running' : 'Stopped'}</b> · Mode: <b>{state.settings.mode.toUpperCase()}</b> · Authorized: <b>{state.authorized ? 'Yes' : 'No'}</b>
+          <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+            Markets: <b>{SYNTHETIC_INDICES.length} Synthetic Indices</b> • Categories: <b>{TRADE_CATEGORIES.length} Active</b>
+          </div>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            {!state.isRunning ? (
+              <button className='at-button at-button-primary' onClick={handleStart}>
+                Start Engine
+              </button>
+            ) : (
+              <button className='at-button at-button-danger' onClick={handleStop}>
+                Stop Engine
+              </button>
+            )}
           </div>
         </div>
       </div>
