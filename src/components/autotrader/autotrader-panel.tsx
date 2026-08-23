@@ -121,9 +121,9 @@ function AutoTraderPanel() {
   };
 
   const handleSaveLimits = () => {
-    // Safely update limits if the method exists, otherwise fallback to localStorage
     if ((autoTrader as any).updateLimits) {
       (autoTrader as any).updateLimits(limits);
+      alert('Risk limits updated successfully.');
     } else {
       localStorage.setItem('bot-risk-limits', JSON.stringify(limits));
       alert('Risk limits saved to local storage. Restart the bot to apply.');
@@ -223,7 +223,7 @@ function AutoTraderPanel() {
                 <div className='at-stat-card'>
                   <div className='at-stat-label'>Loss Streak</div>
                   <div className='at-stat-value'>{state.stats?.lossStreak || 0}</div>
-                </div9>
+                </div>
                 <div className='at-stat-card'>
                   <div className='at-stat-label'>Trades Opened</div>
                   <div className='at-stat-value'>{state.stats?.tradesOpened || 0}</div>
@@ -287,7 +287,7 @@ function AutoTraderPanel() {
                 </button>
                 <div style={{ fontSize: '11px', color: '#64748b', marginTop: '8px', width: '100%' }}>
                   * Changes to risk limits require a bot restart to take full effect if not applied dynamically.
-               . </div>
+                </div>
               </div>
             </>
           )}
