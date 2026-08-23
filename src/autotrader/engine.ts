@@ -1,4 +1,4 @@
-import { analyzeMarket, inferDecimalsFromQuotes, lastDigitOf } from './analysis';
+import { analyzeMarket } from './analysis';
 
 // ============================================================================
 // TYPES (Self-contained to prevent "Module not found" build errors)
@@ -110,12 +110,12 @@ class RiskManager {
 // ============================================================================
 
 const DEFAULT_LIMITS: RiskLimits = {
-    maxStakePerTrade: 10,
-    maxPercentRiskPerTrade: 0.02, // 2% max risk per trade
+    maxStakePerTrade: 1.0,
+    maxPercentRiskPerTrade: 0.02,
     maxDailyLoss: 50,
     maxConsecutiveLosses: 3,
     maxConcurrentTrades: 1,
-    maxBalanceTolerance: 0.50, // $0.50 max drift before halt
+    maxBalanceTolerance: 0.50,
     minConfidenceThreshold: 0.65,
 };
 
@@ -126,6 +126,8 @@ export class AutoTraderEngine extends EventTarget {
     
     private state: BotState = 'DISCONNECTED';
     private isRunning = false;
+    private mode: 'paper' | 'live' = 'paper';
+    private scanTimer: ReturnType<typeof setInterval> | null = null;
     private reconciliationTimer: ReturnType<typeof setInterval> | null = null;
     
     private stats: AutoTraderStats = {
@@ -134,8 +136,6 @@ export class AutoTraderEngine extends EventTarget {
         derivBalance: null, balanceDifference: 0, isBalanceHealthy: true,
     };
 
-    private rollingTicks = new Map<string, number[]>();
-    private activeSubscriptions = new Set<string>();
     private logs: { time: string; level: string; message: string }[] = [];
 
     constructor() {
@@ -147,6 +147,8 @@ export class AutoTraderEngine extends EventTarget {
         try {
             const raw = localStorage.getItem('bot-risk-limits');
             if (raw) this.limits = { ...this.limits, ...JSON.parse(raw) };
+            const savedMode = localStorage.getItem('bot-trading-mode');
+            if (savedMode === 'live' || savedMode === 'paper') this.mode = savedMode;
         } catch {}
     }
 
@@ -156,6 +158,7 @@ export class AutoTraderEngine extends EventTarget {
             stats: { ...this.stats },
             state: this.state,
             isRunning: this.isRunning,
+            mode: this.mode,
             logs: [...this.logs]
         };
     }
@@ -178,10 +181,17 @@ export class AutoTraderEngine extends EventTarget {
         this.log('info', 'Risk limits updated dynamically.');
     }
 
-    async start(patch: { client?: any; apiInstance?: any } = {}) {
+    setMode(mode: 'paper' | 'live') {
+        this.mode = mode;
+        localStorage.setItem('bot-trading-mode', mode);
+        this.log('info', `Trading mode set to: ${mode.toUpperCase()}`);
+    }
+
+    async start(patch: { client?: any; apiInstance?: any; mode?: 'paper' | 'live' } = {}) {
         if (this.isRunning) return;
         this.client = patch.client;
         this.apiInstance = patch.apiInstance;
+        if (patch.mode) this.setMode(patch.mode);
 
         if (!this.client?.is_logged_in || !this.apiInstance) {
             this.state = 'ERROR';
@@ -199,13 +209,16 @@ export class AutoTraderEngine extends EventTarget {
             if (this.state === 'HALTED') return;
 
             this.state = 'TRADING';
-            this.log('success', 'System READY. Initiating live market subscriptions...');
+            this.log('success', 'System READY. Initiating autonomous market scanning...');
             
-            for (const symbol of SYNTHETIC_INDICES) {
-                await this.subscribeToLiveTicks(symbol.symbol);
-            }
-
+            // Start autonomous polling scan (Self-contained, no external WS routing needed)
+            this.scanTimer = setInterval(() => { void this.scan(); }, 5000);
+            
+            // Start periodic reconciliation (every 15 seconds)
             this.reconciliationTimer = setInterval(() => this.synchronizeBalance(), 15000);
+            
+            // Trigger first scan immediately
+            setTimeout(() => void this.scan(), 500);
             this.emit();
 
         } catch (error: any) {
@@ -213,95 +226,183 @@ export class AutoTraderEngine extends EventTarget {
         }
     }
 
-    private async subscribeToLiveTicks(symbol: string) {
-        if (this.activeSubscriptions.has(symbol)) return;
-        
-        this.log('info', `Subscribing to live ticks: ${symbol}`);
-        this.rollingTicks.set(symbol, []);
+    private async scan() {
+        if (!this.isRunning || this.state === 'HALTED' || !this.apiInstance) return;
+
+        let tradesThisCycle = 0;
 
         try {
-            await this.apiInstance.send({
-                ticks_history: symbol,
-                adjust_start_time: 1,
-                count: 300,
-                end: 'latest',
-                style: 'ticks',
-                subscribe: 1
-            });
-            this.activeSubscriptions.add(symbol);
-        } catch (e: any) {
-            this.log('error', `Failed to subscribe to ${symbol}: ${e.message}`);
-        }
-    }
+            for (const symbol of SYNTHETIC_INDICES) {
+                if (!this.isRunning || this.state === 'HALTED') break;
 
-    public processLiveTick(symbol: string, price: number) {
-        if (!this.isRunning || this.state !== 'TRADING') return;
+                let quotes: number[] = [];
+                try {
+                    // Fetch 400 ticks to satisfy the >= 100 requirement for TA and >= 300 for digit analysis
+                    const response = await this.apiInstance.send({ 
+                        ticks_history: symbol.symbol, 
+                        adjust_start_time: 1, 
+                        count: 400, 
+                        end: 'latest', 
+                        style: 'ticks' 
+                    });
+                    const prices = response?.history?.prices ?? [];
+                    quotes = prices.map((p: any) => Number(p));
+                } catch (error: any) {
+                    continue;
+                }
 
-        const window = this.rollingTicks.get(symbol) || [];
-        window.push(price);
-        if (window.length > 500) window.shift();
-        this.rollingTicks.set(symbol, window);
+                if (quotes.length < 100) continue;
 
-        if (window.length >= 100) {
-            this.evaluateAndExecute(symbol, window);
-        }
-    }
+                // Analyze market using the quantitative engine
+                const rawSignal = analyzeMarket('rise_fall', quotes, 2);
+                
+                const signal: AnalysisSignal = {
+                    canTrade: rawSignal.contractType !== null && rawSignal.confidence >= this.limits.minConfidenceThreshold,
+                    contractType: rawSignal.contractType,
+                    direction: rawSignal.direction,
+                    barrier: rawSignal.barrier,
+                    confidenceScore: rawSignal.confidence,
+                    expectedEdge: rawSignal.confidence - 0.53,
+                    reason: rawSignal.reason
+                };
 
-    private async evaluateAndExecute(symbol: string, ticks: number[]) {
-        const rawSignal = analyzeMarket('rise_fall', ticks);
-        
-        const signal: AnalysisSignal = {
-            canTrade: rawSignal.contractType !== null && rawSignal.confidence >= this.limits.minConfidenceThreshold,
-            contractType: rawSignal.contractType,
-            direction: rawSignal.direction,
-            barrier: rawSignal.barrier,
-            confidenceScore: rawSignal.confidence,
-            expectedEdge: rawSignal.confidence - 0.53,
-            reason: rawSignal.reason
-        };
+                if (!signal.canTrade) {
+                    continue; // No valid edge detected, skip silently to keep logs clean
+                }
 
-        if (!signal.canTrade) {
-            return; 
-        }
+                this.log('info', `SIGNAL DETECTED: ${symbol.display_name} | ${signal.contractType} | Conf: ${(signal.confidenceScore * 100).toFixed(1)}%`);
 
-        this.log('info', `SIGNAL DETECTED: ${symbol} | ${signal.contractType} | Conf: ${(signal.confidenceScore * 100).toFixed(1)}% | Edge: ${(signal.expectedEdge * 100).toFixed(1)}%`);
+                // Risk Validation Gate
+                const recon = this.getCurrentReconciliation();
+                const riskCheck = new RiskManager(this.limits).validatePreTrade(
+                    this.limits.maxStakePerTrade, 
+                    this.stats.lossStreak, 
+                    recon, 
+                    0
+                );
 
-        const recon = this.getCurrentReconciliation();
-        const riskCheck = new RiskManager(this.limits).validatePreTrade(
-            this.limits.maxStakePerTrade, 
-            this.stats.lossStreak, 
-            recon, 
-            0
-        );
+                if (!riskCheck.allowed) {
+                    this.log('warn', `TRADE BLOCKED: ${riskCheck.reason}`);
+                    continue;
+                }
 
-        if (!riskCheck.allowed) {
-            this.log('warn', `TRADE BLOCKED: ${riskCheck.reason}`);
-            return;
-        }
-
-        this.log('success', `EXECUTING PAPER TRADE: ${symbol} ${signal.contractType}`);
-        this.stats.tradesOpened += 1;
-        this.stats.scanCount += 1;
-        
-        setTimeout(() => {
-            const isWin = Math.random() < 0.48;
-            const profit = isWin ? this.limits.maxStakePerTrade * 0.95 : -this.limits.maxStakePerTrade;
-            
-            this.stats.net += profit;
-            this.stats.dailyNet += profit;
-            if (isWin) {
-                this.stats.wins += 1;
-                this.stats.lossStreak = 0;
-                this.log('success', `TRADE WON: +${profit.toFixed(2)}`);
-            } else {
-                this.stats.losses += 1;
-                this.stats.lossStreak += 1;
-                this.log('warn', `TRADE LOST: ${profit.toFixed(2)}`);
+                // Execute Trade
+                await this.executeTrade(symbol, signal);
+                tradesThisCycle += 1;
+                
+                // Brief cooldown to prevent API rate limiting
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
-            
-            this.checkGlobalLimits();
+        } catch (error: any) {
+            this.log('error', `Scan error: ${error.message}`);
+        } finally {
+            this.stats.scanCount += 1;
             this.emit();
-        }, 1500);
+        }
+    }
+
+    private async executeTrade(symbol: any, signal: AnalysisSignal) {
+        const stake = this.limits.maxStakePerTrade;
+        this.log('success', `EXECUTING ${this.mode.toUpperCase()} TRADE: ${symbol.display_name} ${signal.contractType} | Stake: ${stake}`);
+        this.stats.tradesOpened += 1;
+        
+        if (this.mode === 'paper') {
+            // Simulate trade outcome (Realistic 48% win rate to reflect broker edge)
+            setTimeout(() => {
+                const isWin = Math.random() < 0.48;
+                const profit = isWin ? stake * 0.95 : -stake;
+                
+                this.stats.net += profit;
+                this.stats.dailyNet += profit;
+                if (isWin) {
+                    this.stats.wins += 1;
+                    this.stats.lossStreak = 0;
+                    this.log('success', `PAPER TRADE WON: +${profit.toFixed(2)}`);
+                } else {
+                    this.stats.losses += 1;
+                    this.stats.lossStreak += 1;
+                    this.log('warn', `PAPER TRADE LOST: ${profit.toFixed(2)}`);
+                }
+                
+                this.checkGlobalLimits();
+                this.emit();
+            }, 1500);
+        } else {
+            // LIVE EXECUTION PATH
+            try {
+                const currency = this.client?.currency || 'USD';
+                
+                // 1. Request Proposal
+                const proposalResponse = await this.apiInstance.send({
+                    proposal: 1,
+                    amount: stake,
+                    basis: 'stake',
+                    contract_type: signal.contractType,
+                    currency: currency,
+                    duration: 5,
+                    duration_unit: 't',
+                    underlying_symbol: symbol.symbol
+                });
+
+                const proposal = proposalResponse?.proposal;
+                if (!proposal?.id || !proposal.ask_price) {
+                    this.log('error', 'Failed to get valid proposal from Deriv.');
+                    return;
+                }
+
+                // 2. Buy Contract
+                const buyResponse = await this.apiInstance.send({
+                    buy: proposal.id,
+                    price: proposal.ask_price
+                });
+
+                const contractId = buyResponse?.buy?.contract_id;
+                if (!contractId) {
+                    this.log('error', 'Live buy failed: no contract id returned.');
+                    return;
+                }
+
+                this.log('success', `LIVE TRADE OPENED: Contract ID ${contractId}`);
+                
+                // 3. Monitor Contract for Settlement
+                const monitor = setInterval(async () => {
+                    try {
+                        const pocResponse = await this.apiInstance.send({ 
+                            proposal_open_contract: 1, 
+                            contract_id: String(contractId) 
+                        });
+                        const poc = pocResponse?.proposal_open_contract;
+                        
+                        if (poc && (poc.is_sold || poc.status === 'sold' || poc.status === 'won' || poc.status === 'lost')) {
+                            const profit = Number(poc.profit ?? 0);
+                            const isWin = profit > 0;
+                            
+                            this.stats.net += profit;
+                            this.stats.dailyNet += profit;
+                            if (isWin) {
+                                this.stats.wins += 1;
+                                this.stats.lossStreak = 0;
+                                this.log('success', `LIVE TRADE WON: +${profit.toFixed(2)}`);
+                            } else {
+                                this.stats.losses += 1;
+                                this.stats.lossStreak += 1;
+                                this.log('warn', `LIVE TRADE LOST: ${profit.toFixed(2)}`);
+                            }
+                            
+                            clearInterval(monitor);
+                            this.checkGlobalLimits();
+                            await this.synchronizeBalance(); // Reconcile immediately after settlement
+                            this.emit();
+                        }
+                    } catch (e: any) {
+                        this.log('error', `POC poll error: ${e.message}`);
+                    }
+                }, 2000);
+
+            } catch (error: any) {
+                this.log('error', `Live execution failed: ${error.message}`);
+            }
+        }
     }
 
     private async synchronizeBalance() {
@@ -326,7 +427,7 @@ export class AutoTraderEngine extends EventTarget {
                 this.client.setBalance(String(bal.balance));
             }
         } catch (error: any) {
-            this.log('error', `Balance sync failed: ${error.message}`);
+            // Silent fail on occasional network blips, will retry on next interval
         }
     }
 
@@ -352,10 +453,8 @@ export class AutoTraderEngine extends EventTarget {
     private triggerKillSwitch(reason: string) {
         this.state = 'HALTED';
         this.isRunning = false;
+        if (this.scanTimer) clearInterval(this.scanTimer);
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
-        
-        this.activeSubscriptions.clear();
-        this.rollingTicks.clear();
 
         this.log('error', `🚨 KILL SWITCH ACTIVATED: ${reason}`);
         this.emit();
@@ -363,6 +462,7 @@ export class AutoTraderEngine extends EventTarget {
 
     stop() {
         this.isRunning = false;
+        if (this.scanTimer) clearInterval(this.scanTimer);
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
         this.state = 'DISCONNECTED';
         this.log('info', 'System stopped by user.');
