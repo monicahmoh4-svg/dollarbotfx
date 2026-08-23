@@ -30,10 +30,24 @@ export interface BalanceReconciliation {
 }
 
 export interface RiskLimits {
+    // Trade sizing
     maxStakePerTrade: number;
     maxPercentRiskPerTrade: number;
+    
+    // Loss limits
     maxDailyLoss: number;
     maxConsecutiveLosses: number;
+    cooldownAfterLossMs: number; // Wait X ms after a loss before next trade
+    
+    // Profit targets
+    targetProfit: number; // Stop when net profit reaches this
+    targetProfitPerTrade: number; // Minimum profit per trade to continue
+    
+    // Session limits
+    maxTradesPerSession: number;
+    maxSessionDurationMs: number; // Stop after X milliseconds
+    
+    // Execution limits
     maxConcurrentTrades: number;
     maxBalanceTolerance: number;
     minConfidenceThreshold: number;
@@ -51,6 +65,8 @@ export interface AutoTraderStats {
     derivBalance: number | null;
     balanceDifference: number;
     isBalanceHealthy: boolean;
+    sessionDurationMs: number;
+    lastTradeTime: number | null;
 }
 
 // ============================================================================
@@ -85,12 +101,39 @@ export const SYNTHETIC_SYMBOL_PRESETS = REAL_MARKETS.map((s) => s.symbol).join('
 class RiskManager {
     constructor(private limits: RiskLimits) {}
 
-    validatePreTrade(stake: number, currentConsecutiveLosses: number, recon: BalanceReconciliation | null, currentOpenTrades: number): { allowed: boolean; reason: string } {
+    validatePreTrade(stake: number, stats: AutoTraderStats, recon: BalanceReconciliation | null, currentOpenTrades: number): { allowed: boolean; reason: string } {
+        // Account health
         if (!recon || !recon.isHealthy) return { allowed: false, reason: 'ACCOUNT_SYNC_UNHEALTHY' };
         if (recon.balanceDifference > this.limits.maxBalanceTolerance) return { allowed: false, reason: `BALANCE_MISMATCH: Diff=${recon.balanceDifference.toFixed(2)}` };
-        if (currentConsecutiveLosses >= this.limits.maxConsecutiveLosses) return { allowed: false, reason: `MAX_CONSECUTIVE_LOSSES: ${currentConsecutiveLosses}` };
+        
+        // Consecutive losses
+        if (stats.lossStreak >= this.limits.maxConsecutiveLosses) return { allowed: false, reason: `MAX_CONSECUTIVE_LOSSES: ${stats.lossStreak}` };
+        
+        // Cooldown after loss
+        if (stats.lastTradeTime && Date.now() - stats.lastTradeTime < this.limits.cooldownAfterLossMs && stats.lossStreak > 0) {
+            const remainingMs = this.limits.cooldownAfterLossMs - (Date.now() - stats.lastTradeTime);
+            return { allowed: false, reason: `COOLDOWN_ACTIVE: ${Math.ceil(remainingMs / 1000)}s remaining` };
+        }
+        
+        // Concurrent trades
         if (currentOpenTrades >= this.limits.maxConcurrentTrades) return { allowed: false, reason: `MAX_CONCURRENT_TRADES: ${currentOpenTrades}` };
-        if (stake > this.limits.maxStakePerTrade) return { allowed: false, reason: `STAKE_EXCEEDED: ${stake}` };
+        
+        // Stake limits
+        if (stake > this.limits.maxStakePerTrade) return { allowed: false, reason: `STAKE_EXCEEDED: ${stake} > ${this.limits.maxStakePerTrade}` };
+        if (stake > recon.localBalance * this.limits.maxPercentRiskPerTrade) return { allowed: false, reason: `RISK_EXCEEDED: Stake > ${(this.limits.maxPercentRiskPerTrade * 100).toFixed(1)}% of balance` };
+        
+        // Daily loss limit
+        if (stats.dailyNet <= -this.limits.maxDailyLoss) return { allowed: false, reason: `DAILY_LOSS_LIMIT: -$${Math.abs(stats.dailyNet).toFixed(2)}` };
+        
+        // Target profit reached
+        if (stats.net >= this.limits.targetProfit) return { allowed: false, reason: `TARGET_PROFIT_REACHED: $${stats.net.toFixed(2)}` };
+        
+        // Max trades per session
+        if (stats.tradesOpened >= this.limits.maxTradesPerSession) return { allowed: false, reason: `MAX_TRADES_PER_SESSION: ${stats.tradesOpened}` };
+        
+        // Session duration limit
+        if (stats.sessionDurationMs >= this.limits.maxSessionDurationMs) return { allowed: false, reason: `SESSION_DURATION_LIMIT: ${Math.floor(stats.sessionDurationMs / 60000)}min` };
+        
         return { allowed: true, reason: 'RISK_CHECKS_PASSED' };
     }
 }
@@ -100,10 +143,24 @@ class RiskManager {
 // ============================================================================
 
 const DEFAULT_LIMITS: RiskLimits = {
+    // Trade sizing
     maxStakePerTrade: 1.0,
     maxPercentRiskPerTrade: 0.02,
+    
+    // Loss limits
     maxDailyLoss: 50,
     maxConsecutiveLosses: 5,
+    cooldownAfterLossMs: 10000, // 10 seconds cooldown after loss
+    
+    // Profit targets
+    targetProfit: 100, // Stop when $100 profit reached
+    targetProfitPerTrade: 0.50, // Minimum $0.50 profit per trade
+    
+    // Session limits
+    maxTradesPerSession: 100,
+    maxSessionDurationMs: 4 * 60 * 60 * 1000, // 4 hours
+    
+    // Execution limits
     maxConcurrentTrades: 1,
     maxBalanceTolerance: 0.50,
     minConfidenceThreshold: 0.60,
@@ -119,11 +176,13 @@ export class AutoTraderEngine extends EventTarget {
     private mode: 'paper' | 'live' = 'paper';
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private reconciliationTimer: ReturnType<typeof setInterval> | null = null;
+    private sessionTimer: ReturnType<typeof setInterval> | null = null;
 
     private stats: AutoTraderStats = {
         wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0,
         sessionStart: Date.now(), scanCount: 0, tradesOpened: 0,
         derivBalance: null, balanceDifference: 0, isBalanceHealthy: true,
+        sessionDurationMs: 0, lastTradeTime: null,
     };
 
     private logs: { time: string; level: string; message: string }[] = [];
@@ -143,7 +202,17 @@ export class AutoTraderEngine extends EventTarget {
     }
 
     getState() {
-        return { limits: { ...this.limits }, stats: { ...this.stats }, state: this.state, isRunning: this.isRunning, mode: this.mode, logs: [...this.logs] };
+        return { 
+            limits: { ...this.limits }, 
+            stats: { 
+                ...this.stats, 
+                sessionDurationMs: Date.now() - this.stats.sessionStart 
+            }, 
+            state: this.state, 
+            isRunning: this.isRunning, 
+            mode: this.mode, 
+            logs: [...this.logs] 
+        };
     }
 
     private emit() { this.dispatchEvent(new CustomEvent('state', { detail: this.getState() })); }
@@ -181,6 +250,14 @@ export class AutoTraderEngine extends EventTarget {
             return;
         }
 
+        // Reset session stats
+        this.stats = {
+            wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0,
+            sessionStart: Date.now(), scanCount: 0, tradesOpened: 0,
+            derivBalance: null, balanceDifference: 0, isBalanceHealthy: true,
+            sessionDurationMs: 0, lastTradeTime: null,
+        };
+
         this.state = 'CONNECTING';
         this.isRunning = true;
         this.emit();
@@ -190,11 +267,17 @@ export class AutoTraderEngine extends EventTarget {
             if (this.state === 'HALTED') return;
 
             this.state = 'TRADING';
-            this.log('success', `System READY. Scanning ${REAL_MARKETS.length} real markets (forex/crypto)...`);
+            this.log('success', `System READY. Scanning ${REAL_MARKETS.length} real markets...`);
+            this.log('info', `Target Profit: $${this.limits.targetProfit} | Stop Loss: $${this.limits.maxDailyLoss} | Max Trades: ${this.limits.maxTradesPerSession}`);
 
             this.scanTimer = setInterval(() => { void this.scan(); }, 8000);
-            // CRITICAL FIX: Increased balance sync frequency from 15s to 5s
             this.reconciliationTimer = setInterval(() => this.synchronizeBalance(), 5000);
+            this.sessionTimer = setInterval(() => {
+                this.stats.sessionDurationMs = Date.now() - this.stats.sessionStart;
+                this.checkGlobalLimits();
+                this.emit();
+            }, 1000);
+            
             setTimeout(() => void this.scan(), 500);
             this.emit();
         } catch (error: any) {
@@ -247,7 +330,7 @@ export class AutoTraderEngine extends EventTarget {
                     const recon = this.getCurrentReconciliation();
                     const riskCheck = new RiskManager(this.limits).validatePreTrade(
                         this.limits.maxStakePerTrade,
-                        this.stats.lossStreak,
+                        this.stats,
                         recon,
                         0
                     );
@@ -276,6 +359,7 @@ export class AutoTraderEngine extends EventTarget {
         const stake = this.limits.maxStakePerTrade;
         this.log('success', `EXECUTING ${this.mode.toUpperCase()} TRADE: ${market.display_name} | ${signal.contractType} | Stake: $${stake}`);
         this.stats.tradesOpened += 1;
+        this.stats.lastTradeTime = Date.now();
 
         if (this.mode === 'paper') {
             setTimeout(() => {
@@ -318,7 +402,6 @@ export class AutoTraderEngine extends EventTarget {
                     return;
                 }
 
-                // CRITICAL FIX: Immediately refresh balance after stake deduction
                 await this.synchronizeBalance();
 
                 const buyResponse = await this.apiInstance.send({
@@ -361,7 +444,6 @@ export class AutoTraderEngine extends EventTarget {
 
                             clearInterval(monitor);
                             this.checkGlobalLimits();
-                            // CRITICAL FIX: Immediately refresh balance after settlement
                             await this.synchronizeBalance();
                             this.emit();
                         }
@@ -379,7 +461,6 @@ export class AutoTraderEngine extends EventTarget {
     private async synchronizeBalance() {
         if (!this.isRunning || this.state === 'HALTED') return;
         try {
-            // CRITICAL FIX: Use subscribe: 1 to get live balance updates via WebSocket
             const response = await this.apiInstance.send({ balance: 1, subscribe: 1 });
             const bal = response?.balance;
             if (!bal || typeof bal.balance !== 'number') return;
@@ -394,11 +475,9 @@ export class AutoTraderEngine extends EventTarget {
                 return;
             }
 
-            // CRITICAL FIX: Push balance to UI via multiple channels
             const loginid = bal.loginid || this.client?.loginid;
             const currency = bal.currency || this.client?.currency;
 
-            // 1. Update client store (MobX)
             if (this.client && typeof this.client.setBalance === 'function') {
                 this.client.setBalance(String(bal.balance));
                 if (currency && typeof this.client.setCurrency === 'function') {
@@ -406,7 +485,6 @@ export class AutoTraderEngine extends EventTarget {
                 }
             }
 
-            // 2. Update ConnectionStream (what the UI header actually reads from)
             if (typeof ConnectionStream.updateAccountBalance === 'function') {
                 ConnectionStream.updateAccountBalance(loginid, bal.balance, currency);
             }
@@ -429,10 +507,38 @@ export class AutoTraderEngine extends EventTarget {
     }
 
     private checkGlobalLimits() {
+        const sessionDuration = Date.now() - this.stats.sessionStart;
+        
+        // Target profit reached
+        if (this.stats.net >= this.limits.targetProfit) {
+            this.triggerKillSwitch(`🎯 TARGET PROFIT REACHED: $${this.stats.net.toFixed(2)} (Target: $${this.limits.targetProfit})`);
+            return;
+        }
+        
+        // Daily loss limit
         if (this.stats.dailyNet <= -this.limits.maxDailyLoss) {
-            this.triggerKillSwitch(`DAILY LOSS LIMIT REACHED: -$${Math.abs(this.stats.dailyNet).toFixed(2)}`);
-        } else if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses) {
-            this.triggerKillSwitch(`CONSECUTIVE LOSS LIMIT REACHED: ${this.stats.lossStreak}`);
+            this.triggerKillSwitch(`🛑 DAILY LOSS LIMIT REACHED: -$${Math.abs(this.stats.dailyNet).toFixed(2)} (Limit: $${this.limits.maxDailyLoss})`);
+            return;
+        }
+        
+        // Consecutive losses
+        if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses) {
+            this.triggerKillSwitch(`⚠️ CONSECUTIVE LOSS LIMIT REACHED: ${this.stats.lossStreak} (Limit: ${this.limits.maxConsecutiveLosses})`);
+            return;
+        }
+        
+        // Max trades per session
+        if (this.stats.tradesOpened >= this.limits.maxTradesPerSession) {
+            this.triggerKillSwitch(`📊 MAX TRADES PER SESSION REACHED: ${this.stats.tradesOpened} (Limit: ${this.limits.maxTradesPerSession})`);
+            return;
+        }
+        
+        // Session duration limit
+        if (sessionDuration >= this.limits.maxSessionDurationMs) {
+            const minutes = Math.floor(sessionDuration / 60000);
+            const limitMinutes = Math.floor(this.limits.maxSessionDurationMs / 60000);
+            this.triggerKillSwitch(`⏰ SESSION DURATION LIMIT REACHED: ${minutes}min (Limit: ${limitMinutes}min)`);
+            return;
         }
     }
 
@@ -441,6 +547,7 @@ export class AutoTraderEngine extends EventTarget {
         this.isRunning = false;
         if (this.scanTimer) clearInterval(this.scanTimer);
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
+        if (this.sessionTimer) clearInterval(this.sessionTimer);
         this.log('error', `🚨 KILL SWITCH ACTIVATED: ${reason}`);
         this.emit();
     }
@@ -449,6 +556,7 @@ export class AutoTraderEngine extends EventTarget {
         this.isRunning = false;
         if (this.scanTimer) clearInterval(this.scanTimer);
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
+        if (this.sessionTimer) clearInterval(this.sessionTimer);
         this.state = 'DISCONNECTED';
         this.log('info', 'System stopped by user.');
         this.emit();
