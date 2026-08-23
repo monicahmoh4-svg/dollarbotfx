@@ -7,13 +7,18 @@ export type AnalysisResult = {
     direction: 'CALL' | 'PUT' | null; 
     barrier: number | null; 
     confidence: number; 
+    // Used ONLY for entry filtering (minConfidence) and signal ranking — NOT a
+    // validated win probability. Do not use this for profit-edge math; use
+    // estimatedWinProbability instead. See analyzeRiseFall for why these two
+    // are deliberately different.
+    estimatedWinProbability: number;
     volatility: number; 
     sampleSize: number; 
     reason: string; 
 };
 
 function emptyResult(category: TradeCategory, reason: string): AnalysisResult {
-    return { category, contractType: null, direction: null, barrier: null, confidence: 0, volatility: 0, sampleSize: 0, reason };
+    return { category, contractType: null, direction: null, barrier: null, confidence: 0, estimatedWinProbability: 0, volatility: 0, sampleSize: 0, reason };
 }
 
 // === TECHNICAL INDICATORS ===
@@ -244,6 +249,16 @@ export function analyzeRiseFall(quotes: number[]): AnalysisResult {
         direction,
         barrier: null,
         confidence: direction ? confidence : 0,
+        // HONEST BASELINE: Volatility Indices are generated from a fixed-
+        // volatility random walk, not real order flow — there is no validated
+        // basis for claiming indicator agreement translates to an actual win
+        // probability above 50%. `confidence` above is kept for entry
+        // filtering/ranking only. Using 0.5 here means the mandatory
+        // profit-edge check in engine.ts will correctly reject rise_fall
+        // trades whenever the contract's break-even probability exceeds 50%
+        // (the normal case), instead of being tricked into "yes" by a
+        // heuristic score that was never shown to predict outcomes.
+        estimatedWinProbability: direction ? 0.5 : 0,
         volatility,
         sampleSize: quotes.length,
         reason: reasons.join(' ') + ` | Score:${consensus.toFixed(1)}`
@@ -318,7 +333,7 @@ export function analyzeEvenOdd(stats: DigitStats): AnalysisResult {
     const favorEven = stats.evenProb > 0.5;
     const deviation = Math.abs(stats.evenProb - 0.5);
     const confidence = 0.5 + Math.min(MAX_DIGIT_CONFIDENCE_BUFFER, deviation);
-    return { category: 'even_odd', contractType: favorEven ? 'DIGITEVEN' : 'DIGITODD', direction: null, barrier: null, confidence, volatility: 0, sampleSize: stats.total, reason: `evenProb:${(stats.evenProb * 100).toFixed(1)}% z:${z.toFixed(2)}` };
+    return { category: 'even_odd', contractType: favorEven ? 'DIGITEVEN' : 'DIGITODD', direction: null, barrier: null, confidence, estimatedWinProbability: confidence, volatility: 0, sampleSize: stats.total, reason: `evenProb:${(stats.evenProb * 100).toFixed(1)}% z:${z.toFixed(2)}` };
 }
 
 export function analyzeOverUnder(stats: DigitStats): AnalysisResult {
@@ -339,7 +354,8 @@ export function analyzeOverUnder(stats: DigitStats): AnalysisResult {
     if (!best || best.z < MULTI_TEST_Z_GATE) return emptyResult('over_under', `no-significant-deviation z:${(best?.z ?? 0).toFixed(2)}`);
     const deviation = Math.abs(best.observed - best.expected);
     const confidence = best.expected + Math.min(MAX_DIGIT_CONFIDENCE_BUFFER, deviation);
-    return { category: 'over_under', contractType: best.type, direction: null, barrier: best.barrier, confidence: Math.min(0.95, confidence), volatility: 0, sampleSize: stats.total, reason: `${best.type} barrier:${best.barrier} z:${best.z.toFixed(2)}` };
+    const cappedConfidence = Math.min(0.95, confidence);
+    return { category: 'over_under', contractType: best.type, direction: null, barrier: best.barrier, confidence: cappedConfidence, estimatedWinProbability: cappedConfidence, volatility: 0, sampleSize: stats.total, reason: `${best.type} barrier:${best.barrier} z:${best.z.toFixed(2)}` };
 }
 
 export function analyzeMatchesDiffers(stats: DigitStats): AnalysisResult {
@@ -353,11 +369,12 @@ export function analyzeMatchesDiffers(stats: DigitStats): AnalysisResult {
     const differZ = zScoreForProportion(1 - worstFreq, 0.9, stats.total);
     if (matchZ >= MULTI_TEST_Z_GATE) {
         const confidence = 0.1 + Math.min(MAX_DIGIT_CONFIDENCE_BUFFER, bestFreq - 0.1);
-        return { category: 'matches_differs', contractType: 'DIGITMATCH', direction: null, barrier: bestDigit, confidence, volatility: 0, sampleSize: stats.total, reason: `DIGITMATCH digit:${bestDigit} z:${matchZ.toFixed(2)}` };
+        return { category: 'matches_differs', contractType: 'DIGITMATCH', direction: null, barrier: bestDigit, confidence, estimatedWinProbability: confidence, volatility: 0, sampleSize: stats.total, reason: `DIGITMATCH digit:${bestDigit} z:${matchZ.toFixed(2)}` };
     }
     if (differZ >= MULTI_TEST_Z_GATE) {
         const confidence = 0.9 + Math.min(MAX_DIGIT_CONFIDENCE_BUFFER, (1 - worstFreq) - 0.9);
-        return { category: 'matches_differs', contractType: 'DIGITDIFF', direction: null, barrier: worstDigit, confidence: Math.min(0.97, confidence), volatility: 0, sampleSize: stats.total, reason: `DIGITDIFF digit:${worstDigit} z:${differZ.toFixed(2)}` };
+        const cappedConfidence = Math.min(0.97, confidence);
+        return { category: 'matches_differs', contractType: 'DIGITDIFF', direction: null, barrier: worstDigit, confidence: cappedConfidence, estimatedWinProbability: cappedConfidence, volatility: 0, sampleSize: stats.total, reason: `DIGITDIFF digit:${worstDigit} z:${differZ.toFixed(2)}` };
     }
     return emptyResult('matches_differs', `no-significant-deviation`);
 }
