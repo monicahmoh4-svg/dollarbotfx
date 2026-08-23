@@ -297,8 +297,22 @@ function AutoTraderPanel() {
                 {' · '} {state.stats.scanCount} scan(s) run
               </div>
               <div className='at-section-title'>Results</div>
+              {state.settings.mode === 'paper' && (
+                <div className='at-hint' style={{ opacity: 0.7, fontSize: '0.85em', marginBottom: 6 }}>
+                  Paper mode simulates trades only — your real Deriv account balance is never touched.
+                  "Simulated Balance" below started from your real balance and moves only with simulated results.
+                </div>
+              )}
               <div className='at-stats'>
                 <div className='at-stat-card'><div className='at-stat-label'>Net P/L</div><div className='at-stat-value' style={{ color: state.stats.net >= 0 ? '#4ade80' : '#f87171' }}>{state.stats.net.toFixed(2)}</div></div>
+                {state.settings.mode === 'paper' && (
+                  <div className='at-stat-card'>
+                    <div className='at-stat-label'>Simulated Balance</div>
+                    <div className='at-stat-value'>
+                      {typeof state.stats.paperBalance === 'number' ? state.stats.paperBalance.toFixed(2) : '—'}
+                    </div>
+                  </div>
+                )}
                 <div className='at-stat-card'><div className='at-stat-label'>Wins</div><div className='at-stat-value'>{state.stats.wins}</div></div>
                 <div className='at-stat-card'><div className='at-stat-label'>Losses</div><div className='at-stat-value'>{state.stats.losses}</div></div>
                 <div className='at-stat-card'><div className='at-stat-label'>Signals Found</div><div className='at-stat-value'>{state.stats.signalsFound}</div></div>
