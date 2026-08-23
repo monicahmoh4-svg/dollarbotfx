@@ -63,7 +63,7 @@ export type AutoTraderSettings = {
     minConfidence: number; maxVolatility: number; maxConcurrentTrades: number; dailyLossLimit: number; takeProfit: number;
     martingaleEnabled: boolean; martingaleMultiplier: number; maxMartingaleSteps: number; maxStake: number; requireProfitProjection: boolean;
     minProjectedEdge: number; symbolsOverride: string; maxSymbols: number; scanIntervalMs: number; scanBatchDelayMs: number; cooldownMs: number;
-    enabledMarkets: string[]; tradeCategories: TradeCategory[]; maxConsecutiveLosses: number;
+    enabledMarkets: string[]; tradeCategories: TradeCategory[]; maxConsecutiveLosses: number; signalConfirmationsRequired: number;
 };
 
 export type AutoTraderStats = {
@@ -90,7 +90,7 @@ export const DEFAULT_AUTOTRADER_SETTINGS: AutoTraderSettings = {
     requireProfitProjection: true, minProjectedEdge: 0.03, symbolsOverride: '', maxSymbols: 0,
     scanIntervalMs: 5000, scanBatchDelayMs: 300, cooldownMs: 15000,
     enabledMarkets: ['synthetic_index'], tradeCategories: ['rise_fall'],
-    maxConsecutiveLosses: 5,
+    maxConsecutiveLosses: 5, signalConfirmationsRequired: 1,
 };
 
 function sleep(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -436,11 +436,16 @@ class AutoTraderEngine extends EventTarget {
                     const best = candidates[0];
                     this.log('info', `📊 ${symbol.display_name}: ${best.contractType} @ ${(best.confidence * 100).toFixed(1)}%`);
 
-                    // SIGNAL PERSISTENCE GATE: a signal must be produced by the SAME
-                    // contract/barrier on two consecutive scans (~scanIntervalMs apart)
-                    // before we act on it. A single scan can catch a momentary
-                    // statistical blip; requiring it to still hold true on independent,
-                    // freshly-fetched data materially cuts false positives.
+                    // Signal confirmation: by default a qualifying signal is acted on
+                    // the scan it's found (confirmationsRequired=1). The underlying
+                    // analysis already enforces large sample sizes, high statistical
+                    // significance (z-gates), and a mandatory positive profit edge —
+                    // requiring it to ALSO survive an extra full scan cycle before
+                    // acting was stacking caution on caution, and in practice meant
+                    // trades almost never fired within a normal session length. Set
+                    // signalConfirmationsRequired > 1 in settings if you want that
+                    // extra cross-scan agreement back.
+                    const requiredConfirmations = Math.max(1, this.settings.signalConfirmationsRequired ?? 1);
                     const sigKey = `${best.contractType}|${best.barrier ?? ''}`;
                     const pending = this.pendingSignals.get(symbol.symbol);
                     if (pending && pending.key === sigKey) {
@@ -448,10 +453,11 @@ class AutoTraderEngine extends EventTarget {
                     } else {
                         this.pendingSignals.set(symbol.symbol, { key: sigKey, count: 1 });
                     }
-                    const confirmed = (this.pendingSignals.get(symbol.symbol)?.count ?? 0) >= 2;
+                    const confirmed = (this.pendingSignals.get(symbol.symbol)?.count ?? 0) >= requiredConfirmations;
 
                     if (!confirmed) {
-                        this.log('info', `⏳ ${symbol.display_name}: signal not yet confirmed (1/2 scans)`);
+                        const count = this.pendingSignals.get(symbol.symbol)?.count ?? 1;
+                        this.log('info', `⏳ ${symbol.display_name}: signal not yet confirmed (${count}/${requiredConfirmations} scans)`);
                     } else if (this.canTrade(symbol.symbol)) {
                         this.log('info', `🎯 Attempting trade on ${symbol.display_name}...`);
                         try {
