@@ -22,7 +22,7 @@ function emptyResult(category: TradeCategory, reason: string): AnalysisResult {
 }
 
 // ============================================================================
-// CANDLE CONSTRUCTION — Converts irregular ticks into regular OHLC candles
+// CANDLE CONSTRUCTION
 // ============================================================================
 
 interface Candle {
@@ -48,7 +48,7 @@ function buildCandles(ticks: number[], period: number): Candle[] {
 }
 
 // ============================================================================
-// TECHNICAL INDICATORS (Wilder's smoothing for RSI, standard EMA for others)
+// TECHNICAL INDICATORS
 // ============================================================================
 
 function ema(values: number[], period: number): number[] {
@@ -114,14 +114,19 @@ function atr(candles: Candle[], period = 14): number[] {
 // ============================================================================
 
 export function analyzeRiseFall(ticks: number[]): AnalysisResult {
-    if (ticks.length < 300) return emptyResult('rise_fall', 'INSUFFICIENT_DATA');
+    if (ticks.length < 300) {
+        return emptyResult('rise_fall', `INSUFFICIENT_TICKS: ${ticks.length}`);
+    }
 
-    // Build multi-timeframe candles
-    const htfCandles = buildCandles(ticks, 50); // Higher TF ≈ 5 min
-    const ltfCandles = buildCandles(ticks, 10); // Lower TF ≈ 1 min
+    // Build multi-timeframe candles — calibrated for tick-based forex data
+    const htfCandles = buildCandles(ticks, 20); // HTF ≈ 20 ticks (~10-20 seconds)
+    const ltfCandles = buildCandles(ticks, 5);  // LTF ≈ 5 ticks (~2-5 seconds)
 
-    if (htfCandles.length < 30 || ltfCandles.length < 50) {
-        return emptyResult('rise_fall', 'INSUFFICIENT_CANDLES');
+    if (htfCandles.length < 25) {
+        return emptyResult('rise_fall', `INSUFFICIENT_HTF_CANDLES: ${htfCandles.length}`);
+    }
+    if (ltfCandles.length < 30) {
+        return emptyResult('rise_fall', `INSUFFICIENT_LTF_CANDLES: ${ltfCandles.length}`);
     }
 
     const htfCloses = htfCandles.map(c => c.close);
@@ -129,7 +134,7 @@ export function analyzeRiseFall(ticks: number[]): AnalysisResult {
 
     // HTF indicators
     const htfEma20 = ema(htfCloses, 20);
-    const htfEma50 = ema(htfCloses, 50);
+    const htfEma50 = ema(htfCloses, Math.min(50, htfCloses.length));
     const htfAtr = atr(htfCandles, 14);
 
     // LTF indicators
@@ -150,30 +155,34 @@ export function analyzeRiseFall(ticks: number[]): AnalysisResult {
     const prevLtfHist = ltfMacd.histogram[ltfMacd.histogram.length - 2];
 
     // Volatility filter — skip dead/choppy markets
-    if (avgHtfAtr === 0 || lastHtfAtr < avgHtfAtr * 0.5) {
-        return emptyResult('rise_fall', 'LOW_VOLATILITY');
+    if (avgHtfAtr === 0) {
+        return emptyResult('rise_fall', 'ZERO_VOLATILITY');
+    }
+    if (lastHtfAtr < avgHtfAtr * 0.3) {
+        return emptyResult('rise_fall', `LOW_VOLATILITY: ATR=${lastHtfAtr.toFixed(6)}`);
     }
 
-    // Determine HTF trend direction
-    const htfBullish = lastHtfEma20 > lastHtfEma50 * 1.0001;
-    const htfBearish = lastHtfEma20 < lastHtfEma50 * 0.9999;
+    // Determine HTF trend direction — relaxed threshold for real forex
+    const htfBullish = lastHtfEma20 > lastHtfEma50;
+    const htfBearish = lastHtfEma20 < lastHtfEma50;
 
     if (!htfBullish && !htfBearish) {
-        return emptyResult('rise_fall', 'NO_CLEAR_TREND');
+        return emptyResult('rise_fall', 'NO_CLEAR_TREND: EMAs flat');
     }
 
-    // LTF pullback/rejection detection
-    const recentLtfLows = ltfCandles.slice(-10).map(c => c.low);
-    const recentLtfHighs = ltfCandles.slice(-10).map(c => c.high);
+    // LTF pullback/rejection detection — relaxed buffer for real forex volatility
+    const recentLtfLows = ltfCandles.slice(-15).map(c => c.low);
+    const recentLtfHighs = ltfCandles.slice(-15).map(c => c.high);
 
     let direction: 'CALL' | 'PUT' | null = null;
     let confidence = 0.50;
     const reasons: string[] = [];
 
     if (htfBullish) {
-        const touchedEma = recentLtfLows.some(low => low <= lastLtfEma20 * 1.0005);
+        // Relaxed EMA touch: within 0.15% of EMA20 (real forex needs this buffer)
+        const touchedEma = recentLtfLows.some(low => low <= lastLtfEma20 * 1.0015);
         const bounced = lastLtfClose > prevLtfClose;
-        const rsiOk = lastLtfRsi > 40 && lastLtfRsi < 70;
+        const rsiOk = lastLtfRsi > 35 && lastLtfRsi < 75;
         const macdOk = lastLtfHist > 0 || lastLtfHist > prevLtfHist;
 
         if (touchedEma && bounced && rsiOk && macdOk) {
@@ -185,12 +194,20 @@ export function analyzeRiseFall(ticks: number[]): AnalysisResult {
             if (rsiOk) { confidence += 0.08; reasons.push('RSI_OK'); }
             if (macdOk) { confidence += 0.10; reasons.push('MACD_OK'); }
             const trendStrength = (lastHtfEma20 - lastHtfEma50) / lastHtfEma50;
-            if (trendStrength > 0.001) { confidence += 0.07; reasons.push('StrongTrend'); }
+            if (trendStrength > 0.0005) { confidence += 0.07; reasons.push('StrongTrend'); }
+        } else {
+            // Diagnostic: why didn't this setup qualify?
+            const missing: string[] = [];
+            if (!touchedEma) missing.push('no_pullback');
+            if (!bounced) missing.push('no_bounce');
+            if (!rsiOk) missing.push(`rsi=${lastLtfRsi.toFixed(1)}`);
+            if (!macdOk) missing.push('macd_negative');
+            return emptyResult('rise_fall', `BULLISH_SETUP_MISSING: ${missing.join(',')}`);
         }
     } else if (htfBearish) {
-        const touchedEma = recentLtfHighs.some(high => high >= lastLtfEma20 * 0.9995);
+        const touchedEma = recentLtfHighs.some(high => high >= lastLtfEma20 * 0.9985);
         const rejected = lastLtfClose < prevLtfClose;
-        const rsiOk = lastLtfRsi < 60 && lastLtfRsi > 30;
+        const rsiOk = lastLtfRsi < 65 && lastLtfRsi > 25;
         const macdOk = lastLtfHist < 0 || lastLtfHist < prevLtfHist;
 
         if (touchedEma && rejected && rsiOk && macdOk) {
@@ -202,12 +219,19 @@ export function analyzeRiseFall(ticks: number[]): AnalysisResult {
             if (rsiOk) { confidence += 0.08; reasons.push('RSI_OK'); }
             if (macdOk) { confidence += 0.10; reasons.push('MACD_OK'); }
             const trendStrength = (lastHtfEma50 - lastHtfEma20) / lastHtfEma50;
-            if (trendStrength > 0.001) { confidence += 0.07; reasons.push('StrongTrend'); }
+            if (trendStrength > 0.0005) { confidence += 0.07; reasons.push('StrongTrend'); }
+        } else {
+            const missing: string[] = [];
+            if (!touchedEma) missing.push('no_pullback');
+            if (!rejected) missing.push('no_rejection');
+            if (!rsiOk) missing.push(`rsi=${lastLtfRsi.toFixed(1)}`);
+            if (!macdOk) missing.push('macd_positive');
+            return emptyResult('rise_fall', `BEARISH_SETUP_MISSING: ${missing.join(',')}`);
         }
     }
 
     confidence = Math.min(0.92, confidence);
-    const canTrade = direction !== null && confidence >= 0.65;
+    const canTrade = direction !== null && confidence >= 0.60; // Relaxed to 0.60
 
     return {
         category: 'rise_fall',
@@ -222,7 +246,6 @@ export function analyzeRiseFall(ticks: number[]): AnalysisResult {
     };
 }
 
-// Digit contracts are not applicable to real forex/crypto markets
 export function analyzeEvenOdd(): AnalysisResult {
     return emptyResult('even_odd', 'NOT_APPLICABLE_REAL_MARKETS');
 }
@@ -237,10 +260,6 @@ export function analyzeMarket(category: TradeCategory, quotes: number[], decimal
     if (category === 'rise_fall') return analyzeRiseFall(quotes);
     return emptyResult(category, 'ONLY_RISE_FALL_ON_REAL_MARKETS');
 }
-
-// ============================================================================
-// UTILITY EXPORTS (required by engine.ts for backward compatibility)
-// ============================================================================
 
 export function inferDecimalsFromQuotes(quotes: number[]): number {
     let maxDecimals = 0;
