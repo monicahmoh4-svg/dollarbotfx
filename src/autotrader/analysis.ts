@@ -1,42 +1,246 @@
 export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
 export type ContractType = 'CALL' | 'PUT' | 'DIGITEVEN' | 'DIGITODD' | 'DIGITOVER' | 'DIGITUNDER' | 'DIGITMATCH' | 'DIGITDIFF';
 
-export interface AnalysisResult { 
-    category: TradeCategory; 
-    contractType: ContractType | null; 
-    direction: 'CALL' | 'PUT' | null; 
-    barrier: number | null; 
-    confidence: number; 
+export interface AnalysisResult {
+    category: TradeCategory;
+    contractType: ContractType | null;
+    direction: 'CALL' | 'PUT' | null;
+    barrier: number | null;
+    confidence: number;
     estimatedWinProbability: number;
-    volatility: number; 
-    sampleSize: number; 
-    reason: string; 
+    volatility: number;
+    sampleSize: number;
+    reason: string;
 }
 
 function emptyResult(category: TradeCategory, reason: string): AnalysisResult {
-    return { category, contractType: null, direction: null, barrier: null, confidence: 0, estimatedWinProbability: 0.5, volatility: 0, sampleSize: 0, reason };
+    return {
+        category, contractType: null, direction: null, barrier: null,
+        confidence: 0, estimatedWinProbability: 0.5, volatility: 0,
+        sampleSize: 0, reason
+    };
 }
 
-// --- MATHEMATICAL UTILITIES ---
+// ============================================================================
+// CANDLE CONSTRUCTION — Converts irregular ticks into regular OHLC candles
+// ============================================================================
 
-function calculateSMA(data: number[], period: number): number {
-    if (data.length < period) return data[data.length - 1] || 0;
-    const slice = data.slice(-period);
-    return slice.reduce((a, b) => a + b, 0) / period;
+interface Candle {
+    open: number;
+    high: number;
+    low: number;
+    close: number;
 }
 
-function calculateRSI(data: number[], period = 14): number {
-    if (data.length < period + 1) return 50;
-    let gains = 0, losses = 0;
-    for (let i = data.length - period; i < data.length; i++) {
-        const change = data[i] - data[i - 1];
-        if (change > 0) gains += change;
-        else losses += Math.abs(change);
+function buildCandles(ticks: number[], period: number): Candle[] {
+    const candles: Candle[] = [];
+    for (let i = 0; i < ticks.length; i += period) {
+        const slice = ticks.slice(i, i + period);
+        if (slice.length === 0) continue;
+        candles.push({
+            open: slice[0],
+            high: Math.max(...slice),
+            low: Math.min(...slice),
+            close: slice[slice.length - 1],
+        });
     }
-    if (losses === 0) return 100;
-    const rs = gains / losses;
-    return 100 - (100 / (1 + rs));
+    return candles;
 }
+
+// ============================================================================
+// TECHNICAL INDICATORS (Wilder's smoothing for RSI, standard EMA for others)
+// ============================================================================
+
+function ema(values: number[], period: number): number[] {
+    if (values.length === 0) return [];
+    const k = 2 / (period + 1);
+    const result: number[] = [values[0]];
+    for (let i = 1; i < values.length; i++) {
+        result.push(values[i] * k + result[i - 1] * (1 - k));
+    }
+    return result;
+}
+
+function rsi(closes: number[], period = 14): number[] {
+    if (closes.length < period + 1) return [50];
+    const result: number[] = [];
+    let avgGain = 0, avgLoss = 0;
+    for (let i = 1; i <= period; i++) {
+        const change = closes[i] - closes[i - 1];
+        if (change > 0) avgGain += change;
+        else avgLoss += Math.abs(change);
+    }
+    avgGain /= period;
+    avgLoss /= period;
+    const rs0 = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    result.push(100 - 100 / (1 + rs0));
+    for (let i = period + 1; i < closes.length; i++) {
+        const change = closes[i] - closes[i - 1];
+        const gain = change > 0 ? change : 0;
+        const loss = change < 0 ? Math.abs(change) : 0;
+        avgGain = (avgGain * (period - 1) + gain) / period;
+        avgLoss = (avgLoss * (period - 1) + loss) / period;
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        result.push(100 - 100 / (1 + rs));
+    }
+    return result;
+}
+
+function macd(closes: number[]): { macd: number[]; signal: number[]; histogram: number[] } {
+    const ema12 = ema(closes, 12);
+    const ema26 = ema(closes, 26);
+    const macdLine = ema12.map((v, i) => v - ema26[i]);
+    const signalLine = ema(macdLine, 9);
+    const histogram = macdLine.map((v, i) => v - signalLine[i]);
+    return { macd: macdLine, signal: signalLine, histogram };
+}
+
+function atr(candles: Candle[], period = 14): number[] {
+    if (candles.length < 2) return [0];
+    const trs: number[] = [];
+    for (let i = 1; i < candles.length; i++) {
+        const tr = Math.max(
+            candles[i].high - candles[i].low,
+            Math.abs(candles[i].high - candles[i - 1].close),
+            Math.abs(candles[i].low - candles[i - 1].close)
+        );
+        trs.push(tr);
+    }
+    return ema(trs, period);
+}
+
+// ============================================================================
+// REAL MARKET STRATEGY — Multi-Timeframe Trend Pullback
+// ============================================================================
+
+export function analyzeRiseFall(ticks: number[]): AnalysisResult {
+    if (ticks.length < 300) return emptyResult('rise_fall', 'INSUFFICIENT_DATA');
+
+    // Build multi-timeframe candles
+    const htfCandles = buildCandles(ticks, 50); // Higher TF ≈ 5 min
+    const ltfCandles = buildCandles(ticks, 10); // Lower TF ≈ 1 min
+
+    if (htfCandles.length < 30 || ltfCandles.length < 50) {
+        return emptyResult('rise_fall', 'INSUFFICIENT_CANDLES');
+    }
+
+    const htfCloses = htfCandles.map(c => c.close);
+    const ltfCloses = ltfCandles.map(c => c.close);
+
+    // HTF indicators
+    const htfEma20 = ema(htfCloses, 20);
+    const htfEma50 = ema(htfCloses, 50);
+    const htfAtr = atr(htfCandles, 14);
+
+    // LTF indicators
+    const ltfEma20 = ema(ltfCloses, 20);
+    const ltfRsi = rsi(ltfCloses, 14);
+    const ltfMacd = macd(ltfCloses);
+
+    const lastHtfEma20 = htfEma20[htfEma20.length - 1];
+    const lastHtfEma50 = htfEma50[htfEma50.length - 1];
+    const lastHtfAtr = htfAtr[htfAtr.length - 1];
+    const avgHtfAtr = htfAtr.reduce((a, b) => a + b, 0) / htfAtr.length;
+
+    const lastLtfClose = ltfCloses[ltfCloses.length - 1];
+    const prevLtfClose = ltfCloses[ltfCloses.length - 2];
+    const lastLtfEma20 = ltfEma20[ltfEma20.length - 1];
+    const lastLtfRsi = ltfRsi[ltfRsi.length - 1];
+    const lastLtfHist = ltfMacd.histogram[ltfMacd.histogram.length - 1];
+    const prevLtfHist = ltfMacd.histogram[ltfMacd.histogram.length - 2];
+
+    // Volatility filter — skip dead/choppy markets
+    if (avgHtfAtr === 0 || lastHtfAtr < avgHtfAtr * 0.5) {
+        return emptyResult('rise_fall', 'LOW_VOLATILITY');
+    }
+
+    // Determine HTF trend direction
+    const htfBullish = lastHtfEma20 > lastHtfEma50 * 1.0001;
+    const htfBearish = lastHtfEma20 < lastHtfEma50 * 0.9999;
+
+    if (!htfBullish && !htfBearish) {
+        return emptyResult('rise_fall', 'NO_CLEAR_TREND');
+    }
+
+    // LTF pullback/rejection detection
+    const recentLtfLows = ltfCandles.slice(-10).map(c => c.low);
+    const recentLtfHighs = ltfCandles.slice(-10).map(c => c.high);
+
+    let direction: 'CALL' | 'PUT' | null = null;
+    let confidence = 0.50;
+    const reasons: string[] = [];
+
+    if (htfBullish) {
+        const touchedEma = recentLtfLows.some(low => low <= lastLtfEma20 * 1.0005);
+        const bounced = lastLtfClose > prevLtfClose;
+        const rsiOk = lastLtfRsi > 40 && lastLtfRsi < 70;
+        const macdOk = lastLtfHist > 0 || lastLtfHist > prevLtfHist;
+
+        if (touchedEma && bounced && rsiOk && macdOk) {
+            direction = 'CALL';
+            confidence = 0.50;
+            reasons.push('HTF_Uptrend');
+            if (touchedEma) { confidence += 0.10; reasons.push('Pullback'); }
+            if (bounced) { confidence += 0.10; reasons.push('Bounce'); }
+            if (rsiOk) { confidence += 0.08; reasons.push('RSI_OK'); }
+            if (macdOk) { confidence += 0.10; reasons.push('MACD_OK'); }
+            const trendStrength = (lastHtfEma20 - lastHtfEma50) / lastHtfEma50;
+            if (trendStrength > 0.001) { confidence += 0.07; reasons.push('StrongTrend'); }
+        }
+    } else if (htfBearish) {
+        const touchedEma = recentLtfHighs.some(high => high >= lastLtfEma20 * 0.9995);
+        const rejected = lastLtfClose < prevLtfClose;
+        const rsiOk = lastLtfRsi < 60 && lastLtfRsi > 30;
+        const macdOk = lastLtfHist < 0 || lastLtfHist < prevLtfHist;
+
+        if (touchedEma && rejected && rsiOk && macdOk) {
+            direction = 'PUT';
+            confidence = 0.50;
+            reasons.push('HTF_Downtrend');
+            if (touchedEma) { confidence += 0.10; reasons.push('Pullback'); }
+            if (rejected) { confidence += 0.10; reasons.push('Rejection'); }
+            if (rsiOk) { confidence += 0.08; reasons.push('RSI_OK'); }
+            if (macdOk) { confidence += 0.10; reasons.push('MACD_OK'); }
+            const trendStrength = (lastHtfEma50 - lastHtfEma20) / lastHtfEma50;
+            if (trendStrength > 0.001) { confidence += 0.07; reasons.push('StrongTrend'); }
+        }
+    }
+
+    confidence = Math.min(0.92, confidence);
+    const canTrade = direction !== null && confidence >= 0.65;
+
+    return {
+        category: 'rise_fall',
+        contractType: direction ? (direction === 'CALL' ? 'CALL' : 'PUT') as ContractType : null,
+        direction,
+        barrier: null,
+        confidence,
+        estimatedWinProbability: confidence,
+        volatility: lastHtfAtr,
+        sampleSize: ticks.length,
+        reason: canTrade ? reasons.join(' + ') : `No setup (Conf: ${(confidence * 100).toFixed(1)}%)`
+    };
+}
+
+// Digit contracts are not applicable to real forex/crypto markets
+export function analyzeEvenOdd(): AnalysisResult {
+    return emptyResult('even_odd', 'NOT_APPLICABLE_REAL_MARKETS');
+}
+export function analyzeOverUnder(): AnalysisResult {
+    return emptyResult('over_under', 'NOT_APPLICABLE_REAL_MARKETS');
+}
+export function analyzeMatchesDiffers(): AnalysisResult {
+    return emptyResult('matches_differs', 'NOT_APPLICABLE_REAL_MARKETS');
+}
+
+export function analyzeMarket(category: TradeCategory, quotes: number[], decimals: number): AnalysisResult {
+    if (category === 'rise_fall') return analyzeRiseFall(quotes);
+    return emptyResult(category, 'ONLY_RISE_FALL_ON_REAL_MARKETS');
+}
+
+// ============================================================================
+// UTILITY EXPORTS (required by engine.ts for backward compatibility)
+// ============================================================================
 
 export function inferDecimalsFromQuotes(quotes: number[]): number {
     let maxDecimals = 0;
@@ -51,111 +255,4 @@ export function inferDecimalsFromQuotes(quotes: number[]): number {
 export function lastDigitOf(quote: number, decimals: number): number {
     const scaled = Math.round(quote * Math.pow(10, decimals));
     return Math.abs(scaled % 10);
-}
-
-// --- STRATEGY ENGINES ---
-
-export function analyzeRiseFall(quotes: number[]): AnalysisResult {
-    if (quotes.length < 50) return emptyResult('rise_fall', 'INSUFFICIENT_DATA');
-
-    const last = quotes[quotes.length - 1];
-    const sma10 = calculateSMA(quotes, 10);
-    const sma20 = calculateSMA(quotes, 20);
-    const rsi = calculateRSI(quotes, 14);
-    
-    let direction: 'CALL' | 'PUT' | null = null;
-    let confidence = 0.50; // Baseline
-    const reasons: string[] = [];
-
-    // 1. Trend + Momentum Alignment (High Probability)
-    if (last > sma10 && sma10 > sma20 && rsi > 50 && rsi < 75) {
-        direction = 'CALL';
-        confidence += 0.20;
-        reasons.push('Bullish Trend + Momentum');
-    } else if (last < sma10 && sma10 < sma20 && rsi < 50 && rsi > 25) {
-        direction = 'PUT';
-        confidence += 0.20;
-        reasons.push('Bearish Trend + Momentum');
-    }
-
-    // 2. Mean Reversion at Extremes
-    if (rsi < 25) {
-        direction = 'CALL';
-        confidence += 0.15;
-        reasons.push('Oversold Reversion');
-    } else if (rsi > 75) {
-        direction = 'PUT';
-        confidence += 0.15;
-        reasons.push('Overbought Reversion');
-    }
-
-    confidence = Math.min(0.95, confidence);
-    const canTrade = direction !== null && confidence >= 0.60; // Achievable threshold
-
-    return {
-        category: 'rise_fall',
-        contractType: direction ? (direction === 'CALL' ? 'CALL' : 'PUT') as ContractType : null,
-        direction,
-        barrier: null,
-        confidence,
-        estimatedWinProbability: confidence,
-        volatility: 0,
-        sampleSize: quotes.length,
-        reason: canTrade ? reasons.join(' + ') : `No confluence (Conf: ${(confidence * 100).toFixed(1)}%)`
-    };
-}
-
-export function analyzeEvenOdd(quotes: number[], decimals: number): AnalysisResult {
-    if (quotes.length < 100) return emptyResult('even_odd', 'INSUFFICIENT_DATA');
-    
-    const sample = quotes.slice(-100);
-    let evenCount = 0;
-    sample.forEach(q => {
-        if (lastDigitOf(q, decimals) % 2 === 0) evenCount++;
-    });
-    
-    const evenProb = evenCount / sample.length;
-    let contractType: ContractType | null = null;
-    let confidence = 0.50;
-
-    // Mean Reversion: If even is heavily skewed, bet on odd (and vice versa)
-    if (evenProb > 0.56) {
-        contractType = 'DIGITODD';
-        confidence = 0.50 + (evenProb - 0.50);
-    } else if (evenProb < 0.44) {
-        contractType = 'DIGITEVEN';
-        confidence = 0.50 + (0.50 - evenProb);
-    }
-
-    confidence = Math.min(0.95, Math.max(0.50, confidence));
-    const canTrade = contractType !== null && confidence >= 0.60;
-
-    return {
-        category: 'even_odd',
-        contractType,
-        direction: null,
-        barrier: null,
-        confidence,
-        estimatedWinProbability: confidence,
-        volatility: 0,
-        sampleSize: sample.length,
-        reason: canTrade ? `Digit Mean Reversion (${(evenProb * 100).toFixed(1)}% Even)` : 'No digit edge'
-    };
-}
-
-export function analyzeOverUnder(quotes: number[], decimals: number): AnalysisResult {
-    // Simplified for reliability: Focus on Rise/Fall and Even/Odd for primary signals
-    // to prevent over-trading on lower-probability digit barriers.
-    return emptyResult('over_under', 'STRATEGY_DISABLED_FOR_STABILITY');
-}
-
-export function analyzeMatchesDiffers(quotes: number[], decimals: number): AnalysisResult {
-    return emptyResult('matches_differs', 'STRATEGY_DISABLED_FOR_STABILITY');
-}
-
-export function analyzeMarket(category: TradeCategory, quotes: number[], decimals: number): AnalysisResult {
-    if (category === 'rise_fall') return analyzeRiseFall(quotes);
-    if (category === 'even_odd') return analyzeEvenOdd(quotes, decimals);
-    if (category === 'over_under') return analyzeOverUnder(quotes, decimals);
-    return analyzeMatchesDiffers(quotes, decimals);
 }
