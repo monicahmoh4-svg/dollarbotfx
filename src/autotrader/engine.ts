@@ -1,4 +1,5 @@
 import { analyzeMarket, inferDecimalsFromQuotes } from './analysis';
+import * as ConnectionStream from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
 
 // ============================================================================
 // TYPES
@@ -105,7 +106,7 @@ const DEFAULT_LIMITS: RiskLimits = {
     maxConsecutiveLosses: 5,
     maxConcurrentTrades: 1,
     maxBalanceTolerance: 0.50,
-    minConfidenceThreshold: 0.60, // Relaxed to match new analysis threshold
+    minConfidenceThreshold: 0.60,
 };
 
 export class AutoTraderEngine extends EventTarget {
@@ -191,8 +192,9 @@ export class AutoTraderEngine extends EventTarget {
             this.state = 'TRADING';
             this.log('success', `System READY. Scanning ${REAL_MARKETS.length} real markets (forex/crypto)...`);
 
-            this.scanTimer = setInterval(() => { void this.scan(); }, 8000); // 8s between scans
-            this.reconciliationTimer = setInterval(() => this.synchronizeBalance(), 15000);
+            this.scanTimer = setInterval(() => { void this.scan(); }, 8000);
+            // CRITICAL FIX: Increased balance sync frequency from 15s to 5s
+            this.reconciliationTimer = setInterval(() => this.synchronizeBalance(), 5000);
             setTimeout(() => void this.scan(), 500);
             this.emit();
         } catch (error: any) {
@@ -209,7 +211,6 @@ export class AutoTraderEngine extends EventTarget {
 
                 let quotes: number[] = [];
                 try {
-                    // KEY FIX: Fetch 1500 ticks — enough for proper HTF/LTF candle construction
                     const response = await this.apiInstance.send({
                         ticks_history: market.symbol,
                         adjust_start_time: 1,
@@ -260,7 +261,6 @@ export class AutoTraderEngine extends EventTarget {
                     await new Promise(resolve => setTimeout(resolve, 3000));
                     break;
                 } else {
-                    // Diagnostic log — shows WHY no trade was taken
                     this.log('info', `⏭ ${market.display_name}: ${signal.reason}`);
                 }
             }
@@ -318,6 +318,9 @@ export class AutoTraderEngine extends EventTarget {
                     return;
                 }
 
+                // CRITICAL FIX: Immediately refresh balance after stake deduction
+                await this.synchronizeBalance();
+
                 const buyResponse = await this.apiInstance.send({
                     buy: proposal.id,
                     price: proposal.ask_price
@@ -358,6 +361,7 @@ export class AutoTraderEngine extends EventTarget {
 
                             clearInterval(monitor);
                             this.checkGlobalLimits();
+                            // CRITICAL FIX: Immediately refresh balance after settlement
                             await this.synchronizeBalance();
                             this.emit();
                         }
@@ -375,7 +379,8 @@ export class AutoTraderEngine extends EventTarget {
     private async synchronizeBalance() {
         if (!this.isRunning || this.state === 'HALTED') return;
         try {
-            const response = await this.apiInstance.send({ balance: 1 });
+            // CRITICAL FIX: Use subscribe: 1 to get live balance updates via WebSocket
+            const response = await this.apiInstance.send({ balance: 1, subscribe: 1 });
             const bal = response?.balance;
             if (!bal || typeof bal.balance !== 'number') return;
 
@@ -388,10 +393,28 @@ export class AutoTraderEngine extends EventTarget {
                 this.triggerKillSwitch(`BALANCE MISMATCH: Drift of $${this.stats.balanceDifference.toFixed(2)} detected.`);
                 return;
             }
+
+            // CRITICAL FIX: Push balance to UI via multiple channels
+            const loginid = bal.loginid || this.client?.loginid;
+            const currency = bal.currency || this.client?.currency;
+
+            // 1. Update client store (MobX)
             if (this.client && typeof this.client.setBalance === 'function') {
                 this.client.setBalance(String(bal.balance));
+                if (currency && typeof this.client.setCurrency === 'function') {
+                    this.client.setCurrency(currency);
+                }
             }
-        } catch {}
+
+            // 2. Update ConnectionStream (what the UI header actually reads from)
+            if (typeof ConnectionStream.updateAccountBalance === 'function') {
+                ConnectionStream.updateAccountBalance(loginid, bal.balance, currency);
+            }
+
+            this.log('info', `💰 Balance synced: $${bal.balance.toFixed(2)} ${currency}`);
+        } catch (e: any) {
+            this.log('error', `Balance sync failed: ${e.message}`);
+        }
     }
 
     private getCurrentReconciliation(): BalanceReconciliation {
