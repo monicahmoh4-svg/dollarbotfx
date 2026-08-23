@@ -53,7 +53,7 @@ export interface AutoTraderStats {
 }
 
 // ============================================================================
-// REAL MARKETS — These have real order flow, real liquidity, real edges
+// REAL MARKETS
 // ============================================================================
 
 export const REAL_MARKETS = [
@@ -69,14 +69,11 @@ export const REAL_MARKETS = [
     { symbol: 'cryBTCUSD', display_name: 'BTC/USD', pip: 0.01 },
 ];
 
-// Backward compatibility — the panel still references this name
 export const SYNTHETIC_INDICES = REAL_MARKETS;
-
 export const TRADE_CATEGORIES: { label: string; value: TradeCategory }[] = [
     { label: 'Rise/Fall', value: 'rise_fall' },
     { label: 'Even/Odd', value: 'even_odd' },
 ];
-
 export const MARKETS = [{ label: 'Real Markets (Forex/Crypto)', value: 'real_markets' }];
 export const SYNTHETIC_SYMBOL_PRESETS = REAL_MARKETS.map((s) => s.symbol).join(',');
 
@@ -105,10 +102,10 @@ const DEFAULT_LIMITS: RiskLimits = {
     maxStakePerTrade: 1.0,
     maxPercentRiskPerTrade: 0.02,
     maxDailyLoss: 50,
-    maxConsecutiveLosses: 5, // Real markets have normal losing streaks — allow more
+    maxConsecutiveLosses: 5,
     maxConcurrentTrades: 1,
     maxBalanceTolerance: 0.50,
-    minConfidenceThreshold: 0.65,
+    minConfidenceThreshold: 0.60, // Relaxed to match new analysis threshold
 };
 
 export class AutoTraderEngine extends EventTarget {
@@ -194,7 +191,7 @@ export class AutoTraderEngine extends EventTarget {
             this.state = 'TRADING';
             this.log('success', `System READY. Scanning ${REAL_MARKETS.length} real markets (forex/crypto)...`);
 
-            this.scanTimer = setInterval(() => { void this.scan(); }, 6000);
+            this.scanTimer = setInterval(() => { void this.scan(); }, 8000); // 8s between scans
             this.reconciliationTimer = setInterval(() => this.synchronizeBalance(), 15000);
             setTimeout(() => void this.scan(), 500);
             this.emit();
@@ -212,11 +209,11 @@ export class AutoTraderEngine extends EventTarget {
 
                 let quotes: number[] = [];
                 try {
-                    // Fetch 500 ticks — enough for HTF (50-tick) and LTF (10-tick) candle construction
+                    // KEY FIX: Fetch 1500 ticks — enough for proper HTF/LTF candle construction
                     const response = await this.apiInstance.send({
                         ticks_history: market.symbol,
                         adjust_start_time: 1,
-                        count: 500,
+                        count: 1500,
                         end: 'latest',
                         style: 'ticks'
                     });
@@ -225,10 +222,12 @@ export class AutoTraderEngine extends EventTarget {
                     continue;
                 }
 
-                if (quotes.length < 300) continue;
-                const decimals = inferDecimalsFromQuotes(quotes);
+                if (quotes.length < 300) {
+                    this.log('info', `⏭ ${market.display_name}: insufficient ticks (${quotes.length})`);
+                    continue;
+                }
 
-                // Only Rise/Fall is valid on real forex/crypto markets
+                const decimals = inferDecimalsFromQuotes(quotes);
                 const rawSignal = analyzeMarket('rise_fall', quotes, decimals);
 
                 const signal: AnalysisSignal = {
@@ -237,7 +236,7 @@ export class AutoTraderEngine extends EventTarget {
                     direction: rawSignal.direction,
                     barrier: rawSignal.barrier,
                     confidenceScore: rawSignal.confidence,
-                    expectedEdge: rawSignal.confidence - 0.526, // Break-even for 95% payout
+                    expectedEdge: rawSignal.confidence - 0.526,
                     reason: rawSignal.reason
                 };
 
@@ -258,9 +257,11 @@ export class AutoTraderEngine extends EventTarget {
                     }
 
                     await this.executeTrade(market, signal);
-                    // Cooldown between trades to respect API rate limits and avoid overtrading
                     await new Promise(resolve => setTimeout(resolve, 3000));
-                    break; // One trade per scan cycle
+                    break;
+                } else {
+                    // Diagnostic log — shows WHY no trade was taken
+                    this.log('info', `⏭ ${market.display_name}: ${signal.reason}`);
                 }
             }
         } catch (error: any) {
@@ -277,7 +278,6 @@ export class AutoTraderEngine extends EventTarget {
         this.stats.tradesOpened += 1;
 
         if (this.mode === 'paper') {
-            // Paper simulation — realistic 57% win rate reflects strategy edge on real markets
             setTimeout(() => {
                 const isWin = Math.random() < 0.57;
                 const profit = isWin ? stake * 0.95 : -stake;
@@ -298,11 +298,9 @@ export class AutoTraderEngine extends EventTarget {
                 this.emit();
             }, 2000);
         } else {
-            // LIVE EXECUTION
             try {
                 const currency = this.client?.currency || 'USD';
 
-                // 1. Request Proposal — 2-minute duration for real markets (gives trend time to develop)
                 const proposalResponse = await this.apiInstance.send({
                     proposal: 1,
                     amount: stake,
@@ -320,7 +318,6 @@ export class AutoTraderEngine extends EventTarget {
                     return;
                 }
 
-                // 2. Buy Contract
                 const buyResponse = await this.apiInstance.send({
                     buy: proposal.id,
                     price: proposal.ask_price
@@ -334,7 +331,6 @@ export class AutoTraderEngine extends EventTarget {
 
                 this.log('success', `LIVE TRADE OPENED: ${market.display_name} | Contract ID ${contractId}`);
 
-                // 3. Monitor Contract for Settlement
                 const monitor = setInterval(async () => {
                     try {
                         const pocResponse = await this.apiInstance.send({
@@ -362,7 +358,7 @@ export class AutoTraderEngine extends EventTarget {
 
                             clearInterval(monitor);
                             this.checkGlobalLimits();
-                            await this.synchronizeBalance(); // Immediate reconciliation after settlement
+                            await this.synchronizeBalance();
                             this.emit();
                         }
                     } catch (e: any) {
