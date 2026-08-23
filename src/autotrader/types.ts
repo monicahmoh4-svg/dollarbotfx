@@ -1,6 +1,18 @@
 export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'SYNCING' | 'READY' | 'TRADING' | 'RECONNECTING' | 'ERROR' | 'HALTED';
 
-export type TradeState = 'SIGNAL_CREATED' | 'RISK_APPROVED' | 'ORDER_REQUESTED' | 'ORDER_ACCEPTED' | 'CONTRACT_OPEN' | 'CONTRACT_SETTLED' | 'PROFIT' | 'LOSS' | 'CANCELLED' | 'REJECTED' | 'UNKNOWN';
+export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
+export type ContractType = 'CALL' | 'PUT' | 'DIGITEVEN' | 'DIGITODD' | 'DIGITOVER' | 'DIGITUNDER' | 'DIGITMATCH' | 'DIGITDIFF';
+export type DurationUnit = 't' | 's' | 'm' | 'h' | 'd';
+
+export interface AnalysisSignal {
+    canTrade: boolean;
+    contractType: ContractType | null;
+    direction: 'CALL' | 'PUT' | null;
+    barrier: number | null;
+    confidenceScore: number; // 0.0 to 1.0
+    expectedEdge: number;
+    reason: string;
+}
 
 export interface BalanceReconciliation {
     localBalance: number;
@@ -11,22 +23,6 @@ export interface BalanceReconciliation {
     isHealthy: boolean;
 }
 
-export interface LedgerEntry {
-    id: string;
-    timestamp: number;
-    type: 'SIGNAL' | 'ORDER_REQUEST' | 'ORDER_RESPONSE' | 'SETTLEMENT' | 'RECONCILIATION' | 'ERROR';
-    symbol: string;
-    contractType?: string;
-    stake?: number;
-    derivRequestId?: string;
-    derivContractId?: string;
-    result?: 'WIN' | 'LOSS' | 'REJECTED';
-    profit?: number;
-    balanceBefore?: number;
-    balanceAfter?: number;
-    message: string;
-}
-
 export interface RiskLimits {
     maxStakePerTrade: number;
     maxPercentRiskPerTrade: number;
@@ -34,14 +30,19 @@ export interface RiskLimits {
     maxConsecutiveLosses: number;
     maxConcurrentTrades: number;
     maxBalanceTolerance: number;
+    minConfidenceThreshold: number;
 }
 
-export interface AnalysisResult {
-    canTrade: boolean;
-    reason: string;
-    contractType: string | null;
-    direction: 'CALL' | 'PUT' | null;
-    barrier: number | null;
-    estimatedWinProbability: number;
-    expectedEdge: number;
+export interface AutoTraderStats {
+    wins: number;
+    losses: number;
+    net: number;
+    dailyNet: number;
+    lossStreak: number;
+    sessionStart: number;
+    scanCount: number;
+    tradesOpened: number;
+    derivBalance: number | null;
+    balanceDifference: number;
+    isBalanceHealthy: boolean;
 }
