@@ -101,7 +101,9 @@ export class AutoTraderEngine extends EventTarget {
     private limits = { ...DEFAULT_LIMITS };
     private state: BotState = 'DISCONNECTED';
     private isRunning = false;
-    private mode: 'paper' | 'live' = 'paper';
+    // This engine is intentionally live-only. It must never report simulated
+    // wins or losses as if they came from the Deriv account.
+    private mode: 'paper' | 'live' = 'live';
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private reconciliationTimer: ReturnType<typeof setInterval> | null = null;
     private sessionTimer: ReturnType<typeof setInterval> | null = null;
@@ -123,7 +125,7 @@ export class AutoTraderEngine extends EventTarget {
             const limits = JSON.parse(localStorage.getItem('bot-risk-limits') || '{}');
             this.limits = { ...this.limits, ...limits };
             const mode = localStorage.getItem('bot-trading-mode');
-            if (mode === 'live' || mode === 'paper') this.mode = mode;
+            if (mode === 'live') this.mode = mode;
         } catch { /* localStorage is unavailable in some test environments */ }
     }
 
@@ -170,7 +172,7 @@ export class AutoTraderEngine extends EventTarget {
         if (this.isRunning) return;
         this.client = settings.client;
         this.apiInstance = settings.apiInstance || null;
-        if (settings.mode) this.setMode(settings.mode);
+        if (settings.mode === 'live') this.setMode(settings.mode);
         if (!this.client?.is_logged_in || !this.apiInstance?.send) {
             this.state = 'ERROR';
             this.log('error', 'Cannot start: log in and provide the active Deriv API instance.');
@@ -208,10 +210,16 @@ export class AutoTraderEngine extends EventTarget {
     private async activeMarkets() {
         try {
             const response = await this.apiInstance!.send({ active_symbols: 'brief' });
-            const available = new Set((response?.active_symbols || [])
-                .filter((item: any) => !item.is_trading_suspended && item.exchange_is_open !== 0)
+            const symbols = response?.active_symbols || [];
+            const available = new Set(symbols
+                .filter((item: any) => !item.is_trading_suspended)
                 .map((item: any) => item.symbol));
-            return SYNTHETIC_INDICES.filter((market) => available.has(market.symbol));
+            // Synthetic indices do not expose the same exchange_is_open field
+            // as forex symbols. Only use the active-symbol response when it
+            // actually contains synthetic symbols; otherwise keep the known
+            // Deriv symbols and let ticks_history report availability.
+            const markets = SYNTHETIC_INDICES.filter((market) => available.has(market.symbol));
+            return markets.length ? markets : SYNTHETIC_INDICES;
         } catch {
             return SYNTHETIC_INDICES;
         }
@@ -224,23 +232,28 @@ export class AutoTraderEngine extends EventTarget {
             const markets = await this.activeMarkets();
             for (const market of markets) {
                 if (!this.isRunning || this.openTrades.size >= this.limits.maxConcurrentTrades) break;
-                const response = await this.apiInstance!.send({
-                    ticks_history: market.symbol, adjust_start_time: 1, count: 500, end: 'latest', style: 'ticks',
-                });
-                const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
-                const result = analyzeMarket('rise_fall', quotes, inferDecimalsFromQuotes(quotes));
-                const signal: AnalysisSignal = {
-                    canTrade: Boolean(result.contractType && result.confidence >= this.limits.minConfidenceThreshold),
-                    contractType: result.contractType as ContractType | null,
-                    direction: result.direction,
-                    barrier: null,
-                    confidenceScore: result.confidence,
-                    expectedEdge: 0,
-                    reason: result.reason,
-                };
-                if (!signal.canTrade) continue;
-                const executed = await this.considerTrade(market, signal);
-                if (executed) break;
+                try {
+                    const response = await this.apiInstance!.send({
+                        ticks_history: market.symbol, adjust_start_time: 1, count: 500, end: 'latest', style: 'ticks',
+                    });
+                    const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
+                    const result = analyzeMarket('rise_fall', quotes, inferDecimalsFromQuotes(quotes));
+                    this.log('info', `Scanned ${market.display_name}: ${quotes.length} ticks; ${result.reason}.`);
+                    const signal: AnalysisSignal = {
+                        canTrade: Boolean(result.contractType && result.confidence >= this.limits.minConfidenceThreshold),
+                        contractType: result.contractType as ContractType | null,
+                        direction: result.direction,
+                        barrier: null,
+                        confidenceScore: result.confidence,
+                        expectedEdge: 0,
+                        reason: result.reason,
+                    };
+                    if (!signal.canTrade) continue;
+                    const executed = await this.considerTrade(market, signal);
+                    if (executed) break;
+                } catch (error: any) {
+                    this.log('warn', `${market.display_name} unavailable: ${error?.message || error}`);
+                }
             }
         } catch (error: any) {
             this.log('error', `Scan failed: ${error?.message || error}`);
@@ -277,8 +290,6 @@ export class AutoTraderEngine extends EventTarget {
         }
         signal.expectedEdge = expectedEdge;
         this.log('info', `Qualified ${market.display_name}: ${signal.contractType}, confidence ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
-        if (this.mode === 'paper') return false;
-
         const buy = await this.apiInstance.send({ buy: proposal.id, price: ask });
         const contractId = String(buy?.buy?.contract_id || '');
         if (!contractId) throw new Error(`Buy failed for ${market.display_name}`);
