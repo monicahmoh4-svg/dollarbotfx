@@ -133,10 +133,14 @@ export class AutoTraderEngine extends EventTarget {
         return {
             state: this.state,
             isRunning: this.isRunning,
+            // Compatibility fields used by the floating activity indicator.
+            running: this.isRunning,
+            scanning: this.scanInFlight,
             mode: this.mode,
             limits: { ...this.limits },
             stats: { ...this.stats, sessionDurationMs: Date.now() - this.stats.sessionStart },
             logs: [...this.logs],
+            activity: [...this.logs],
         };
     }
 
@@ -228,13 +232,19 @@ export class AutoTraderEngine extends EventTarget {
     private async scan() {
         if (!this.isRunning || this.scanInFlight || this.state === 'HALTED' || this.openTrades.size >= this.limits.maxConcurrentTrades) return;
         this.scanInFlight = true;
+        this.state = 'TRADING';
+        this.emit();
         try {
             const markets = await this.activeMarkets();
             for (const market of markets) {
                 if (!this.isRunning || this.openTrades.size >= this.limits.maxConcurrentTrades) break;
                 try {
                     const response = await this.apiInstance!.send({
-                        ticks_history: market.symbol, adjust_start_time: 1, count: 500, end: 'latest', style: 'ticks',
+                        // 1,000 ticks gives the analysis enough completed
+                        // 20-tick higher-timeframe candles for a genuine EMA
+                        // comparison. 500 only produced 25 candles and was
+                        // rejected before analysis could begin.
+                        ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks',
                     });
                     const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
                     const result = analyzeMarket('rise_fall', quotes, inferDecimalsFromQuotes(quotes));
@@ -260,6 +270,7 @@ export class AutoTraderEngine extends EventTarget {
         } finally {
             this.stats.scanCount += 1;
             this.scanInFlight = false;
+            if (this.isRunning && this.openTrades.size === 0) this.state = 'READY';
             this.emit();
         }
     }
