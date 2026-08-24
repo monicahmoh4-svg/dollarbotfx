@@ -13,265 +13,169 @@ export interface AnalysisResult {
     reason: string;
 }
 
-function emptyResult(category: TradeCategory, reason: string): AnalysisResult {
-    return {
-        category, contractType: null, direction: null, barrier: null,
-        confidence: 0, estimatedWinProbability: 0.5, volatility: 0,
-        sampleSize: 0, reason
-    };
+type Candle = { open: number; high: number; low: number; close: number };
+
+const empty = (reason: string, sampleSize = 0): AnalysisResult => ({
+    category: 'rise_fall',
+    contractType: null,
+    direction: null,
+    barrier: null,
+    confidence: 0,
+    estimatedWinProbability: 0.5,
+    volatility: 0,
+    sampleSize,
+    reason,
+});
+
+const finiteQuotes = (quotes: number[]) =>
+    quotes.filter((quote) => Number.isFinite(quote) && quote > 0);
+
+function ema(values: number[], period: number): number[] {
+    if (!values.length) return [];
+    const alpha = 2 / (period + 1);
+    const result = [values[0]];
+    for (let i = 1; i < values.length; i += 1) {
+        result.push(values[i] * alpha + result[i - 1] * (1 - alpha));
+    }
+    return result;
 }
 
-// ============================================================================
-// CANDLE CONSTRUCTION
-// ============================================================================
-
-interface Candle {
-    open: number;
-    high: number;
-    low: number;
-    close: number;
+function rsi(values: number[], period = 14): number {
+    if (values.length <= period) return 50;
+    let gain = 0;
+    let loss = 0;
+    for (let i = 1; i <= period; i += 1) {
+        const change = values[i] - values[i - 1];
+        if (change >= 0) gain += change;
+        else loss -= change;
+    }
+    gain /= period;
+    loss /= period;
+    for (let i = period + 1; i < values.length; i += 1) {
+        const change = values[i] - values[i - 1];
+        gain = (gain * (period - 1) + Math.max(change, 0)) / period;
+        loss = (loss * (period - 1) + Math.max(-change, 0)) / period;
+    }
+    if (loss === 0) return gain === 0 ? 50 : 100;
+    return 100 - 100 / (1 + gain / loss);
 }
 
-function buildCandles(ticks: number[], period: number): Candle[] {
-    const candles: Candle[] = [];
-    for (let i = 0; i < ticks.length; i += period) {
-        const slice = ticks.slice(i, i + period);
-        if (slice.length === 0) continue;
-        candles.push({
+function candles(quotes: number[], width: number): Candle[] {
+    const result: Candle[] = [];
+    for (let i = 0; i + width <= quotes.length; i += width) {
+        const slice = quotes.slice(i, i + width);
+        result.push({
             open: slice[0],
             high: Math.max(...slice),
             low: Math.min(...slice),
             close: slice[slice.length - 1],
         });
     }
-    return candles;
-}
-
-// ============================================================================
-// TECHNICAL INDICATORS
-// ============================================================================
-
-function ema(values: number[], period: number): number[] {
-    if (values.length === 0) return [];
-    const k = 2 / (period + 1);
-    const result: number[] = [values[0]];
-    for (let i = 1; i < values.length; i++) {
-        result.push(values[i] * k + result[i - 1] * (1 - k));
-    }
     return result;
 }
 
-function rsi(closes: number[], period = 14): number[] {
-    if (closes.length < period + 1) return [50];
-    const result: number[] = [];
-    let avgGain = 0, avgLoss = 0;
-    for (let i = 1; i <= period; i++) {
-        const change = closes[i] - closes[i - 1];
-        if (change > 0) avgGain += change;
-        else avgLoss += Math.abs(change);
-    }
-    avgGain /= period;
-    avgLoss /= period;
-    const rs0 = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    result.push(100 - 100 / (1 + rs0));
-    for (let i = period + 1; i < closes.length; i++) {
-        const change = closes[i] - closes[i - 1];
-        const gain = change > 0 ? change : 0;
-        const loss = change < 0 ? Math.abs(change) : 0;
-        avgGain = (avgGain * (period - 1) + gain) / period;
-        avgLoss = (avgLoss * (period - 1) + loss) / period;
-        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-        result.push(100 - 100 / (1 + rs));
-    }
-    return result;
-}
-
-function macd(closes: number[]): { macd: number[]; signal: number[]; histogram: number[] } {
-    const ema12 = ema(closes, 12);
-    const ema26 = ema(closes, 26);
-    const macdLine = ema12.map((v, i) => v - ema26[i]);
-    const signalLine = ema(macdLine, 9);
-    const histogram = macdLine.map((v, i) => v - signalLine[i]);
-    return { macd: macdLine, signal: signalLine, histogram };
-}
-
-function atr(candles: Candle[], period = 14): number[] {
-    if (candles.length < 2) return [0];
-    const trs: number[] = [];
-    for (let i = 1; i < candles.length; i++) {
-        const tr = Math.max(
-            candles[i].high - candles[i].low,
-            Math.abs(candles[i].high - candles[i - 1].close),
-            Math.abs(candles[i].low - candles[i - 1].close)
+function atr(data: Candle[], period = 14): number {
+    if (data.length < period + 1) return 0;
+    const ranges = data.slice(1).map((candle, index) => {
+        const previous = data[index].close;
+        return Math.max(
+            candle.high - candle.low,
+            Math.abs(candle.high - previous),
+            Math.abs(candle.low - previous),
         );
-        trs.push(tr);
-    }
-    return ema(trs, period);
+    });
+    return ranges.slice(-period).reduce((sum, value) => sum + value, 0) / period;
 }
 
-// ============================================================================
-// REAL MARKET STRATEGY — Multi-Timeframe Trend Pullback
-// ============================================================================
+function slope(values: number[], lookback: number): number {
+    if (values.length <= lookback) return 0;
+    const start = values[values.length - 1 - lookback];
+    return (values[values.length - 1] - start) / Math.max(Math.abs(start), Number.EPSILON);
+}
 
-export function analyzeRiseFall(ticks: number[]): AnalysisResult {
-    if (ticks.length < 300) {
-        return emptyResult('rise_fall', `INSUFFICIENT_TICKS: ${ticks.length}`);
+/**
+ * Conservative trend-following analysis. The returned confidence is a model
+ * score, not a promise of winning; the engine must still compare it with the
+ * actual proposal payout before buying.
+ */
+export function analyzeRiseFall(input: number[]): AnalysisResult {
+    const quotes = finiteQuotes(input);
+    if (quotes.length < 240) return empty(`INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
+
+    const higher = candles(quotes, 20);
+    const lower = candles(quotes, 5);
+    if (higher.length < 30 || lower.length < 40) {
+        return empty(`INSUFFICIENT_CANDLES: HTF=${higher.length}, LTF=${lower.length}`, quotes.length);
     }
 
-    // Build multi-timeframe candles — calibrated for tick-based forex data
-    const htfCandles = buildCandles(ticks, 20); // HTF ≈ 20 ticks (~10-20 seconds)
-    const ltfCandles = buildCandles(ticks, 5);  // LTF ≈ 5 ticks (~2-5 seconds)
+    const htfClose = higher.map((candle) => candle.close);
+    const ltfClose = lower.map((candle) => candle.close);
+    const htfFast = ema(htfClose, 20);
+    const htfSlow = ema(htfClose, 50);
+    const ltfFast = ema(ltfClose, 12);
+    const ltfSlow = ema(ltfClose, 26);
+    const last = ltfClose[ltfClose.length - 1];
+    const previous = ltfClose[ltfClose.length - 2];
+    const range = atr(higher);
+    if (!range || !Number.isFinite(range)) return empty('ZERO_VOLATILITY', quotes.length);
 
-    if (htfCandles.length < 25) {
-        return emptyResult('rise_fall', `INSUFFICIENT_HTF_CANDLES: ${htfCandles.length}`);
-    }
-    if (ltfCandles.length < 30) {
-        return emptyResult('rise_fall', `INSUFFICIENT_LTF_CANDLES: ${ltfCandles.length}`);
-    }
+    const fast = htfFast[htfFast.length - 1];
+    const slow = htfSlow[htfSlow.length - 1];
+    const trend = (fast - slow) / Math.max(Math.abs(slow), Number.EPSILON);
+    const htfSlope = slope(htfClose, 5);
+    const ltfSpread = ltfFast[ltfFast.length - 1] - ltfSlow[ltfSlow.length - 1];
+    const previousSpread = ltfFast[ltfFast.length - 2] - ltfSlow[ltfSlow.length - 2];
+    const momentum = (last - ltfClose[Math.max(0, ltfClose.length - 8)]) /
+        Math.max(range, Number.EPSILON);
+    const currentRsi = rsi(ltfClose);
+    const distanceFromFast = Math.abs(last - ltfFast[ltfFast.length - 1]) /
+        Math.max(range, Number.EPSILON);
 
-    const htfCloses = htfCandles.map(c => c.close);
-    const ltfCloses = ltfCandles.map(c => c.close);
+    const bullish = trend > 0 && htfSlope > 0;
+    const bearish = trend < 0 && htfSlope < 0;
+    if (!bullish && !bearish) return empty('NO_ALIGNED_TREND', quotes.length);
+    if (distanceFromFast > 2.5) return empty('EXTENDED_FROM_MEAN', quotes.length);
 
-    // HTF indicators
-    const htfEma20 = ema(htfCloses, 20);
-    const htfEma50 = ema(htfCloses, Math.min(50, htfCloses.length));
-    const htfAtr = atr(htfCandles, 14);
-
-    // LTF indicators
-    const ltfEma20 = ema(ltfCloses, 20);
-    const ltfRsi = rsi(ltfCloses, 14);
-    const ltfMacd = macd(ltfCloses);
-
-    const lastHtfEma20 = htfEma20[htfEma20.length - 1];
-    const lastHtfEma50 = htfEma50[htfEma50.length - 1];
-    const lastHtfAtr = htfAtr[htfAtr.length - 1];
-    const avgHtfAtr = htfAtr.reduce((a, b) => a + b, 0) / htfAtr.length;
-
-    const lastLtfClose = ltfCloses[ltfCloses.length - 1];
-    const prevLtfClose = ltfCloses[ltfCloses.length - 2];
-    const lastLtfEma20 = ltfEma20[ltfEma20.length - 1];
-    const lastLtfRsi = ltfRsi[ltfRsi.length - 1];
-    const lastLtfHist = ltfMacd.histogram[ltfMacd.histogram.length - 1];
-    const prevLtfHist = ltfMacd.histogram[ltfMacd.histogram.length - 2];
-
-    // Volatility filter — skip dead/choppy markets
-    if (avgHtfAtr === 0) {
-        return emptyResult('rise_fall', 'ZERO_VOLATILITY');
-    }
-    if (lastHtfAtr < avgHtfAtr * 0.3) {
-        return emptyResult('rise_fall', `LOW_VOLATILITY: ATR=${lastHtfAtr.toFixed(6)}`);
-    }
-
-    // Determine HTF trend direction — relaxed threshold for real forex
-    const htfBullish = lastHtfEma20 > lastHtfEma50;
-    const htfBearish = lastHtfEma20 < lastHtfEma50;
-
-    if (!htfBullish && !htfBearish) {
-        return emptyResult('rise_fall', 'NO_CLEAR_TREND: EMAs flat');
-    }
-
-    // LTF pullback/rejection detection — relaxed buffer for real forex volatility
-    const recentLtfLows = ltfCandles.slice(-15).map(c => c.low);
-    const recentLtfHighs = ltfCandles.slice(-15).map(c => c.high);
-
-    let direction: 'CALL' | 'PUT' | null = null;
-    let confidence = 0.50;
-    const reasons: string[] = [];
-
-    if (htfBullish) {
-        // Relaxed EMA touch: within 0.15% of EMA20 (real forex needs this buffer)
-        const touchedEma = recentLtfLows.some(low => low <= lastLtfEma20 * 1.0015);
-        const bounced = lastLtfClose > prevLtfClose;
-        const rsiOk = lastLtfRsi > 35 && lastLtfRsi < 75;
-        const macdOk = lastLtfHist > 0 || lastLtfHist > prevLtfHist;
-
-        if (touchedEma && bounced && rsiOk && macdOk) {
-            direction = 'CALL';
-            confidence = 0.50;
-            reasons.push('HTF_Uptrend');
-            if (touchedEma) { confidence += 0.10; reasons.push('Pullback'); }
-            if (bounced) { confidence += 0.10; reasons.push('Bounce'); }
-            if (rsiOk) { confidence += 0.08; reasons.push('RSI_OK'); }
-            if (macdOk) { confidence += 0.10; reasons.push('MACD_OK'); }
-            const trendStrength = (lastHtfEma20 - lastHtfEma50) / lastHtfEma50;
-            if (trendStrength > 0.0005) { confidence += 0.07; reasons.push('StrongTrend'); }
-        } else {
-            // Diagnostic: why didn't this setup qualify?
-            const missing: string[] = [];
-            if (!touchedEma) missing.push('no_pullback');
-            if (!bounced) missing.push('no_bounce');
-            if (!rsiOk) missing.push(`rsi=${lastLtfRsi.toFixed(1)}`);
-            if (!macdOk) missing.push('macd_negative');
-            return emptyResult('rise_fall', `BULLISH_SETUP_MISSING: ${missing.join(',')}`);
-        }
-    } else if (htfBearish) {
-        const touchedEma = recentLtfHighs.some(high => high >= lastLtfEma20 * 0.9985);
-        const rejected = lastLtfClose < prevLtfClose;
-        const rsiOk = lastLtfRsi < 65 && lastLtfRsi > 25;
-        const macdOk = lastLtfHist < 0 || lastLtfHist < prevLtfHist;
-
-        if (touchedEma && rejected && rsiOk && macdOk) {
-            direction = 'PUT';
-            confidence = 0.50;
-            reasons.push('HTF_Downtrend');
-            if (touchedEma) { confidence += 0.10; reasons.push('Pullback'); }
-            if (rejected) { confidence += 0.10; reasons.push('Rejection'); }
-            if (rsiOk) { confidence += 0.08; reasons.push('RSI_OK'); }
-            if (macdOk) { confidence += 0.10; reasons.push('MACD_OK'); }
-            const trendStrength = (lastHtfEma50 - lastHtfEma20) / lastHtfEma50;
-            if (trendStrength > 0.0005) { confidence += 0.07; reasons.push('StrongTrend'); }
-        } else {
-            const missing: string[] = [];
-            if (!touchedEma) missing.push('no_pullback');
-            if (!rejected) missing.push('no_rejection');
-            if (!rsiOk) missing.push(`rsi=${lastLtfRsi.toFixed(1)}`);
-            if (!macdOk) missing.push('macd_positive');
-            return emptyResult('rise_fall', `BEARISH_SETUP_MISSING: ${missing.join(',')}`);
-        }
-    }
-
-    confidence = Math.min(0.92, confidence);
-    const canTrade = direction !== null && confidence >= 0.60; // Relaxed to 0.60
+    const direction: 'CALL' | 'PUT' = bullish ? 'CALL' : 'PUT';
+    const momentumOk = bullish ? momentum > 0 && last > previous : momentum < 0 && last < previous;
+    const spreadOk = bullish ? ltfSpread > previousSpread : ltfSpread < previousSpread;
+    const rsiOk = bullish ? currentRsi >= 50 && currentRsi <= 68 : currentRsi >= 32 && currentRsi <= 50;
+    const trendStrength = Math.min(1, Math.abs(trend) / 0.002);
+    const slopeStrength = Math.min(1, Math.abs(htfSlope) / 0.002);
+    const confirmations = [momentumOk, spreadOk, rsiOk].filter(Boolean).length;
+    const confidence = Math.min(0.90, 0.50 + trendStrength * 0.14 + slopeStrength * 0.12 + confirmations * 0.07);
+    const reasons = [
+        bullish ? 'HTF_UPTREND' : 'HTF_DOWNTREND',
+        momentumOk && 'MOMENTUM',
+        spreadOk && 'EMA_ACCELERATION',
+        rsiOk && 'RSI_REGIME',
+    ].filter(Boolean).join('+');
 
     return {
         category: 'rise_fall',
-        contractType: direction ? (direction === 'CALL' ? 'CALL' : 'PUT') as ContractType : null,
+        contractType: direction,
         direction,
         barrier: null,
         confidence,
         estimatedWinProbability: confidence,
-        volatility: lastHtfAtr,
-        sampleSize: ticks.length,
-        reason: canTrade ? reasons.join(' + ') : `No setup (Conf: ${(confidence * 100).toFixed(1)}%)`
+        volatility: range,
+        sampleSize: quotes.length,
+        reason: confirmations >= 2 ? reasons : `WEAK_CONFIRMATION: ${reasons}`,
     };
 }
 
-export function analyzeEvenOdd(): AnalysisResult {
-    return emptyResult('even_odd', 'NOT_APPLICABLE_REAL_MARKETS');
-}
-export function analyzeOverUnder(): AnalysisResult {
-    return emptyResult('over_under', 'NOT_APPLICABLE_REAL_MARKETS');
-}
-export function analyzeMatchesDiffers(): AnalysisResult {
-    return emptyResult('matches_differs', 'NOT_APPLICABLE_REAL_MARKETS');
-}
-
-export function analyzeMarket(category: TradeCategory, quotes: number[], decimals: number): AnalysisResult {
-    if (category === 'rise_fall') return analyzeRiseFall(quotes);
-    return emptyResult(category, 'ONLY_RISE_FALL_ON_REAL_MARKETS');
+export function analyzeMarket(category: TradeCategory, quotes: number[], _decimals = 2): AnalysisResult {
+    if (category !== 'rise_fall') return { ...empty('ONLY_RISE_FALL_SUPPORTED'), category };
+    return analyzeRiseFall(quotes);
 }
 
 export function inferDecimalsFromQuotes(quotes: number[]): number {
-    let maxDecimals = 0;
-    for (const quote of quotes) {
-        const text = quote.toString();
-        const dotIndex = text.indexOf('.');
-        if (dotIndex >= 0) maxDecimals = Math.max(maxDecimals, text.length - dotIndex - 1);
-    }
-    return maxDecimals > 0 ? Math.min(maxDecimals, 6) : 2;
+    return Math.min(8, Math.max(2, ...quotes.slice(-100).map((quote) => {
+        const text = String(quote);
+        return text.includes('.') ? text.length - text.indexOf('.') - 1 : 0;
+    })));
 }
 
 export function lastDigitOf(quote: number, decimals: number): number {
-    const scaled = Math.round(quote * Math.pow(10, decimals));
-    return Math.abs(scaled % 10);
+    return Math.abs(Math.round(quote * 10 ** decimals) % 10);
 }
