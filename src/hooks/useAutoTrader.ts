@@ -2,24 +2,20 @@ import { useEffect, useState } from 'react';
 import { autoTrader, AutoTraderSettings } from '@/autotrader/engine';
 
 export function useAutoTrader() {
-    const [state, setState] = useState(autoTrader.getState());
+    const [state, setState] = useState(() => autoTrader.getState());
 
     useEffect(() => {
-        const handler = (event: Event) => {
-            const customEvent = event as CustomEvent;
-            setState(customEvent.detail);
-        };
+        const handler = (event: Event) => setState((event as CustomEvent).detail);
         autoTrader.addEventListener('state', handler);
         return () => autoTrader.removeEventListener('state', handler);
     }, []);
 
-    const start = async (patch: Partial<AutoTraderSettings> & { client?: any; apiInstance?: any } = {}) => {
-        await autoTrader.start(patch);
+    return {
+        state,
+        start: (settings: AutoTraderSettings = {}) => autoTrader.start(settings),
+        stop: () => autoTrader.stop(),
+        setMode: (mode: 'paper' | 'live') => autoTrader.setMode(mode),
+        updateLimits: (patch: Partial<AutoTraderSettings> & Record<string, unknown>) =>
+            autoTrader.updateLimits(patch as any),
     };
-
-    const stop = () => {
-        autoTrader.stop();
-    };
-
-    return { state, start, stop };
 }
