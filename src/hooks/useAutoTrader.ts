@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { autoTrader, AutoTraderSettings } from '@/autotrader/engine';
+import { autoTrader, AutoTraderSettings, RiskLimits } from '@/autotrader/engine';
 
 export function useAutoTrader() {
     const [state, setState] = useState(() => autoTrader.getState());
@@ -15,7 +15,6 @@ export function useAutoTrader() {
         start: (settings: AutoTraderSettings = {}) => autoTrader.start(settings),
         stop: () => autoTrader.stop(),
         setMode: (mode: 'paper' | 'live') => autoTrader.setMode(mode),
-        updateLimits: (patch: Partial<AutoTraderSettings> & Record<string, unknown>) =>
-            autoTrader.updateLimits(patch as any),
+        updateLimits: (patch: Partial<RiskLimits>) => autoTrader.updateLimits(patch),
     };
 }
