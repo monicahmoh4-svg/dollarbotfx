@@ -70,8 +70,8 @@ export const TRADE_CATEGORIES = [{ label: 'Rise/Fall', value: 'rise_fall' as Tra
 
 const DEFAULT_LIMITS: RiskLimits = {
     maxStakePerTrade: 1,
-    maxPercentRiskPerTrade: 0.01,
-    maxDailyLoss: 10,
+    maxPercentRiskPerTrade: 0.005,
+    maxDailyLoss: 5,
     maxConsecutiveLosses: 3,
     cooldownAfterLossMs: 60_000,
     targetProfit: 10,
@@ -123,7 +123,14 @@ export class AutoTraderEngine extends EventTarget {
         super();
         try {
             const limits = JSON.parse(localStorage.getItem('bot-risk-limits') || '{}');
-            this.limits = { ...this.limits, ...limits };
+            // Protect against stale localStorage values silently restoring a
+            // much larger stake than the current safe default.
+            this.limits = {
+                ...this.limits,
+                ...limits,
+                maxStakePerTrade: Math.min(1, Number(limits.maxStakePerTrade ?? this.limits.maxStakePerTrade)),
+                maxPercentRiskPerTrade: Math.min(0.005, Number(limits.maxPercentRiskPerTrade ?? this.limits.maxPercentRiskPerTrade)),
+            };
             const mode = localStorage.getItem('bot-trading-mode');
             if (mode === 'live') this.mode = mode;
         } catch { /* localStorage is unavailable in some test environments */ }
@@ -160,7 +167,12 @@ export class AutoTraderEngine extends EventTarget {
     }
 
     updateLimits(patch: Partial<RiskLimits>) {
-        const next = { ...this.limits, ...patch };
+        const next = {
+            ...this.limits,
+            ...patch,
+            maxStakePerTrade: Math.min(1, Number(patch.maxStakePerTrade ?? this.limits.maxStakePerTrade)),
+            maxPercentRiskPerTrade: Math.min(0.005, Number(patch.maxPercentRiskPerTrade ?? this.limits.maxPercentRiskPerTrade)),
+        };
         if (next.maxStakePerTrade <= 0 || next.maxPercentRiskPerTrade <= 0 ||
             next.minConfidenceThreshold < 0.5 || next.minConfidenceThreshold > 0.95 ||
             next.maxDailyLoss <= 0 || next.maxConsecutiveLosses < 1 ||
@@ -230,7 +242,11 @@ export class AutoTraderEngine extends EventTarget {
     }
 
     private async scan() {
-        if (!this.isRunning || this.scanInFlight || this.state === 'HALTED' || this.openTrades.size >= this.limits.maxConcurrentTrades) return;
+        if (!this.isRunning || this.scanInFlight || this.state === 'HALTED') return;
+        if (this.openTrades.size >= this.limits.maxConcurrentTrades) {
+            this.log('info', `Scan waiting: ${this.openTrades.size} contract is still open.`);
+            return;
+        }
         this.scanInFlight = true;
         this.state = 'TRADING';
         this.emit();
@@ -280,8 +296,15 @@ export class AutoTraderEngine extends EventTarget {
         const balance = this.stats.derivBalance || 0;
         const stake = Math.min(this.limits.maxStakePerTrade, balance * this.limits.maxPercentRiskPerTrade);
         if (!Number.isFinite(stake) || stake <= 0) return false;
-        if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses ||
-            (this.stats.lastTradeTime && Date.now() - this.stats.lastTradeTime < this.limits.cooldownAfterLossMs)) return false;
+        if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses) {
+            this.log('warn', `Trade blocked: ${this.stats.lossStreak} consecutive loss(es).`);
+            return false;
+        }
+        if (this.stats.lastTradeTime && Date.now() - this.stats.lastTradeTime < this.limits.cooldownAfterLossMs) {
+            const remaining = Math.ceil((this.limits.cooldownAfterLossMs - (Date.now() - this.stats.lastTradeTime)) / 1000);
+            this.log('info', `Trade cooldown active for ${remaining}s.`);
+            return false;
+        }
 
         const proposalResponse = await this.apiInstance.send({
             proposal: 1, amount: Number(stake.toFixed(2)), basis: 'stake',
