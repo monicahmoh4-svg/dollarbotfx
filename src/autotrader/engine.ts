@@ -1,56 +1,39 @@
 import { analyzeMarket, inferDecimalsFromQuotes } from './analysis';
-import * as ConnectionStream from '@/external/bot-skeleton/services/api/observables/connection-status-stream';
 
-// ============================================================================
-// TYPES
-// ============================================================================
-
-export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'SYNCING' | 'READY' | 'TRADING' | 'RECONNECTING' | 'ERROR' | 'HALTED';
+export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'SYNCING' | 'READY' | 'TRADING' | 'ERROR' | 'HALTED';
 export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
-export type ContractType = 'CALL' | 'PUT' | 'DIGITEVEN' | 'DIGITODD' | 'DIGITOVER' | 'DIGITUNDER' | 'DIGITMATCH' | 'DIGITDIFF';
-export type DurationUnit = 't' | 's' | 'm' | 'h' | 'd';
+export type ContractType = 'CALL' | 'PUT';
+
+export interface RiskLimits {
+    maxStakePerTrade: number;
+    maxPercentRiskPerTrade: number;
+    maxDailyLoss: number;
+    maxConsecutiveLosses: number;
+    cooldownAfterLossMs: number;
+    targetProfit: number;
+    maxTradesPerSession: number;
+    maxSessionDurationMs: number;
+    maxConcurrentTrades: number;
+    maxBalanceTolerance: number;
+    minConfidenceThreshold: number;
+    minExpectedEdge: number;
+    contractDurationTicks: number;
+}
+
+export interface AutoTraderSettings {
+    client?: any;
+    apiInstance?: { send: (request: Record<string, unknown>) => Promise<any> };
+    mode?: 'paper' | 'live';
+}
 
 export interface AnalysisSignal {
     canTrade: boolean;
     contractType: ContractType | null;
     direction: 'CALL' | 'PUT' | null;
-    barrier: number | null;
+    barrier: null;
     confidenceScore: number;
     expectedEdge: number;
     reason: string;
-}
-
-export interface BalanceReconciliation {
-    localBalance: number;
-    derivBalance: number;
-    balanceDifference: number;
-    lastSyncTime: number;
-    lastTransactionId: string | null;
-    isHealthy: boolean;
-}
-
-export interface RiskLimits {
-    // Trade sizing
-    maxStakePerTrade: number;
-    maxPercentRiskPerTrade: number;
-    
-    // Loss limits
-    maxDailyLoss: number;
-    maxConsecutiveLosses: number;
-    cooldownAfterLossMs: number; // Wait X ms after a loss before next trade
-    
-    // Profit targets
-    targetProfit: number; // Stop when net profit reaches this
-    targetProfitPerTrade: number; // Minimum profit per trade to continue
-    
-    // Session limits
-    maxTradesPerSession: number;
-    maxSessionDurationMs: number; // Stop after X milliseconds
-    
-    // Execution limits
-    maxConcurrentTrades: number;
-    maxBalanceTolerance: number;
-    minConfidenceThreshold: number;
 }
 
 export interface AutoTraderStats {
@@ -69,487 +52,305 @@ export interface AutoTraderStats {
     lastTradeTime: number | null;
 }
 
-// ============================================================================
-// REAL MARKETS
-// ============================================================================
-
-export const REAL_MARKETS = [
-    { symbol: 'frxEURUSD', display_name: 'EUR/USD', pip: 0.00001 },
-    { symbol: 'frxGBPUSD', display_name: 'GBP/USD', pip: 0.00001 },
-    { symbol: 'frxUSDJPY', display_name: 'USD/JPY', pip: 0.001 },
-    { symbol: 'frxAUDUSD', display_name: 'AUD/USD', pip: 0.00001 },
-    { symbol: 'frxUSDCAD', display_name: 'USD/CAD', pip: 0.00001 },
-    { symbol: 'frxUSDCHF', display_name: 'USD/CHF', pip: 0.00001 },
-    { symbol: 'frxEURGBP', display_name: 'EUR/GBP', pip: 0.00001 },
-    { symbol: 'frxEURJPY', display_name: 'EUR/JPY', pip: 0.001 },
-    { symbol: 'frxGBPJPY', display_name: 'GBP/JPY', pip: 0.001 },
-    { symbol: 'cryBTCUSD', display_name: 'BTC/USD', pip: 0.01 },
+export const SYNTHETIC_INDICES = [
+    { symbol: 'R_10', display_name: 'Volatility 10 Index' },
+    { symbol: 'R_25', display_name: 'Volatility 25 Index' },
+    { symbol: 'R_50', display_name: 'Volatility 50 Index' },
+    { symbol: 'R_75', display_name: 'Volatility 75 Index' },
+    { symbol: 'R_100', display_name: 'Volatility 100 Index' },
+    { symbol: '1HZ10V', display_name: 'Volatility 10 (1s) Index' },
+    { symbol: '1HZ25V', display_name: 'Volatility 25 (1s) Index' },
+    { symbol: '1HZ50V', display_name: 'Volatility 50 (1s) Index' },
+    { symbol: '1HZ75V', display_name: 'Volatility 75 (1s) Index' },
+    { symbol: '1HZ100V', display_name: 'Volatility 100 (1s) Index' },
 ];
-
-export const SYNTHETIC_INDICES = REAL_MARKETS;
-export const TRADE_CATEGORIES: { label: string; value: TradeCategory }[] = [
-    { label: 'Rise/Fall', value: 'rise_fall' },
-    { label: 'Even/Odd', value: 'even_odd' },
-];
-export const MARKETS = [{ label: 'Real Markets (Forex/Crypto)', value: 'real_markets' }];
-export const SYNTHETIC_SYMBOL_PRESETS = REAL_MARKETS.map((s) => s.symbol).join(',');
-
-// ============================================================================
-// RISK MANAGER
-// ============================================================================
-
-class RiskManager {
-    constructor(private limits: RiskLimits) {}
-
-    validatePreTrade(stake: number, stats: AutoTraderStats, recon: BalanceReconciliation | null, currentOpenTrades: number): { allowed: boolean; reason: string } {
-        // Account health
-        if (!recon || !recon.isHealthy) return { allowed: false, reason: 'ACCOUNT_SYNC_UNHEALTHY' };
-        if (recon.balanceDifference > this.limits.maxBalanceTolerance) return { allowed: false, reason: `BALANCE_MISMATCH: Diff=${recon.balanceDifference.toFixed(2)}` };
-        
-        // Consecutive losses
-        if (stats.lossStreak >= this.limits.maxConsecutiveLosses) return { allowed: false, reason: `MAX_CONSECUTIVE_LOSSES: ${stats.lossStreak}` };
-        
-        // Cooldown after loss
-        if (stats.lastTradeTime && Date.now() - stats.lastTradeTime < this.limits.cooldownAfterLossMs && stats.lossStreak > 0) {
-            const remainingMs = this.limits.cooldownAfterLossMs - (Date.now() - stats.lastTradeTime);
-            return { allowed: false, reason: `COOLDOWN_ACTIVE: ${Math.ceil(remainingMs / 1000)}s remaining` };
-        }
-        
-        // Concurrent trades
-        if (currentOpenTrades >= this.limits.maxConcurrentTrades) return { allowed: false, reason: `MAX_CONCURRENT_TRADES: ${currentOpenTrades}` };
-        
-        // Stake limits
-        if (stake > this.limits.maxStakePerTrade) return { allowed: false, reason: `STAKE_EXCEEDED: ${stake} > ${this.limits.maxStakePerTrade}` };
-        if (stake > recon.localBalance * this.limits.maxPercentRiskPerTrade) return { allowed: false, reason: `RISK_EXCEEDED: Stake > ${(this.limits.maxPercentRiskPerTrade * 100).toFixed(1)}% of balance` };
-        
-        // Daily loss limit
-        if (stats.dailyNet <= -this.limits.maxDailyLoss) return { allowed: false, reason: `DAILY_LOSS_LIMIT: -$${Math.abs(stats.dailyNet).toFixed(2)}` };
-        
-        // Target profit reached
-        if (stats.net >= this.limits.targetProfit) return { allowed: false, reason: `TARGET_PROFIT_REACHED: $${stats.net.toFixed(2)}` };
-        
-        // Max trades per session
-        if (stats.tradesOpened >= this.limits.maxTradesPerSession) return { allowed: false, reason: `MAX_TRADES_PER_SESSION: ${stats.tradesOpened}` };
-        
-        // Session duration limit
-        if (stats.sessionDurationMs >= this.limits.maxSessionDurationMs) return { allowed: false, reason: `SESSION_DURATION_LIMIT: ${Math.floor(stats.sessionDurationMs / 60000)}min` };
-        
-        return { allowed: true, reason: 'RISK_CHECKS_PASSED' };
-    }
-}
-
-// ============================================================================
-// ENGINE
-// ============================================================================
+export const REAL_MARKETS = SYNTHETIC_INDICES;
+export const SYNTHETIC_SYMBOL_PRESETS = SYNTHETIC_INDICES.map((market) => market.symbol).join(',');
+export const TRADE_CATEGORIES = [{ label: 'Rise/Fall', value: 'rise_fall' as TradeCategory }];
 
 const DEFAULT_LIMITS: RiskLimits = {
-    // Trade sizing
-    maxStakePerTrade: 1.0,
-    maxPercentRiskPerTrade: 0.02,
-    
-    // Loss limits
-    maxDailyLoss: 50,
-    maxConsecutiveLosses: 5,
-    cooldownAfterLossMs: 10000, // 10 seconds cooldown after loss
-    
-    // Profit targets
-    targetProfit: 100, // Stop when $100 profit reached
-    targetProfitPerTrade: 0.50, // Minimum $0.50 profit per trade
-    
-    // Session limits
-    maxTradesPerSession: 100,
-    maxSessionDurationMs: 4 * 60 * 60 * 1000, // 4 hours
-    
-    // Execution limits
+    maxStakePerTrade: 1,
+    maxPercentRiskPerTrade: 0.01,
+    maxDailyLoss: 10,
+    maxConsecutiveLosses: 3,
+    cooldownAfterLossMs: 60_000,
+    targetProfit: 10,
+    maxTradesPerSession: 30,
+    maxSessionDurationMs: 4 * 60 * 60 * 1000,
     maxConcurrentTrades: 1,
-    maxBalanceTolerance: 0.50,
-    minConfidenceThreshold: 0.60,
+    maxBalanceTolerance: 0.05,
+    minConfidenceThreshold: 0.72,
+    minExpectedEdge: 0.02,
+    contractDurationTicks: 5,
 };
+
+function currencyOf(client: any): string {
+    return client?.currency || client?.accounts?.[client?.loginid]?.currency || 'USD';
+}
+
+function isSettled(contract: any): boolean {
+    return Boolean(contract && (
+        contract.is_sold ||
+        ['sold', 'won', 'lost'].includes(String(contract.status).toLowerCase())
+    ));
+}
 
 export class AutoTraderEngine extends EventTarget {
     private client: any = null;
-    private apiInstance: any = null;
-    private limits: RiskLimits = { ...DEFAULT_LIMITS };
-
+    private apiInstance: AutoTraderSettings['apiInstance'] = null;
+    private limits = { ...DEFAULT_LIMITS };
     private state: BotState = 'DISCONNECTED';
     private isRunning = false;
     private mode: 'paper' | 'live' = 'paper';
     private scanTimer: ReturnType<typeof setInterval> | null = null;
     private reconciliationTimer: ReturnType<typeof setInterval> | null = null;
     private sessionTimer: ReturnType<typeof setInterval> | null = null;
-
+    private scanInFlight = false;
+    private openTrades = new Map<string, { stake: number; timer: ReturnType<typeof setInterval> }>();
+    private startingBalance: number | null = null;
+    private realizedNet = 0;
+    private logs: { time: string; level: string; message: string }[] = [];
     private stats: AutoTraderStats = {
         wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0,
         sessionStart: Date.now(), scanCount: 0, tradesOpened: 0,
-        derivBalance: null, balanceDifference: 0, isBalanceHealthy: true,
+        derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
         sessionDurationMs: 0, lastTradeTime: null,
     };
 
-    private logs: { time: string; level: string; message: string }[] = [];
-
     constructor() {
         super();
-        this.loadConfig();
-    }
-
-    private loadConfig() {
         try {
-            const raw = localStorage.getItem('bot-risk-limits');
-            if (raw) this.limits = { ...this.limits, ...JSON.parse(raw) };
-            const savedMode = localStorage.getItem('bot-trading-mode');
-            if (savedMode === 'live' || savedMode === 'paper') this.mode = savedMode;
-        } catch {}
+            const limits = JSON.parse(localStorage.getItem('bot-risk-limits') || '{}');
+            this.limits = { ...this.limits, ...limits };
+            const mode = localStorage.getItem('bot-trading-mode');
+            if (mode === 'live' || mode === 'paper') this.mode = mode;
+        } catch { /* localStorage is unavailable in some test environments */ }
     }
 
     getState() {
-        return { 
-            limits: { ...this.limits }, 
-            stats: { 
-                ...this.stats, 
-                sessionDurationMs: Date.now() - this.stats.sessionStart 
-            }, 
-            state: this.state, 
-            isRunning: this.isRunning, 
-            mode: this.mode, 
-            logs: [...this.logs] 
+        return {
+            state: this.state,
+            isRunning: this.isRunning,
+            mode: this.mode,
+            limits: { ...this.limits },
+            stats: { ...this.stats, sessionDurationMs: Date.now() - this.stats.sessionStart },
+            logs: [...this.logs],
         };
     }
 
     private emit() { this.dispatchEvent(new CustomEvent('state', { detail: this.getState() })); }
 
     private log(level: 'info' | 'warn' | 'error' | 'success', message: string) {
-        console.log(`[ENGINE ${level.toUpperCase()}] ${message}`);
+        console[level === 'success' ? 'log' : level](`[AUTO TRADER] ${message}`);
         this.logs.unshift({ time: new Date().toLocaleTimeString(), level, message });
-        if (this.logs.length > 200) this.logs.pop();
+        this.logs = this.logs.slice(0, 200);
         this.emit();
-    }
-
-    updateLimits(patch: Partial<RiskLimits>) {
-        this.limits = { ...this.limits, ...patch };
-        localStorage.setItem('bot-risk-limits', JSON.stringify(this.limits));
-        this.emit();
-        this.log('info', 'Risk limits updated dynamically.');
     }
 
     setMode(mode: 'paper' | 'live') {
         this.mode = mode;
         localStorage.setItem('bot-trading-mode', mode);
-        this.log('info', `Trading mode set to: ${mode.toUpperCase()}`);
+        this.log('info', `Trading mode: ${mode.toUpperCase()}`);
     }
 
-    async start(patch: { client?: any; apiInstance?: any; mode?: 'paper' | 'live' } = {}) {
-        if (this.isRunning) return;
-        this.client = patch.client;
-        this.apiInstance = patch.apiInstance;
-        if (patch.mode) this.setMode(patch.mode);
+    updateLimits(patch: Partial<RiskLimits>) {
+        const next = { ...this.limits, ...patch };
+        if (next.maxStakePerTrade <= 0 || next.maxPercentRiskPerTrade <= 0 ||
+            next.minConfidenceThreshold < 0.5 || next.minConfidenceThreshold > 0.95 ||
+            next.maxDailyLoss <= 0 || next.maxConsecutiveLosses < 1 ||
+            next.contractDurationTicks < 1) {
+            throw new Error('Invalid risk configuration');
+        }
+        this.limits = next;
+        localStorage.setItem('bot-risk-limits', JSON.stringify(next));
+        this.emit();
+    }
 
-        if (!this.client?.is_logged_in || !this.apiInstance) {
+    async start(settings: AutoTraderSettings = {}) {
+        if (this.isRunning) return;
+        this.client = settings.client;
+        this.apiInstance = settings.apiInstance || null;
+        if (settings.mode) this.setMode(settings.mode);
+        if (!this.client?.is_logged_in || !this.apiInstance?.send) {
             this.state = 'ERROR';
-            this.log('error', 'Cannot start: Not logged in or API instance missing.');
-            this.emit();
+            this.log('error', 'Cannot start: log in and provide the active Deriv API instance.');
             return;
         }
 
-        // Reset session stats
+        this.isRunning = true;
+        this.state = 'SYNCING';
         this.stats = {
             wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0,
             sessionStart: Date.now(), scanCount: 0, tradesOpened: 0,
-            derivBalance: null, balanceDifference: 0, isBalanceHealthy: true,
+            derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
             sessionDurationMs: 0, lastTradeTime: null,
         };
-
-        this.state = 'CONNECTING';
-        this.isRunning = true;
-        this.emit();
-
+        this.realizedNet = 0;
+        this.startingBalance = null;
         try {
             await this.synchronizeBalance();
-            if (this.state === 'HALTED') return;
-
-            this.state = 'TRADING';
-            this.log('success', `System READY. Scanning ${REAL_MARKETS.length} real markets...`);
-            this.log('info', `Target Profit: $${this.limits.targetProfit} | Stop Loss: $${this.limits.maxDailyLoss} | Max Trades: ${this.limits.maxTradesPerSession}`);
-
-            this.scanTimer = setInterval(() => { void this.scan(); }, 8000);
-            this.reconciliationTimer = setInterval(() => this.synchronizeBalance(), 5000);
+            if (!this.stats.isBalanceHealthy) throw new Error('Initial account balance could not be reconciled');
+            this.state = 'READY';
+            this.log('success', `Scanning ${SYNTHETIC_INDICES.length} Deriv synthetic volatility markets.`);
+            this.scanTimer = setInterval(() => void this.scan(), 10_000);
+            this.reconciliationTimer = setInterval(() => void this.synchronizeBalance(), 5_000);
             this.sessionTimer = setInterval(() => {
                 this.stats.sessionDurationMs = Date.now() - this.stats.sessionStart;
-                this.checkGlobalLimits();
+                this.checkLimits();
                 this.emit();
-            }, 1000);
-            
-            setTimeout(() => void this.scan(), 500);
-            this.emit();
+            }, 1_000);
+            void this.scan();
         } catch (error: any) {
-            this.triggerKillSwitch(`Start failure: ${error.message}`);
+            this.halt(`Startup failed: ${error?.message || error}`);
+        }
+    }
+
+    private async activeMarkets() {
+        try {
+            const response = await this.apiInstance!.send({ active_symbols: 'brief' });
+            const available = new Set((response?.active_symbols || [])
+                .filter((item: any) => !item.is_trading_suspended && item.exchange_is_open !== 0)
+                .map((item: any) => item.symbol));
+            return SYNTHETIC_INDICES.filter((market) => available.has(market.symbol));
+        } catch {
+            return SYNTHETIC_INDICES;
         }
     }
 
     private async scan() {
-        if (!this.isRunning || this.state === 'HALTED' || !this.apiInstance) return;
-
+        if (!this.isRunning || this.scanInFlight || this.state === 'HALTED' || this.openTrades.size >= this.limits.maxConcurrentTrades) return;
+        this.scanInFlight = true;
         try {
-            for (const market of REAL_MARKETS) {
-                if (!this.isRunning || this.state === 'HALTED') break;
-
-                let quotes: number[] = [];
-                try {
-                    const response = await this.apiInstance.send({
-                        ticks_history: market.symbol,
-                        adjust_start_time: 1,
-                        count: 1500,
-                        end: 'latest',
-                        style: 'ticks'
-                    });
-                    quotes = (response?.history?.prices ?? []).map((p: any) => Number(p));
-                } catch {
-                    continue;
-                }
-
-                if (quotes.length < 300) {
-                    this.log('info', `⏭ ${market.display_name}: insufficient ticks (${quotes.length})`);
-                    continue;
-                }
-
-                const decimals = inferDecimalsFromQuotes(quotes);
-                const rawSignal = analyzeMarket('rise_fall', quotes, decimals);
-
+            const markets = await this.activeMarkets();
+            for (const market of markets) {
+                if (!this.isRunning || this.openTrades.size >= this.limits.maxConcurrentTrades) break;
+                const response = await this.apiInstance!.send({
+                    ticks_history: market.symbol, adjust_start_time: 1, count: 500, end: 'latest', style: 'ticks',
+                });
+                const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
+                const result = analyzeMarket('rise_fall', quotes, inferDecimalsFromQuotes(quotes));
                 const signal: AnalysisSignal = {
-                    canTrade: rawSignal.contractType !== null && rawSignal.confidence >= this.limits.minConfidenceThreshold,
-                    contractType: rawSignal.contractType,
-                    direction: rawSignal.direction,
-                    barrier: rawSignal.barrier,
-                    confidenceScore: rawSignal.confidence,
-                    expectedEdge: rawSignal.confidence - 0.526,
-                    reason: rawSignal.reason
+                    canTrade: Boolean(result.contractType && result.confidence >= this.limits.minConfidenceThreshold),
+                    contractType: result.contractType as ContractType | null,
+                    direction: result.direction,
+                    barrier: null,
+                    confidenceScore: result.confidence,
+                    expectedEdge: 0,
+                    reason: result.reason,
                 };
-
-                if (signal.canTrade) {
-                    this.log('info', `🎯 SIGNAL: ${market.display_name} | ${signal.contractType} | Conf: ${(signal.confidenceScore * 100).toFixed(1)}% | Edge: ${(signal.expectedEdge * 100).toFixed(1)}% | ${signal.reason}`);
-
-                    const recon = this.getCurrentReconciliation();
-                    const riskCheck = new RiskManager(this.limits).validatePreTrade(
-                        this.limits.maxStakePerTrade,
-                        this.stats,
-                        recon,
-                        0
-                    );
-
-                    if (!riskCheck.allowed) {
-                        this.log('warn', `TRADE BLOCKED: ${riskCheck.reason}`);
-                        continue;
-                    }
-
-                    await this.executeTrade(market, signal);
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    break;
-                } else {
-                    this.log('info', `⏭ ${market.display_name}: ${signal.reason}`);
-                }
+                if (!signal.canTrade) continue;
+                const executed = await this.considerTrade(market, signal);
+                if (executed) break;
             }
         } catch (error: any) {
-            this.log('error', `Scan error: ${error.message}`);
+            this.log('error', `Scan failed: ${error?.message || error}`);
         } finally {
             this.stats.scanCount += 1;
+            this.scanInFlight = false;
             this.emit();
         }
     }
 
-    private async executeTrade(market: any, signal: AnalysisSignal) {
-        const stake = this.limits.maxStakePerTrade;
-        this.log('success', `EXECUTING ${this.mode.toUpperCase()} TRADE: ${market.display_name} | ${signal.contractType} | Stake: $${stake}`);
+    private async considerTrade(market: { symbol: string; display_name: string }, signal: AnalysisSignal) {
+        if (!signal.contractType || !this.apiInstance || !this.stats.isBalanceHealthy) return false;
+        const balance = this.stats.derivBalance || 0;
+        const stake = Math.min(this.limits.maxStakePerTrade, balance * this.limits.maxPercentRiskPerTrade);
+        if (!Number.isFinite(stake) || stake <= 0) return false;
+        if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses ||
+            (this.stats.lastTradeTime && Date.now() - this.stats.lastTradeTime < this.limits.cooldownAfterLossMs)) return false;
+
+        const proposalResponse = await this.apiInstance.send({
+            proposal: 1, amount: Number(stake.toFixed(2)), basis: 'stake',
+            contract_type: signal.contractType, currency: currencyOf(this.client),
+            duration: this.limits.contractDurationTicks, duration_unit: 't',
+            underlying_symbol: market.symbol,
+        });
+        const proposal = proposalResponse?.proposal;
+        const ask = Number(proposal?.ask_price);
+        const payout = Number(proposal?.payout);
+        const modelProbability = signal.confidenceScore;
+        const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSILON);
+        if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) ||
+            expectedEdge < this.limits.minExpectedEdge) {
+            this.log('info', `Skipped ${market.display_name}: proposal edge ${(expectedEdge * 100).toFixed(2)}% is below threshold.`);
+            return false;
+        }
+        signal.expectedEdge = expectedEdge;
+        this.log('info', `Qualified ${market.display_name}: ${signal.contractType}, confidence ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
+        if (this.mode === 'paper') return false;
+
+        const buy = await this.apiInstance.send({ buy: proposal.id, price: ask });
+        const contractId = String(buy?.buy?.contract_id || '');
+        if (!contractId) throw new Error(`Buy failed for ${market.display_name}`);
         this.stats.tradesOpened += 1;
         this.stats.lastTradeTime = Date.now();
+        this.log('success', `Opened ${market.display_name} ${signal.contractType}, contract ${contractId}.`);
+        this.watchContract(contractId, market.display_name, stake);
+        return true;
+    }
 
-        if (this.mode === 'paper') {
-            setTimeout(() => {
-                const isWin = Math.random() < 0.57;
-                const profit = isWin ? stake * 0.95 : -stake;
-                this.stats.net += profit;
-                this.stats.dailyNet += profit;
-
-                if (isWin) {
+    private watchContract(contractId: string, market: string, stake: number) {
+        const timer = setInterval(async () => {
+            try {
+                const response = await this.apiInstance!.send({ proposal_open_contract: 1, contract_id: contractId });
+                const contract = response?.proposal_open_contract;
+                if (!isSettled(contract)) return;
+                clearInterval(timer);
+                this.openTrades.delete(contractId);
+                const profit = Number(contract.profit);
+                if (!Number.isFinite(profit)) return;
+                this.realizedNet += profit;
+                this.stats.net = this.realizedNet;
+                this.stats.dailyNet = this.realizedNet;
+                if (profit > 0) {
                     this.stats.wins += 1;
                     this.stats.lossStreak = 0;
-                    this.log('success', `PAPER WON: +$${profit.toFixed(2)} on ${market.display_name}`);
+                    this.log('success', `Won ${market}: +${profit.toFixed(2)}.`);
                 } else {
                     this.stats.losses += 1;
                     this.stats.lossStreak += 1;
-                    this.log('warn', `PAPER LOST: $${profit.toFixed(2)} on ${market.display_name}`);
+                    this.log('warn', `Lost ${market}: ${profit.toFixed(2)}.`);
                 }
-
-                this.checkGlobalLimits();
-                this.emit();
-            }, 2000);
-        } else {
-            try {
-                const currency = this.client?.currency || 'USD';
-
-                const proposalResponse = await this.apiInstance.send({
-                    proposal: 1,
-                    amount: stake,
-                    basis: 'stake',
-                    contract_type: signal.contractType,
-                    currency: currency,
-                    duration: 2,
-                    duration_unit: 'm',
-                    underlying_symbol: market.symbol
-                });
-
-                const proposal = proposalResponse?.proposal;
-                if (!proposal?.id || !proposal.ask_price) {
-                    this.log('error', `Failed to get valid proposal for ${market.display_name}.`);
-                    return;
-                }
-
                 await this.synchronizeBalance();
-
-                const buyResponse = await this.apiInstance.send({
-                    buy: proposal.id,
-                    price: proposal.ask_price
-                });
-
-                const contractId = buyResponse?.buy?.contract_id;
-                if (!contractId) {
-                    this.log('error', `Live buy failed for ${market.display_name}.`);
-                    return;
-                }
-
-                this.log('success', `LIVE TRADE OPENED: ${market.display_name} | Contract ID ${contractId}`);
-
-                const monitor = setInterval(async () => {
-                    try {
-                        const pocResponse = await this.apiInstance.send({
-                            proposal_open_contract: 1,
-                            contract_id: String(contractId)
-                        });
-                        const poc = pocResponse?.proposal_open_contract;
-
-                        if (poc && (poc.is_sold || poc.status === 'sold' || poc.status === 'won' || poc.status === 'lost')) {
-                            const profit = Number(poc.profit ?? 0);
-                            const isWin = profit > 0;
-
-                            this.stats.net += profit;
-                            this.stats.dailyNet += profit;
-
-                            if (isWin) {
-                                this.stats.wins += 1;
-                                this.stats.lossStreak = 0;
-                                this.log('success', `LIVE WON: +$${profit.toFixed(2)} on ${market.display_name}`);
-                            } else {
-                                this.stats.losses += 1;
-                                this.stats.lossStreak += 1;
-                                this.log('warn', `LIVE LOST: $${profit.toFixed(2)} on ${market.display_name}`);
-                            }
-
-                            clearInterval(monitor);
-                            this.checkGlobalLimits();
-                            await this.synchronizeBalance();
-                            this.emit();
-                        }
-                    } catch (e: any) {
-                        this.log('error', `POC poll error: ${e.message}`);
-                    }
-                }, 2000);
-
+                this.checkLimits();
             } catch (error: any) {
-                this.log('error', `Live execution failed: ${error.message}`);
+                this.log('error', `Contract ${contractId} monitor failed: ${error?.message || error}`);
             }
-        }
+        }, 2_000);
+        this.openTrades.set(contractId, { stake, timer });
     }
 
     private async synchronizeBalance() {
-        if (!this.isRunning || this.state === 'HALTED') return;
-        try {
-            const response = await this.apiInstance.send({ balance: 1, subscribe: 1 });
-            const bal = response?.balance;
-            if (!bal || typeof bal.balance !== 'number') return;
-
-            this.stats.derivBalance = bal.balance;
-            const expectedLocal = (this.stats.derivBalance || 1000) + this.stats.net;
-            this.stats.balanceDifference = Math.abs(expectedLocal - bal.balance);
-            this.stats.isBalanceHealthy = this.stats.balanceDifference <= this.limits.maxBalanceTolerance;
-
-            if (!this.stats.isBalanceHealthy) {
-                this.triggerKillSwitch(`BALANCE MISMATCH: Drift of $${this.stats.balanceDifference.toFixed(2)} detected.`);
-                return;
-            }
-
-            const loginid = bal.loginid || this.client?.loginid;
-            const currency = bal.currency || this.client?.currency;
-
-            if (this.client && typeof this.client.setBalance === 'function') {
-                this.client.setBalance(String(bal.balance));
-                if (currency && typeof this.client.setCurrency === 'function') {
-                    this.client.setCurrency(currency);
-                }
-            }
-
-            if (typeof ConnectionStream.updateAccountBalance === 'function') {
-                ConnectionStream.updateAccountBalance(loginid, bal.balance, currency);
-            }
-
-            this.log('info', `💰 Balance synced: $${bal.balance.toFixed(2)} ${currency}`);
-        } catch (e: any) {
-            this.log('error', `Balance sync failed: ${e.message}`);
-        }
+        if (!this.apiInstance) return;
+        const response = await this.apiInstance.send({ balance: 1 });
+        const balance = Number(response?.balance?.balance);
+        if (!Number.isFinite(balance)) throw new Error('Invalid balance response');
+        if (this.startingBalance === null) this.startingBalance = balance;
+        const reserved = [...this.openTrades.values()].reduce((sum, trade) => sum + trade.stake, 0);
+        const expected = this.startingBalance + this.realizedNet - reserved;
+        this.stats.derivBalance = balance;
+        this.stats.balanceDifference = Math.abs(expected - balance);
+        this.stats.isBalanceHealthy = this.stats.balanceDifference <= this.limits.maxBalanceTolerance;
+        if (!this.stats.isBalanceHealthy) this.halt(`Balance reconciliation mismatch: ${this.stats.balanceDifference.toFixed(2)}`);
+        this.emit();
     }
 
-    private getCurrentReconciliation(): BalanceReconciliation {
-        return {
-            localBalance: (this.stats.derivBalance || 1000) + this.stats.net,
-            derivBalance: this.stats.derivBalance || 0,
-            balanceDifference: this.stats.balanceDifference,
-            lastSyncTime: Date.now(),
-            lastTransactionId: null,
-            isHealthy: this.stats.isBalanceHealthy
-        };
+    private checkLimits() {
+        const duration = Date.now() - this.stats.sessionStart;
+        if (this.stats.dailyNet <= -this.limits.maxDailyLoss) this.halt('Daily loss limit reached.');
+        else if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses) this.halt('Consecutive loss limit reached.');
+        else if (this.stats.net >= this.limits.targetProfit) this.halt('Target profit reached.');
+        else if (this.stats.tradesOpened >= this.limits.maxTradesPerSession) this.halt('Session trade limit reached.');
+        else if (duration >= this.limits.maxSessionDurationMs) this.halt('Session duration limit reached.');
     }
 
-    private checkGlobalLimits() {
-        const sessionDuration = Date.now() - this.stats.sessionStart;
-        
-        // Target profit reached
-        if (this.stats.net >= this.limits.targetProfit) {
-            this.triggerKillSwitch(`🎯 TARGET PROFIT REACHED: $${this.stats.net.toFixed(2)} (Target: $${this.limits.targetProfit})`);
-            return;
-        }
-        
-        // Daily loss limit
-        if (this.stats.dailyNet <= -this.limits.maxDailyLoss) {
-            this.triggerKillSwitch(`🛑 DAILY LOSS LIMIT REACHED: -$${Math.abs(this.stats.dailyNet).toFixed(2)} (Limit: $${this.limits.maxDailyLoss})`);
-            return;
-        }
-        
-        // Consecutive losses
-        if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses) {
-            this.triggerKillSwitch(`⚠️ CONSECUTIVE LOSS LIMIT REACHED: ${this.stats.lossStreak} (Limit: ${this.limits.maxConsecutiveLosses})`);
-            return;
-        }
-        
-        // Max trades per session
-        if (this.stats.tradesOpened >= this.limits.maxTradesPerSession) {
-            this.triggerKillSwitch(`📊 MAX TRADES PER SESSION REACHED: ${this.stats.tradesOpened} (Limit: ${this.limits.maxTradesPerSession})`);
-            return;
-        }
-        
-        // Session duration limit
-        if (sessionDuration >= this.limits.maxSessionDurationMs) {
-            const minutes = Math.floor(sessionDuration / 60000);
-            const limitMinutes = Math.floor(this.limits.maxSessionDurationMs / 60000);
-            this.triggerKillSwitch(`⏰ SESSION DURATION LIMIT REACHED: ${minutes}min (Limit: ${limitMinutes}min)`);
-            return;
-        }
-    }
-
-    private triggerKillSwitch(reason: string) {
-        this.state = 'HALTED';
+    private halt(reason: string) {
         this.isRunning = false;
+        this.state = 'HALTED';
         if (this.scanTimer) clearInterval(this.scanTimer);
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
         if (this.sessionTimer) clearInterval(this.sessionTimer);
-        this.log('error', `🚨 KILL SWITCH ACTIVATED: ${reason}`);
-        this.emit();
+        this.log('error', `TRADING HALTED: ${reason}`);
     }
 
     stop() {
@@ -558,8 +359,7 @@ export class AutoTraderEngine extends EventTarget {
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
         if (this.sessionTimer) clearInterval(this.sessionTimer);
         this.state = 'DISCONNECTED';
-        this.log('info', 'System stopped by user.');
-        this.emit();
+        this.log('info', 'Stopped. Existing contracts remain monitored until settlement.');
     }
 }
 
