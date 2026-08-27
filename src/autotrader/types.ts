@@ -46,3 +46,16 @@ export interface AutoTraderStats {
     balanceDifference: number;
     isBalanceHealthy: boolean;
 }
+
+export interface LedgerEntry {
+    id: string;
+    timestamp: number;
+    type: 'TRADE_OPEN' | 'TRADE_CLOSE' | 'RECONCILIATION' | 'HALT' | 'STATE_CHANGE';
+    symbol: string;
+    message: string;
+    balanceBefore?: number;
+    balanceAfter?: number;
+    stake?: number;
+    profit?: number;
+    contractId?: string;
+}
