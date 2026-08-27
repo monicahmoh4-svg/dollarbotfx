@@ -143,8 +143,8 @@ export class AutoTraderEngine extends EventTarget {
             this.limits = {
                 ...this.limits,
                 ...limits,
-                maxStakePerTrade: Math.min(1, Number(limits.maxStakePerTrade ?? this.limits.maxStakePerTrade)),
-                maxPercentRiskPerTrade: Math.min(0.005, Number(limits.maxPercentRiskPerTrade ?? this.limits.maxPercentRiskPerTrade)),
+                maxStakePerTrade: Math.min(100, Number(limits.maxStakePerTrade ?? this.limits.maxStakePerTrade)),
+                maxPercentRiskPerTrade: Math.min(0.05, Number(limits.maxPercentRiskPerTrade ?? this.limits.maxPercentRiskPerTrade)),
             };
             this.riskManager = new RiskManager(this.limits);
             const mode = localStorage.getItem('bot-trading-mode');
@@ -186,8 +186,8 @@ export class AutoTraderEngine extends EventTarget {
         const next = {
             ...this.limits,
             ...patch,
-            maxStakePerTrade: Math.min(1, Number(patch.maxStakePerTrade ?? this.limits.maxStakePerTrade)),
-            maxPercentRiskPerTrade: Math.min(0.005, Number(patch.maxPercentRiskPerTrade ?? this.limits.maxPercentRiskPerTrade)),
+            maxStakePerTrade: Math.min(100, Number(patch.maxStakePerTrade ?? this.limits.maxStakePerTrade)),
+            maxPercentRiskPerTrade: Math.min(0.05, Number(patch.maxPercentRiskPerTrade ?? this.limits.maxPercentRiskPerTrade)),
         };
         if (next.maxStakePerTrade <= 0 || next.maxPercentRiskPerTrade <= 0 ||
             next.minConfidenceThreshold < 0.5 || next.minConfidenceThreshold > 0.95 ||
@@ -353,7 +353,7 @@ export class AutoTraderEngine extends EventTarget {
         const ask = Number(proposal?.ask_price);
         const payout = Number(proposal?.payout);
         const modelProbability = signal.confidenceScore;
-        const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSILON);
+        const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSELON);
         if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) ||
             expectedEdge < this.limits.minExpectedEdge) {
             this.log('info', `Skipped ${market.display_name}: proposal edge ${(expectedEdge * 100).toFixed(2)}% is below threshold.`);
@@ -434,7 +434,7 @@ export class AutoTraderEngine extends EventTarget {
                         profit,
                         contractId,
                     });
-                    this.log('success', `Won ${market}: +${profit.toFixed(2)}.`);
+                    this.log('success', `Won ${market}: +$profit.toFixed(2)}.`);
                 } else {
                     this.stats.losses += 1;
                     this.stats.lossStreak += 1;
@@ -465,7 +465,7 @@ export class AutoTraderEngine extends EventTarget {
         if (!this.apiInstance) return;
         const response = await this.apiInstance.send({ balance: 1 });
         const balance = Number(response?.balance?.balance);
-        if (!Number.isFinite(balance)) throw new Error('Invalid balance response');
+        if (!Number.isFinite("alance)) throw new Error('Invalid balance response');
         if (this.startingBalance === null) this.startingBalance = balance;
         // Reconciling against the account balance is only meaningful when no
         // contracts are still open: while a contract is in flight the Deriv
