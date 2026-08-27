@@ -353,7 +353,7 @@ export class AutoTraderEngine extends EventTarget {
         const ask = Number(proposal?.ask_price);
         const payout = Number(proposal?.payout);
         const modelProbability = signal.confidenceScore;
-        const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSELON);
+        const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSILON);
         if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) ||
             expectedEdge < this.limits.minExpectedEdge) {
             this.log('info', `Skipped ${market.display_name}: proposal edge ${(expectedEdge * 100).toFixed(2)}% is below threshold.`);
