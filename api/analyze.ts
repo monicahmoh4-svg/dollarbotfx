@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import OpenAI from 'openai';
 
 interface IndicatorSet {
   symbol: string;
@@ -16,6 +15,13 @@ interface IndicatorSet {
   lastPrice: number;
   technicalScore: number;
   direction: 'CALL' | 'PUT';
+}
+
+interface AIResponse {
+  confidence: number;
+  shouldTrade: boolean;
+  reasoning: string;
+  refinement: string;
 }
 
 const SYSTEM_PROMPT = `You are a trading analysis AI specialized in synthetic volatility indices (Deriv).
@@ -38,37 +44,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const indicators: IndicatorSet = req.body;
 
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const userMessage = `Analyze this market signal:
 
-  const userMessage = `Analyze this market signal:\n\nSymbol: ${indicators.symbol}\nDirection: ${indicators.direction}\nTechnical Score: ${(indicators.technicalScore * 100).toFixed(1)}%\nRSI: ${indicators.rsi.toFixed(1)}\nMACD Histogram: ${indicators.macdHist.toFixed(6)}\nMACD Accelerating: ${indicators.macdAccel}\nHTF Trend: ${indicators.htfTrend.toFixed(6)}\nHTF Slope: ${indicators.htfSlope.toFixed(6)}\nMomentum (ROC 8): ${indicators.momentum.toFixed(6)}\nCandle Direction (up): ${indicators.candleUp}\nBollinger Width: ${indicators.bbWidth.toFixed(6)}\nLast Price: ${indicators.lastPrice.toFixed(4)}`;
+Symbol: ${indicators.symbol}
+Direction: ${indicators.direction}
+Technical Score: ${(indicators.technicalScore * 100).toFixed(1)}%
+RSI: ${indicators.rsi.toFixed(1)}
+MACD Histogram: ${indicators.macdHist.toFixed(6)}
+MACD Accelerating: ${indicators.macdAccel}
+HTF Trend: ${indicators.htfTrend.toFixed(6)}
+HTF Slope: ${indicators.htfSlope.toFixed(6)}
+Momentum (ROC 8): ${indicators.momentum.toFixed(6)}
+Candle Direction (up): ${indicators.candleUp}
+Bollinger Width: ${indicators.bbWidth.toFixed(6)}
+Last Price: ${indicators.lastPrice.toFixed(4)}`;
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userMessage },
-      ],
-      temperature: 0.3,
-      max_tokens: 200,
+    // Use Google Generative AI SDK with GEMINI_API_KEY from Vercel env
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
+
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      generationConfig: { temperature: 0.3, maxOutputTokens: 200 },
     });
 
-    const text = completion.choices[0]?.message?.content || '{}';
-    const result = JSON.parse(text);
+    const prompt = `${SYSTEM_PROMPT}
+
+${userMessage}`;
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+
+    // Parse JSON from Gemini response (may have markdown wrapping)
+    const jsonMatch = text.match(/\{[^]*\}/);
+    const parsed: AIResponse = jsonMatch ? JSON.parse(jsonMatch[0]) : { confidence: indicators.technicalScore, shouldTrade: indicators.technicalScore >= 0.72, reasoning: 'AI parse error', refinement: 'Falling back to technical score' };
 
     return res.status(200).json({
-      confidence: Math.min(0.95, Math.max(0, result.confidence)),
-      shouldTrade: result.shouldTrade,
-      reasoning: result.reasoning,
-      refinement: result.refinement,
+      confidence: Math.min(0.95, Math.max(0, parsed.confidence)),
+      shouldTrade: parsed.shouldTrade,
+      reasoning: parsed.reasoning,
+      refinement: parsed.refinement,
     });
   } catch (error: any) {
-    console.error('AI analysis error:', error);
+    console.error('Gemini AI analysis error:', error.message);
     return res.status(200).json({
       confidence: indicators.technicalScore,
       shouldTrade: indicators.technicalScore >= 0.72,
-      reasoning: 'AI unavailable, using technical score',
-      refinement: 'AI call failed, falling back to technical analysis',
+      reasoning: 'Gemini unavailable, using technical score',
+      refinement: 'Gemini call failed, falling back to technical analysis',
     });
   }
 }
