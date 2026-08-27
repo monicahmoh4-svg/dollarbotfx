@@ -1,4 +1,4 @@
-import { analyzeMarket, inferDecimalsFromQuotes } from './analysis';
+import { analyzeMarket, inferDecimalsFromQuotes, extractIndicators } from './analysis';
 import { RiskManager } from './risk-manager';
 import { ledger } from './ledger';
 import type { BalanceReconciliation } from './types';
@@ -303,6 +303,32 @@ export class AutoTraderEngine extends EventTarget {
                         reason: result.reason,
                     };
                     if (!signal.canTrade) continue;
+                    // AI refinement: ask the LLM to calibrate the confidence score
+                    try {
+                        const indicators = extractIndicators(quotes, signal.direction!, signal.confidenceScore);
+                        if (indicators) {
+                            indicators.symbol = market.symbol;
+                            const aiResponse = await fetch('/api/analyze', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(indicators),
+                            });
+                            if (aiResponse.ok) {
+                                const aiResult = await aiResponse.json();
+                                if (aiResult.confidence && aiResult.confidence >= this.limits.minConfidenceThreshold) {
+                                    signal.confidenceScore = aiResult.confidence;
+                                    signal.reason = signal.reason + ' | AI: ' + (aiResult.reasoning || aiResult.refinement || 'calibrated');
+                                } else if (aiResult.shouldTrade === false) {
+                                    this.log('info', `${market.display_name}: AI vetoed trade (${aiResult.reasoning || 'low confidence'})`);
+                                    continue;
+                                } else {
+                                    signal.reason = signal.reason + ' | AI: ' + (aiResult.refinement || 'fallback');
+                                }
+                            }
+                        }
+                    } catch (aiError: any) {
+                        this.log('warn', `AI refinement unavailable for ${market.display_name}, using technical score.`);
+                    }
                     const executed = await this.considerTrade(market, signal);
                     if (executed) break;
                 } catch (error: any) {
