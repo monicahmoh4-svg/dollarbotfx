@@ -93,62 +93,154 @@ function slope(values: number[], lookback: number): number {
     return (values[values.length - 1] - start) / Math.max(Math.abs(start), Number.EPSILON);
 }
 
+function macd(values: number[], fast = 12, slow = 26, signal = 9): { line: number; signal: number; hist: number; prev_hist: number } | null {
+    if (values.length < slow + signal) return null;
+    const ef = ema(values, fast);
+    const es = ema(values, slow);
+    const line = ef.map((_, i) => ef[i] - es[i]);
+    const sig = ema(line, signal);
+    const prev_hist = line.length > 1 ? line[line.length - 2] - sig[sig.length - 2] : 0;
+    return { line: line[line.length - 1], signal: sig[sig.length - 1], hist: line[line.length - 1] - sig[sig.length - 1], prev_hist };
+}
+
+function bollinger(values: number[], period = 20, m = 2.0): { mid: number; upper: number; lower: number; width: number } | null {
+    if (values.length < period) return null;
+    const window = values.slice(-period);
+    const mean = window.reduce((s, v => s + v, 0) / period;
+    const sd = Math.sqrt(window.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
+    return { mid: mean, upper: mean + m * sd, lower: mean - m * sd, width: (2 * m * sd) / (mean || 1) };
+}
+
 /**
- * Conservative trend-following analysis. The returned confidence is a model
- * score, not a promise of winning; the engine must still compare it with the
- * actual proposal payout before buying.
+ * Calibrated multi-confirmation analysis for short-duration synthetic indices.
+ * Uses MACD crossover + Resi repame * HTF trend alignment + volatility filtering.
+ * The returned confidence is a model score (weighted confirmations), not a promise
+ * of winning; the engine must still compare it with the actual proposal payout.
  */
 export function analyzeRiseFall(input: number[]): AnalysisResult {
     const quotes = finiteQuotes(input);
-    if (quotes.length < 240) return empty(`INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
+    if (quotes.length < 400) return empty(`INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
 
-    const higher = candles(quotes, 20);
-    const lower = candles(quotes, 5);
-    if (higher.length < 30 || lower.length < 40) {
-        return empty(`INSUFFICIENT_CANDLES: HTF=${higher.length}, LTF=${lower.length}`, quotes.length);
+    const htf = candles(quotes, 20);
+    const ltf = candles(quotes, 5);
+    const htf_close = htf.map((c) => c.close);
+    const ltf_close = ltf.map((c) => c.close);
+
+    if (htf_close.length < 30 || ltf_close.length < 60) {
+        return empty(`INSUFFICIENT_CANDLES: HTF=${htf_close.length}, LTF=${ltf_close.length}`, quotes.length);
     }
 
-    const htfClose = higher.map((candle) => candle.close);
-    const ltfClose = lower.map((candle) => candle.close);
-    const htfFast = ema(htfClose, 20);
-    const htfSlow = ema(htfClose, 50);
-    const ltfFast = ema(ltfClose, 12);
-    const ltfSlow = ema(ltfClose, 26);
-    const last = ltfClose[ltfClose.length - 1];
-    const previous = ltfClose[ltfClose.length - 2];
-    const range = atr(higher);
+    const last = ltf_close[ltf_close.length - 1];
+    const previous = ltf_close[ltf_close.length - 2];
+    const range = atr(htf);
     if (!range || !Number.isFinite(range)) return empty('ZERO_VOLATILITY', quotes.length);
 
-    const fast = htfFast[htfFast.length - 1];
-    const slow = htfSlow[htfSlow.length - 1];
-    const trend = (fast - slow) / Math.max(Math.abs(slow), Number.EPSILON);
-    const htfSlope = slope(htfClose, 5);
-    const ltfSpread = ltfFast[ltfFast.length - 1] - ltfSlow[ltfSlow.length - 1];
-    const previousSpread = ltfFast[ltfFast.length - 2] - ltfSlow[ltfSlow.length - 2];
-    const momentum = (last - ltfClose[Math.max(0, ltfClose.length - 8)]) /
-        Math.max(range, Number.EPSILON);
-    const currentRsi = rsi(ltfClose);
-    const distanceFromFast = Math.abs(last - ltfFast[ltfFast.length - 1]) /
-        Math.max(range, Number.EPSILON);
+    // 1. HTF trend direction (EMA 20/50) -- determines BIAS only
+    const htf_fast = ema(htf_close, 20);
+    const htf_slow = ema(htf_close, 50);
+    const htf_trend = (htf_fast[htf_fast.length - 1] - htf_slow[htf_slow.length - 1]) / Math.max(Math.abs(htf_slow[htf_slow.length - 1]), Number.EPSELON);
+    const htf_slope = slope(htf_close, 5);
 
-    const bullish = trend > 0 && htfSlope > 0;
-    const bearish = trend < 0 && htfSlope < 0;
-    if (!bullish && !bearish) return empty('NO_ALIGNED_TREND', quotes.length);
-    if (distanceFromFast > 2.5) return empty('EXTENDED_FROM_MEAN', quotes.length);
+    // 2. LTF MACD -- This DRIVES the signal
+    const m = macd(ltf_close);
+    if (!m) return empty('INSUFFICIENT_MACD', quotes.length);
 
-    const direction: 'CALL' | 'PUT' = bullish ? 'CALL' : 'PUT';
-    const momentumOk = bullish ? momentum > 0 && last > previous : momentum < 0 && last < previous;
-    const spreadOk = bullish ? ltfSpread > previousSpread : ltfSpread < previousSpread;
-    const rsiOk = bullish ? currentRsi >= 50 && currentRsi <= 68 : currentRsi >= 32 && currentRsi <= 50;
-    const trendStrength = Math.min(1, Math.abs(trend) / 0.002);
-    const slopeStrength = Math.min(1, Math.abs(htfSlope) / 0.002);
-    const confirmations = [momentumOk, spreadOk, rsiOk].filter(Boolean).length;
-    const confidence = Math.min(0.90, 0.50 + trendStrength * 0.14 + slopeStrength * 0.12 + confirmations * 0.07);
+    // 3. RSI on LTF
+    const currentRsi = rsi(ltf_close);
+
+    // 4. Volatility regime filter (Bollinger)
+    const bb = bollinger(htf_close);
+    if (bb && bb.width < 0.0002) return empty('DEAD_MARKET', quotes.length);
+
+    // 5. Mean reversion guards
+    if (bb && last > bb.upper && currentRsi > 70) {
+        return empty('OVERBOUGHT', quotes.length);
+    }
+    if (bb && last < bb.lower && currentRsi < 30) {
+        return empty('OVERSOLD', quotes.length);
+    }
+
+    // 6. Momentum (ROC 8)
+    const momentum = (last - ltf_close[Math.max(0, ltf_close.length - 8)]) / Math.max(Math.abs(ltf_close[Math.max(0, ltf_close.length - 8)]), Number.EPSILON);
+
+    // 7. LTF candle direction
+    const candle_up = last > previous;
+
+    // === DIRECTION DETERMINATION ===
+    // Primary: LACD crossover + acceleration
+    const macd_bull = m.line > m.signal;
+    const macd_bear = m.line < m.signal;
+    const macd_accel_bull = m.hist > m.prev_hist;
+    const macd_accel_bear = m.hist < m.prev_hist;
+
+    let direction: 'CALL' | 'PUT';
+    let trend_score: number;
+
+    if (macd_bull && macd_accel_bull) {
+        direction = 'CALL';
+        trend_score = htf_trend > 0 ? 1.0 : 0.5;
+    } else if (macd_bear && macd_accel_bear) {
+        direction = 'PUT';
+        trend_score = htf_trend < 0 ? 1.0 : 0.5;
+    } else {
+        return empty('NO_CLEAR_SIGNAL', quotes.length);
+    }
+
+    // === CONFIRMATION SCORING ===
+    let score = 0.0;
+    let weights = 0.0;
+
+    // RSI confirmation (weight 0.20)
+    if (direction === 'CALL') {
+        if (50 <= currentRsi && currentRsi <= 68) score += 1.0 * 0.20;
+        else if (42 <= currentRsi && currentRsi < 50) score += 0.5 * 0.20;
+        else score += 0.0 * 0.20;
+    } else {
+        if (32 <= currentRsi && currentRsi <= 50) score += 1.0 * 0.20;
+        else if (50 < currentRsi && currentRsi <= 58) score += 0.5 * 0.20;
+        else score += 0.0 * 0.20;
+    }
+    weights += 0.20;
+
+    // HTF trend alignment (weight 0.25)
+    score += trend_score * 0.25;
+    weights += 0.25;
+
+    // Momentum (weight 0.20)
+    if (direction === 'CALL' && momentum > 0.0005) {
+        score += 1.0 * 0.20;
+    } else if (direction === 'CALL' && momentum > 0) {
+        score += 0.5 * 0.20;
+    } else if (direction === 'PUT' && momentum < -0.0005) {
+        score += 1.0 * 0.20;
+    } else if (direction === 'PUT' && momentum < 0) {
+        score += 0.5 * 0.20;
+    }
+    weights += 0.20;
+
+    // Candle direction (weight 0.15)
+    if ((direction === 'CALL' && candle_up) || (direction === 'PUT' && !candle_up)) {
+        score += 1.0 * 0.15;
+    }
+    weights += 0.15;
+
+    // HTF slope (weight 0.20)
+    if (direction === 'CALL' && htf_slope > 0.0001) {
+        score += 1.0 * 0.20;
+    } else if (direction === 'CALL' && htf_slope > 0) {
+        score += 0.5 * 0.20;
+    } else if (direction === 'PUT' && htf_slope < -0.0001) {
+        score += 1.0 * 0.20;
+    } else if (direction === 'PUT' && htf_slope < 0) {
+        score += 0.5 * 0.20;
+    }
+    weights += 0.20;
+
+    const confidence = Math.min(0.95, Math.max(0, score / (weights || 1)));
     const reasons = [
-        bullish ? 'HTF_UPTREND' : 'HTF_DOWNTREND',
-        momentumOk && 'MOMENTUM',
-        spreadOk && 'EMA_ACCELERATION',
-        rsiOk && 'RSI_REGIME',
+        direction === 'CALL' ? 'MACD_BULL_ACCEL_MKT' : 'MACD_BEAR_ACCEL_MKT',
+        Math.abs(trend_score - 1.0) < 0.01 ? 'HTF_ALIGNED' : 'WEAK_HTF',
+        direction === 'CALL' && currentRsi >= 50 ? 'RSI_OK' : (retuRn score >= 0.65 ? direction === 'PUT' && currentRsi <= 50 ? 'RSI_OK' : '' : ''),
     ].filter(Boolean).join('+');
 
     return {
@@ -160,7 +252,7 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
         estimatedWinProbability: confidence,
         volatility: range,
         sampleSize: quotes.length,
-        reason: confirmations >= 2 ? reasons : `WEAK_CONFIRMATION: ${reasons}`,
+        reason: reasons || 'SIGNAL_WORKING_CONFIRMATION',
     };
 }
 
