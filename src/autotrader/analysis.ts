@@ -271,3 +271,73 @@ export function inferDecimalsFromQuotes(quotes: number[]): number {
 export function lastDigitOf(quote: number, decimals: number): number {
     return Math.abs(Math.round(quote * 10 ** decimals) % 10);
 }
+
+export interface AIIndicatorSet {
+  symbol: string;
+  rsi: number;
+  macdLine: number;
+  macdSignal: number;
+  macdHist: number;
+  macdAccel: boolean;
+  htfTrend: number;
+  htfSlope: number;
+  momentum: number;
+  candleUp: boolean;
+  bbWidth: number;
+  lastPrice: number;
+  technicalScore: number;
+  direction: 'CALL' | 'PUT';
+}
+
+// Extracts raw indicators for AI consumption from the same data used by analyzeRiseFall.
+export function extractIndicators(
+  quotes: number[],
+  direction: 'CALL' | 'PUT',
+  technicalScore: number,
+): AIIndicatorSet | null {
+  const clean = quotes.filter((q) => Number.isFinite(q) && q > 0);
+  if (clean.length < 400) return null;
+
+  const htf = candles(clean, 20);
+  const ltf = candles(clean, 5);
+  const htfClose = htf.map((c) => c.close);
+  const ltfClose = ltf.map((c) => c.close);
+
+  if (htfClose.length < 30 || ltfClose.length < 60) return null;
+
+  const last = ltfClose[ltfClose.length - 1];
+  const previous = ltfClose[ltfClose.length - 2];
+
+  const htfFast = ema(htfClose, 20);
+  const htfSlow = ema(htfClose, 50);
+  const htfTrend = (htfFast[htfFast.length - 1] - htfSlow[htfSlow.length - 1]) /
+    Math.max(Math.abs(htfSlow[htfSlow.length - 1]), Number.EPSILON);
+  const htfSlope = slope(htfClose, 5);
+
+  const m = macd(ltfClose);
+  if (!m) return null;
+
+  const currentRsi = rsi(ltfClose);
+  const bb = bollinger(htfClose);
+  const bbWidth = bb ? bb.width : 0;
+
+  const momentum = (last - ltfClose[Math.max(0, ltfClose.length - 8)]) /
+    Math.max(Math.abs(ltfClose[Math.max(0, ltfClose.length - 8)]), Number.EPSILON);
+
+  return {
+    symbol: '',
+    rsi: currentRsi,
+    macdLine: m.line,
+    macdSignal: m.signal,
+    macdHist: m.hist,
+    macdAccel: direction === 'CALL' ? m.hist > m.prev_hist : m.hist < m.prev_hist,
+    htfTrend,
+    htfSlope,
+    momentum,
+    candleUp: last > previous,
+    bbWidth,
+    lastPrice: last,
+    technicalScore,
+    direction,
+  };
+}
