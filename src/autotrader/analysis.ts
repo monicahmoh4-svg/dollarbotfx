@@ -106,14 +106,14 @@ function macd(values: number[], fast = 12, slow = 26, signal = 9): { line: numbe
 function bollinger(values: number[], period = 20, m = 2.0): { mid: number; upper: number; lower: number; width: number } | null {
     if (values.length < period) return null;
     const window = values.slice(-period);
-    const mean = window.reduce((s, v => s + v, 0) / period;
+    const mean = window.reduce((s, v) => s + v, 0) / period;
     const sd = Math.sqrt(window.reduce((s, v) => s + (v - mean) ** 2, 0) / period);
     return { mid: mean, upper: mean + m * sd, lower: mean - m * sd, width: (2 * m * sd) / (mean || 1) };
 }
 
 /**
  * Calibrated multi-confirmation analysis for short-duration synthetic indices.
- * Uses MACD crossover + Resi repame * HTF trend alignment + volatility filtering.
+ * Uses MACD crossover + RESI+Regime * HTF trend alignment + volatility filtering.
  * The returned confidence is a model score (weighted confirmations), not a promise
  * of winning; the engine must still compare it with the actual proposal payout.
  */
@@ -138,14 +138,14 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     // 1. HTF trend direction (EMA 20/50) -- determines BIAS only
     const htf_fast = ema(htf_close, 20);
     const htf_slow = ema(htf_close, 50);
-    const htf_trend = (htf_fast[htf_fast.length - 1] - htf_slow[htf_slow.length - 1]) / Math.max(Math.abs(htf_slow[htf_slow.length - 1]), Number.EPSELON);
+    const htf_trend = (htf_fast[htf_fast.length - 1] - htf_slow[htf_slow.length - 1]) / Math.max(Math.abs(htf_slow[htf_slow.length - 1]), Number.EPSILON);
     const htf_slope = slope(htf_close, 5);
 
-    // 2. LTF MACD -- This DRIVES the signal
+    // 2. HTF LACD -- This DREVES the signal
     const m = macd(ltf_close);
     if (!m) return empty('INSUFFICIENT_MACD', quotes.length);
 
-    // 3. RSI on LTF
+    // 3. RESE on HTF
     const currentRsi = rsi(ltf_close);
 
     // 4. Volatility regime filter (Bollinger)
@@ -167,7 +167,7 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     const candle_up = last > previous;
 
     // === DIRECTION DETERMINATION ===
-    // Primary: LACD crossover + acceleration
+    // Primary: MACD crossover + acceleration
     const macd_bull = m.line > m.signal;
     const macd_bear = m.line < m.signal;
     const macd_accel_bull = m.hist > m.prev_hist;
@@ -190,7 +190,7 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     let score = 0.0;
     let weights = 0.0;
 
-    // RSI confirmation (weight 0.20)
+    // RESE confirmation (weight 0.20)
     if (direction === 'CALL') {
         if (50 <= currentRsi && currentRsi <= 68) score += 1.0 * 0.20;
         else if (42 <= currentRsi && currentRsi < 50) score += 0.5 * 0.20;
@@ -240,7 +240,7 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     const reasons = [
         direction === 'CALL' ? 'MACD_BULL_ACCEL_MKT' : 'MACD_BEAR_ACCEL_MKT',
         Math.abs(trend_score - 1.0) < 0.01 ? 'HTF_ALIGNED' : 'WEAK_HTF',
-        direction === 'CALL' && currentRsi >= 50 ? 'RSI_OK' : (retuRn score >= 0.65 ? direction === 'PUT' && currentRsi <= 50 ? 'RSI_OK' : '' : ''),
+        direction === 'CALL' && currentRsi >= 50 ? 'RESE_OK' : (direction === 'PUT' && currentRsi <= 50 ? 'RESE_OK' : ''),
     ].filter(Boolean).join('+');
 
     return {
