@@ -356,12 +356,13 @@ export class AutoTraderEngine extends EventTarget {
         const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSILON);
         if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) ||
             expectedEdge < this.limits.minExpectedEdge) {
-            this.log('info', `Skipped ${market.display_name}: proposal edge ${expectedEdge * 100).toFixed(2)}% is below threshold.`);
+            this.log('info', `Skipped ${market.display_name}: proposal edge ${(expectedEdge * 100).toFixed(2)}% is below threshold.`);
             return false;
         }
         signal.expectedEdge = expectedEdge;
-        this.log('info', `Qualified ${market.display_name}: ${signal.contractType}, confidence ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
-        const contractId = await this.buyWithRetry(proposal.id, ask, market.display_name);
+        this.log('info', `Qualified ${market.display_name}: ${signal.contractType}, confidence ${(modelProbability * 100).toFixed(1)}%, edge ${
+(expectedEdge * 100).toFixed(1)}%.`);
+        const contractId = await this.buyWithRetry(proposal.id, ask, market.display_name, signal.contractType);
         if (!contractId) return false;
         this.stats.tradesOpened += 1;
         this.stats.lastTradeTime = Date.now();
@@ -378,7 +379,7 @@ export class AutoTraderEngine extends EventTarget {
         return true;
     }
 
-    private async buyWithRetry(proposalId: string, price: number, market: string): Promise<string> {
+    private async buyWithRetry(proposalId: string, price: number, market: string, contractType: ContractType): Promise<string> {
         // Proposals are only valid for a short window; a buy can fail if the
         // price moved. Retry once with a fresh proposal via a re-request.
         for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -394,7 +395,7 @@ export class AutoTraderEngine extends EventTarget {
                 try {
                     const refreshed = await this.apiInstance!.send({
                         proposal: 1, amount: Number(price.toFixed(2)), basis: 'stake',
-                        contract_type: 'CALL', currency: currencyOf(this.client),
+                        contract_type: contractType, currency: currencyOf(this.client),
                         duration: this.limits.contractDurationTicks, duration_unit: 't',
                         underlying_symbol: market,
                     });
