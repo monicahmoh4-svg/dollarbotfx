@@ -352,105 +352,163 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
 }
 
 // ═══════════════════════════════════════════════════════
-// CATEGORY 2: EVEN/ODD
+// CATEGORY 2: EVEN/ODD - REVERSAL STRATEGY
+// Core logic: When 2+ consecutive odd digits appear → trade EVEN
+// When 2+ consecutive even digits appear → trade ODD
+// Rationale: After a streak of one parity, reversal probability increases
+// Base probability: 50/50, but streaks create exploitable patterns
 // ═══════════════════════════════════════════════════════
 export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResult {
     const quotes = finiteQuotes(input);
-    if (quotes.length < 200) return emptyCat('even_odd', `INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
+    if (quotes.length < 100) return emptyCat('even_odd', `INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
 
     const digits = extractLastDigits(quotes, decimals);
     const recentWindow = 50;
     const recent = digits.slice(-recentWindow);
+    const last10 = digits.slice(-10);
+    const last5 = digits.slice(-5);
 
-    const evenCount = recent.filter((d) => d % 2 === 0).length;
-    const evenRatio = evenCount / recentWindow;
-
-    const longDigits = digits.slice(-150);
-    const longEven = longDigits.filter((d) => d % 2 === 0).length / longDigits.length;
-
-    let streak = 0;
-    let streakDir = digits[digits.length - 1] % 2 === 0 ? 'even' : 'odd';
-    for (let i = digits.length - 1; i >= Math.max(0, digits.length - 20); i--) {
+    // ─── CORE: Count consecutive same-parity digits from end ───
+    const lastParity = digits[digits.length - 1] % 2 === 0 ? 'even' : 'odd';
+    let consecutiveStreak = 0;
+    for (let i = digits.length - 1; i >= 0; i--) {
         const isEven = digits[i] % 2 === 0;
-        if ((streakDir === 'even' && isEven) || (streakDir === 'odd' && !isEven)) streak++;
+        if ((lastParity === 'even' && isEven) || (lastParity === 'odd' && !isEven)) consecutiveStreak++;
         else break;
     }
 
-    const firstHalf = recent.slice(0, 25);
-    const secondHalf = recent.slice(25);
-    const firstEvenRatio = firstHalf.filter((d) => d % 2 === 0).length / 25;
-    const secondEvenRatio = secondHalf.filter((d) => d % 2 === 0).length / 25;
-    const momentumShift = secondEvenRatio - firstEvenRatio;
+    // ─── REVERSAL LOGIC: predict OPPOSITE of current streak ───
+    const predictEven = lastParity === 'odd'; // If odd streak → predict even
+    const predictOdd = lastParity === 'even'; // If even streak → predict odd
 
+    // How many of last 10 are same parity as current streak
+    const sameParityCount10 = last10.filter((d) => {
+        const isEven = d % 2 === 0;
+        return (lastParity === 'even' && isEven) || (lastParity === 'odd' && !isEven);
+    }).length;
+    const sameParityRatio10 = sameParityCount10 / last10.length;
+
+    // Long-term parity distribution
+    const longDigits = digits.slice(-150);
+    const longEvenRatio = longDigits.filter((d) => d % 2 === 0).length / longDigits.length;
+
+    // Overall 50-tick parity ratio
+    const evenCount50 = recent.filter((d) => d % 2 === 0).length;
+    const evenRatio50 = evenCount50 / recentWindow;
+
+    // Alternation rate: how often digits switch parity in last 20
+    const last20 = digits.slice(-20);
+    let alternations = 0;
+    for (let i = 1; i < last20.length; i++) {
+        if ((last20[i] % 2 === 0) !== (last20[i - 1] % 2 === 0)) alternations++;
+    }
+    const alternationRate = alternations / (last20.length - 1);
+
+    // Streak tendency: average streak length in recent window
+    let streaks: number[] = [];
+    let currentStreakLen = 1;
+    for (let i = 1; i < recent.length; i++) {
+        if ((recent[i] % 2 === 0) === (recent[i - 1] % 2 === 0)) {
+            currentStreakLen++;
+        } else {
+            streaks.push(currentStreakLen);
+            currentStreakLen = 1;
+        }
+    }
+    streaks.push(currentStreakLen);
+    const avgStreak = streaks.reduce((a, b) => a + b, 0) / streaks.length;
+    const maxStreak = Math.max(...streaks);
+
+    // ─── SCORING ───
     const penalties: string[] = [];
     let score = 0;
     let maxScore = 0;
 
-    const bias = Math.abs(evenRatio - 0.5);
-    const f1w = 25; maxScore += f1w;
-    if (bias >= 0.16) score += f1w;
-    else if (bias >= 0.10) score += f1w * 0.7;
-    else if (bias >= 0.06) score += f1w * 0.4;
-    else penalties.push('WEAK_BIAS');
+    // Factor 1: Consecutive streak strength (most important for reversal)
+    const f1w = 30; maxScore += f1w;
+    if (consecutiveStreak >= 4) score += f1w;           // Very strong reversal signal
+    else if (consecutiveStreak >= 3) score += f1w * 0.9;  // Strong
+    else if (consecutiveStreak >= 2) score += f1w * 0.7;  // Moderate - minimum trigger
+    else if (consecutiveStreak >= 1) score += f1w * 0.2;  // Weak - single digit
+    else penalties.push('NO_STREAK');
 
+    // Factor 2: Same-parity concentration in last 10 (confirms streak dominance)
     const f2w = 20; maxScore += f2w;
-    const chi2 = bias > 0.10 ? 20 : bias > 0.06 ? 14 : bias > 0.03 ? 10 : 5;
-    if (chi2 > 18) score += f2w;
-    else if (chi2 > 12) score += f2w * 0.6;
-    else penalties.push('NO_SIGNIFICANCE');
+    if (sameParityRatio10 >= 0.80) score += f2w;        // 8/10+ same parity
+    else if (sameParityRatio10 >= 0.70) score += f2w * 0.7;
+    else if (sameParityRatio10 >= 0.60) score += f2w * 0.4;
+    else penalties.push('LOW_CONCENTRATION');
 
+    // Factor 3: Alternation rate (higher = more reversals happen = reversal more likely)
     const f3w = 15; maxScore += f3w;
-    const targetEven = evenRatio > 0.5;
-    if (targetEven && momentumShift > 0.05) score += f3w;
-    else if (!targetEven && momentumShift < -0.05) score += f3w;
-    else if (Math.abs(momentumShift) < 0.02) score += f3w * 0.4;
+    if (alternationRate >= 0.55) score += f3w;          // Very alternation-heavy market
+    else if (alternationRate >= 0.45) score += f3w * 0.7;
+    else if (alternationRate >= 0.35) score += f3w * 0.4;
+    else penalties.push('LOW_ALTERNATION');
 
+    // Factor 4: Streak exceeds average (confirms this is an unusual streak)
     const f4w = 15; maxScore += f4w;
-    if (targetEven && longEven > 0.52) score += f4w;
-    else if (!targetEven && longEven < 0.48) score += f4w;
-    else score += f4w * 0.3;
+    if (consecutiveStreak > avgStreak * 1.5) score += f4w;
+    else if (consecutiveStreak > avgStreak) score += f4w * 0.6;
+    else score += f4w * 0.2;
 
+    // Factor 5: Not at extreme streak length (avoid reversals after very long streaks)
     const f5w = 10; maxScore += f5w;
-    const streakIsEven = streakDir === 'even';
-    if ((targetEven && streakIsEven && streak >= 3) || (!targetEven && !streakIsEven && streak >= 3)) score += f5w;
-    else if (streak >= 5) { score += f5w * 0.4; penalties.push('STREAK_REVERSAL_RISK'); }
+    if (consecutiveStreak >= 8) {
+        penalties.push('EXTREME_STREAK');
+        score += f5w * 0.1;  // Very long streak - reversal may have already happened
+    } else if (consecutiveStreak >= 2 && consecutiveStreak <= 5) {
+        score += f5w;  // Sweet spot
+    } else {
+        score += f5w * 0.3;
+    }
 
-    const f6w = 15; maxScore += f6w;
-    const dist = digitDistribution(digits.slice(-100));
-    const spread = Math.max(...dist) - Math.min(...dist);
-    if (spread <= 6) score += f6w;
-    else if (spread <= 8) score += f6w * 0.5;
-    else penalties.push('SKEWED_DIST');
+    // Factor 6: Long-term parity doesn't contradict
+    const f6w = 10; maxScore += f6w;
+    if (predictEven && longEvenRatio < 0.55) score += f6w;  // Long-term even bias supports prediction
+    else if (predictOdd && longEvenRatio > 0.45) score += f6w;
+    else score += f6w * 0.4;
 
     const rawConfidence = score / (maxScore || 1);
     let penaltyMultiplier = 1.0;
-    if (penalties.length >= 3) penaltyMultiplier = 0.6;
-    else if (penalties.length >= 2) penaltyMultiplier = 0.75;
-    else if (penalties.length >= 1) penaltyMultiplier = 0.9;
+    if (penalties.length >= 3) penaltyMultiplier = 0.55;
+    else if (penalties.length >= 2) penaltyMultiplier = 0.70;
+    else if (penalties.length >= 1) penaltyMultiplier = 0.85;
 
-    const factorsPassed = [bias >= 0.06, chi2 > 10, Math.abs(momentumShift) < 0.08,
-        longEven > 0.48 && longEven < 0.52 ? false : true, streak >= 2, spread <= 7].filter(Boolean).length;
+    const factorsPassed = [consecutiveStreak >= 2, sameParityRatio10 >= 0.60,
+        alternationRate >= 0.35, consecutiveStreak > avgStreak,
+        consecutiveStreak <= 7, true].filter(Boolean).length;
+
     if (factorsPassed < 3) return emptyCat('even_odd', `INSUFFICIENT_FACTORS: ${factorsPassed}/6`, quotes.length);
 
-    const confidence = Math.min(0.90, Math.max(0, rawConfidence * penaltyMultiplier));
+    const confidence = Math.min(0.88, Math.max(0, rawConfidence * penaltyMultiplier));
     let signalStrength: SignalStrength;
     if (confidence >= 0.75 && factorsPassed >= 5 && penalties.length === 0) signalStrength = 'STRONG';
     else if (confidence >= 0.62 && factorsPassed >= 3) signalStrength = 'MODERATE';
     else if (confidence >= 0.48) signalStrength = 'WEAK';
     else signalStrength = 'NONE';
 
-    const contractType: ContractType = evenRatio > 0.5 ? 'DIGITEVEN' : 'DIGITODD';
+    const contractType: ContractType = predictEven ? 'DIGITEVEN' : 'DIGITODD';
+    const contractLabel = predictEven ? 'EVEN' : 'ODD';
+
+    // Win probability: after N consecutive same-parity, reversal probability
+    // Statistical: base 50%, streak of 2 adds ~3-5%, streak of 3 adds ~5-8%
+    const reversalBoost = Math.min(0.15, consecutiveStreak * 0.025);
+    const winProb = 0.50 + reversalBoost;
+
     const reasons = [
-        `EVEN=${(evenRatio * 100).toFixed(0)}%`, `ODD=${((1 - evenRatio) * 100).toFixed(0)}%`,
-        `STREAK=${streak}${streakDir[0].toUpperCase()}`,
-        `MOM=${(momentumShift * 100).toFixed(1)}%`,
+        `STREAK=${consecutiveStreak}${lastParity === 'even' ? 'E' : 'O'}`,
+        `PREDICT=${contractLabel}`,
+        `SAME10=${sameParityCount10}/10`, `ALT=${(alternationRate * 100).toFixed(0)}%`,
+        `AVG_STREAK=${avgStreak.toFixed(1)}`,
         penalties.length > 0 ? `PEN[${penalties.join(',')}]` : '', `F=${factorsPassed}/6`,
     ].filter(Boolean).join(' | ');
 
-    return { category: 'even_odd', contractType, contractLabel: contractType === 'DIGITEVEN' ? 'EVEN' : 'ODD',
-        direction: null, barrier: null, confidence, estimatedWinProbability: confidence, volatility: bias,
-        sampleSize: quotes.length, reason: reasons, signalStrength, htfAgreement: true, ltfAgreement: true,
-        trendAlignment: true, consecutiveAbove: 0, digitAboveThreshold: 0 };
+    return { category: 'even_odd', contractType, contractLabel,
+        direction: null, barrier: null, confidence, estimatedWinProbability: winProb,
+        volatility: sameParityRatio10, sampleSize: quotes.length, reason: reasons, signalStrength,
+        htfAgreement: true, ltfAgreement: true, trendAlignment: true,
+        consecutiveAbove: consecutiveStreak, digitAboveThreshold: sameParityRatio10 };
 }
 
 // ═══════════════════════════════════════════════════════

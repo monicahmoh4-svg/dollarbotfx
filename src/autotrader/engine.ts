@@ -31,12 +31,14 @@ export interface AutoTraderSettings {
 export interface AnalysisSignal {
     canTrade: boolean;
     contractType: ContractType | null;
+    contractLabel: string;
     direction: 'CALL' | 'PUT' | null;
     barrier: number | null;
     confidenceScore: number;
     expectedEdge: number;
     reason: string;
     category: TradeCategory;
+    consecutiveStreak: number;
 }
 
 export interface AutoTraderStats {
@@ -388,12 +390,14 @@ export class AutoTraderEngine extends EventTarget {
                     const signal: AnalysisSignal = {
                         canTrade: true,
                         contractType: result.contractType,
+                        contractLabel: result.contractLabel,
                         direction: result.direction,
                         barrier: result.barrier,
                         confidenceScore: result.confidence,
                         expectedEdge: 0,
                         reason: result.reason,
                         category: result.category,
+                        consecutiveStreak: result.consecutiveAbove,
                     };
 
                     // Project profit: winProb * payout - cost
@@ -423,10 +427,12 @@ export class AutoTraderEngine extends EventTarget {
                     continue;
                 }
 
-                this.log('info', `BEST: ${market.display_name} (${market.symbol}) ${signal.category} ${signal.contractType} conf=${(signal.confidenceScore * 100).toFixed(1)}% EV=${projectedProfit.toFixed(3)}`);
+                this.log('info', `BEST: ${market.display_name} (${market.symbol}) ${signal.category} ${signal.contractType} [${signal.contractLabel}] conf=${(signal.confidenceScore * 100).toFixed(1)}% EV=${projectedProfit.toFixed(3)}`);
 
-                // AI refinement
+                // AI refinement with timeout
                 try {
+                    const controller = new AbortController();
+                    const aiTimeout = setTimeout(() => controller.abort(), 8000);
                     const aiResponse = await fetch('/api/analyze', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -441,24 +447,31 @@ export class AutoTraderEngine extends EventTarget {
                             lastPrice: 0, adx: 25, stochK: 50, htfRsi: 50,
                             htfAgreement: true, ltfAgreement: true, trendAlignment: true,
                             digitBias: signal.category === 'over_under' ? 0.10 : undefined,
-                            consecutiveAbove: signal.category === 'over_under' ? (signal.barrier != null ? 2 : 0) : undefined,
+                            consecutiveAbove: signal.consecutiveStreak,
+                            digitStreak: signal.consecutiveStreak,
                         }),
+                        signal: controller.signal,
                     });
-                    if (aiResponse.ok) {
-                        const aiResult = await aiResponse.json();
-                        if (aiResult.shouldTrade === false) {
-                            this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
-                            continue;
-                        }
-                        if (aiResult.confidence && aiResult.confidence >= this.limits.minConfidenceThreshold) {
-                            signal.confidenceScore = aiResult.confidence;
-                            signal.reason += ` | AI(${(aiResult.confidence * 100).toFixed(0)}%): ${aiResult.reasoning}`;
-                        }
+                    clearTimeout(aiTimeout);
+                    const aiResult = await aiResponse.json();
+
+                    if (aiResult.shouldTrade === false) {
+                        this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
+                        continue; // AI says no → skip this candidate
                     }
+
+                    // AI approved or neutral → use AI confidence if provided, otherwise keep original
+                    if (aiResult.confidence && aiResult.confidence > 0) {
+                        signal.confidenceScore = aiResult.confidence;
+                    }
+                    signal.reason += ` | AI: ${aiResult.reasoning || 'approved'}`;
                 } catch {
+                    // AI unavailable → proceed with original confidence (slight reduction)
                     signal.confidenceScore *= 0.95;
+                    this.log('info', `${market.display_name}: AI unavailable, proceeding with conf=${(signal.confidenceScore * 100).toFixed(1)}%`);
                 }
 
+                // EXECUTE THE TRADE
                 const executed = await this.considerTrade(market, signal);
                 if (executed) break;
             }
@@ -514,7 +527,7 @@ export class AutoTraderEngine extends EventTarget {
         }
 
         signal.expectedEdge = expectedEdge;
-        this.log('info', `Qualified ${market.display_name}: ${signal.category} ${signal.contractType}, conf ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
+        this.log('info', `Qualified ${market.display_name}: ${signal.category} ${signal.contractType} [${signal.contractLabel}], conf ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
         const contractId = await this.buyWithRetry(proposal.id, ask, market.symbol, signal.contractType, signal.barrier);
         if (!contractId) return false;
 
@@ -524,12 +537,12 @@ export class AutoTraderEngine extends EventTarget {
         ledger.append({
             type: 'TRADE_OPEN',
             symbol: market.symbol,
-            message: `Opened ${market.display_name} ${signal.contractType} [${signal.category}] contract ${contractId}`,
+            message: `Opened ${market.display_name} ${signal.contractType} [${signal.contractLabel}] contract ${contractId}`,
             balanceBefore: balance,
             stake,
             contractId,
         });
-        this.log('success', `Opened ${market.display_name} (${market.symbol}) ${signal.contractType} [${signal.category}], contract ${contractId}.`);
+        this.log('success', `Opened ${market.display_name} (${market.symbol}) ${signal.contractType} [${signal.contractLabel}], contract ${contractId}.`);
         this.watchContract(contractId, market.display_name, stake);
         return true;
     }
