@@ -167,9 +167,9 @@ function AutoTraderPanel() {
           {isHalted ? (
             <>Trading halted due to risk limits. Review logs.</>
           ) : isCooldown ? (
-            <>Cooldown active. Bot will resume scanning automatically...</>
+            <>Cooldown active. Resuming in {Math.ceil(Math.max(0, (state.stats?.cooldownUntil || 0) - Date.now()) / 1000)}s...</>
           ) : isLoggedIn ? (
-            <>Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b> ({isVirtualAccount ? 'DEMO' : 'REAL'} | {sessionCurrency}) | Markets: <b style={{ color: '#fff' }}>{state.marketsCount || 0}</b> active</>
+            <>Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b> ({isVirtualAccount ? 'DEMO' : 'REAL'} | {sessionCurrency}) | Markets: <b style={{ color: '#fff' }}>{state.marketsCount || 0}</b> | Scanning every 5s</>
           ) : (
             <>Not logged into a Deriv account. Please log in first to enable trading.</>
           )}
@@ -491,8 +491,12 @@ function AutoTraderPanel() {
         </div>
 
         <div className='at-actions'>
-          <div style={{ fontSize: '12px', color: '#94a3b8' }}>
-            Markets: <b>{state.marketsCount || 0} Active</b> &bull; Categories: <b>{TRADE_CATEGORIES.length}</b> &bull; Contracts: <b>{state.stats?.activeContracts || 0}/{limits.maxConcurrentTrades || 3}</b>
+          <div style={{ fontSize: '12px', color: '#94a3b8', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+            <span>Markets: <b style={{ color: '#3b82f6' }}>{state.marketsCount || 0}</b></span>
+            <span>Scanned: <b style={{ color: '#3b82f6' }}>{state.stats?.marketsScanned || 0}</b></span>
+            <span>Signals: <b style={{ color: '#a855f7' }}>{state.stats?.signalsDetected || 0}</b></span>
+            <span>Open: <b style={{ color: '#f59e0b' }}>{state.stats?.activeContracts || 0}/{limits.maxConcurrentTrades || 3}</b></span>
+            <span>Cycles: <b style={{ color: '#64748b' }}>{state.stats?.scanCount || 0}</b></span>
           </div>
           <div style={{ display: 'flex', gap: '12px' }}>
             {!state.isRunning ? (

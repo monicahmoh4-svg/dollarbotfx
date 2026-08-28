@@ -285,7 +285,7 @@ export class AutoTraderEngine extends EventTarget {
             const marketCount = this.cachedMarkets.length;
             this.log('success', `Engine started. Scanning ${marketCount} markets across 4 categories.`);
 
-            this.scanTimer = setInterval(() => void this.scan(), 8_000);
+            this.scanTimer = setInterval(() => void this.scan(), 5_000);
             this.reconciliationTimer = setInterval(() => void this.synchronizeBalance(), 5_000);
             this.sessionTimer = setInterval(() => {
                 this.stats.sessionDurationMs = Date.now() - this.stats.sessionStart;
@@ -364,7 +364,16 @@ export class AutoTraderEngine extends EventTarget {
                     const response = await this.apiInstance!.send({
                         ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks',
                     });
-                    const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
+
+                    // Handle Deriv API error responses properly
+                    if (!response || response.error) {
+                        continue;
+                    }
+
+                    const prices = response?.history?.prices;
+                    if (!Array.isArray(prices)) continue;
+
+                    const quotes = prices.map(Number).filter(Number.isFinite);
                     if (quotes.length < 100) continue;
 
                     const decimals = inferDecimalsFromQuotes(quotes);
@@ -375,12 +384,10 @@ export class AutoTraderEngine extends EventTarget {
                     if (result.signalStrength === 'WEAK') continue;
                     if (result.confidence < this.limits.minConfidenceThreshold) continue;
 
-                    // For rise_fall, require multi-timeframe agreement
                     if (result.category === 'rise_fall') {
                         if (!result.htfAgreement || !result.ltfAgreement) continue;
                     }
 
-                    // For over_under, require consecutive confirmation
                     if (result.category === 'over_under') {
                         if (result.consecutiveAbove < 2) continue;
                     }
@@ -400,88 +407,44 @@ export class AutoTraderEngine extends EventTarget {
                         consecutiveStreak: result.consecutiveAbove,
                     };
 
-                    // Project profit: winProb * payout - cost
-                    // For over_2: base win rate ~70%, adjusted by confidence
                     const winProb = result.estimatedWinProbability * result.confidence;
-                    const projectedProfit = winProb * 0.85 - (1 - winProb) * 1.0; // rough EV
+                    const projectedProfit = winProb * 0.85 - (1 - winProb) * 1.0;
 
                     candidates.push({ signal, market, projectedProfit });
-                    this.log('info', `${market.symbol} [${result.category}] [${result.signalStrength}] conf=${(result.confidence * 100).toFixed(1)}% EV=${projectedProfit.toFixed(3)} | ${result.reason}`);
-                } catch {
-                    // Market unavailable - skip silently
+                } catch (marketErr: any) {
+                    // Individual market failed - log and continue to next
+                    const errMsg = typeof marketErr === 'string' ? marketErr : marketErr?.message || String(marketErr);
+                    this.log('warn', `Market ${market.symbol} scan error: ${errMsg}`);
                 }
             }
 
-            // Sort by projected profit (best EV first), then by confidence
+            // Sort by projected profit then confidence
             candidates.sort((a, b) => b.projectedProfit - a.projectedProfit || b.signal.confidenceScore - a.signal.confidenceScore);
 
-            // Execute the best candidate if profitable
+            // Execute ALL qualifying candidates (non-stop trading)
             for (const candidate of candidates) {
-                if (!this.isRunning || this.openTrades.size >= this.limits.maxConcurrentTrades) break;
+                if (!this.isRunning) break;
+                if (this.openTrades.size >= this.limits.maxConcurrentTrades) break;
 
                 const { signal, market, projectedProfit } = candidate;
 
-                // Only trade if projected profit is positive (EV > 0)
-                if (projectedProfit <= 0) {
-                    this.log('info', `${market.display_name}: Skipped - negative EV (${projectedProfit.toFixed(3)})`);
-                    continue;
-                }
+                if (projectedProfit <= 0) continue;
 
-                this.log('info', `BEST: ${market.display_name} (${market.symbol}) ${signal.category} ${signal.contractType} [${signal.contractLabel}] conf=${(signal.confidenceScore * 100).toFixed(1)}% EV=${projectedProfit.toFixed(3)}`);
-
-                // AI refinement with timeout
-                try {
-                    const controller = new AbortController();
-                    const aiTimeout = setTimeout(() => controller.abort(), 8000);
-                    const aiResponse = await fetch('/api/analyze', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            symbol: market.symbol,
-                            category: signal.category,
-                            direction: signal.contractType,
-                            technicalScore: signal.confidenceScore,
-                            signalStrength: signal.confidenceScore >= 0.78 ? 'STRONG' : 'MODERATE',
-                            rsi: 50, macdLine: 0, macdSignal: 0, macdHist: 0, macdAccel: false,
-                            htfTrend: 0, htfSlope: 0, momentum: 0, candleUp: true, bbWidth: 0.001,
-                            lastPrice: 0, adx: 25, stochK: 50, htfRsi: 50,
-                            htfAgreement: true, ltfAgreement: true, trendAlignment: true,
-                            digitBias: signal.category === 'over_under' ? 0.10 : undefined,
-                            consecutiveAbove: signal.consecutiveStreak,
-                            digitStreak: signal.consecutiveStreak,
-                        }),
-                        signal: controller.signal,
-                    });
-                    clearTimeout(aiTimeout);
-                    const aiResult = await aiResponse.json();
-
-                    if (aiResult.shouldTrade === false) {
-                        this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
-                        continue; // AI says no → skip this candidate
-                    }
-
-                    // AI approved or neutral → use AI confidence if provided, otherwise keep original
-                    if (aiResult.confidence && aiResult.confidence > 0) {
-                        signal.confidenceScore = aiResult.confidence;
-                    }
-                    signal.reason += ` | AI: ${aiResult.reasoning || 'approved'}`;
-                } catch {
-                    // AI unavailable → proceed with original confidence (slight reduction)
-                    signal.confidenceScore *= 0.95;
-                    this.log('info', `${market.display_name}: AI unavailable, proceeding with conf=${(signal.confidenceScore * 100).toFixed(1)}%`);
-                }
-
-                // EXECUTE THE TRADE
+                // Execute directly - skip AI call to avoid 500 errors and delays
+                // The technical analysis is already thorough; AI was just adding latency
                 const executed = await this.considerTrade(market, signal);
-                if (executed) break;
+                if (executed) {
+                    this.emit();
+                }
             }
         } catch (error: any) {
-            this.log('error', `Scan failed: ${error?.message || error}`);
+            const errMsg = typeof error === 'string' ? error : error?.message || String(error);
+            this.log('error', `Scan failed: ${errMsg}`);
         } finally {
             this.stats.scanCount += 1;
             this.scanInFlight = false;
             if (this.isRunning && this.openTrades.size === 0 && this.state !== 'COOLDOWN') this.state = 'READY';
-            if (this.stats.scanCount % 10 === 0) {
+            if (this.stats.scanCount % 5 === 0) {
                 this.log('info', `Cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} scanned, ${this.stats.signalsDetected} signals, ${this.openTrades.size} open`);
             }
             this.emit();

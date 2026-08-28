@@ -30,13 +30,6 @@ interface IndicatorSet {
   consecutiveStreak?: number;
 }
 
-interface AIResponse {
-  confidence: number;
-  shouldTrade: boolean;
-  reasoning: string;
-  refinement: string;
-}
-
 function ok(res: VercelResponse, body: Record<string, unknown>) {
   return res.status(200).json(body);
 }
@@ -48,7 +41,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // ABSOLUTE SAFETY: any unhandled error returns 200 with shouldTrade:false
   try {
     const ind: IndicatorSet = req.body;
     if (!ind || typeof ind !== 'object') {
@@ -61,13 +53,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── PRE-VALIDATION ──
     if (isDigit) {
       if (ind.digitBias != null && ind.digitBias < 0.03) {
-        return ok(res, { confidence: Math.min(ts, 0.40), shouldTrade: false, reasoning: `Digit bias too weak (${((ind.digitBias || 0) * 100).toFixed(1)}%)`, refinement: 'Pre-AI: uniform distribution' });
+        return ok(res, { confidence: Math.min(ts, 0.40), shouldTrade: false, reasoning: 'Digit bias too weak', refinement: 'Pre-AI: uniform' });
       }
       if (ind.signalStrength === 'WEAK') {
         return ok(res, { confidence: Math.min(ts, 0.50), shouldTrade: false, reasoning: 'Weak signal', refinement: 'Pre-AI: weak' });
       }
       if (ind.digitStreak != null && ind.digitStreak > 10) {
-        return ok(res, { confidence: Math.min(ts, 0.50), shouldTrade: false, reasoning: `Streak ${ind.digitStreak} - reversal risk`, refinement: 'Pre-AI: streak too long' });
+        return ok(res, { confidence: Math.min(ts, 0.50), shouldTrade: false, reasoning: `Streak ${ind.digitStreak} reversal risk`, refinement: 'Pre-AI: streak' });
       }
     } else {
       const htfRsi = Number(ind.htfRsi) || 50;
@@ -90,54 +82,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       const fc = Math.min(ts * 0.92, 0.78);
-      return ok(res, { confidence: fc, shouldTrade: fc >= 0.72, reasoning: 'No AI key - using technical score', refinement: `TS ${(ts * 100).toFixed(0)}% → ${(fc * 100).toFixed(0)}%` });
+      return ok(res, { confidence: fc, shouldTrade: fc >= 0.72, reasoning: 'No AI key - technical score', refinement: `TS ${(ts * 100).toFixed(0)}%` });
     }
 
     // ── BUILD PROMPT ──
     const sysPrompt = isDigit
-      ? `You are a Deriv digit trading analyst. Calibrate confidence for digit contracts.
-RULES:
-- VETO if digitBias < 0.04 or signalStrength WEAK
-- REDUCE 10-15% if digitBias 0.04-0.07 or digitStreak > 8
-- INCREASE 5-10% if digitBias > 0.12 and signalStrength STRONG
-- Max confidence: 0.85
-- Return ONLY valid JSON: {"confidence":0.0-0.85,"shouldTrade":true/false,"reasoning":"...","refinement":"..."}`
-      : `You are a Deriv volatility index trading analyst. Calibrate confidence.
-RULES:
-- VETO if RSI>72 or RSI<28 or ADX<18 or !trendAlignment
-- REDUCE 10-15% if signalStrength WEAK or RSI near extreme
-- INCREASE 5-10% if STRONG signal, ADX>28, RSI ideal zone, MACD accelerating
-- Max confidence: 0.85
-- Return ONLY valid JSON: {"confidence":0.0-0.85,"shouldTrade":true/false,"reasoning":"...","refinement":"..."}`;
+      ? `Deriv digit analyst. Calibrate confidence. Rules: VETO if bias<0.04 or WEAK. REDUCE 10-15% if bias 0.04-0.07 or streak>8. INCREASE 5-10% if bias>0.12 and STRONG. Max 0.85. JSON only: {"confidence":0-0.85,"shouldTrade":bool,"reasoning":"...","refinement":"..."}`
+      : `Deriv index analyst. Calibrate confidence. Rules: VETO if RSI>72|<28 or ADX<18 or !trend. REDUCE 10-15% if WEAK or RSI near extreme. INCREASE 5-10% if STRONG, ADX>28, ideal RSI, MACD accel. Max 0.85. JSON only: {"confidence":0-0.85,"shouldTrade":bool,"reasoning":"...","refinement":"..."}`;
 
-    const userMsg = `Symbol: ${ind.symbol} | Category: ${ind.category} | Direction: ${ind.direction || 'N/A'} | Signal: ${ind.signalStrength} | TS: ${(ts * 100).toFixed(1)}% | RSI: ${(Number(ind.rsi) || 50).toFixed(1)} | ADX: ${(Number(ind.adx) || 0).toFixed(1)} | HTF_RSI: ${(Number(ind.htfRsi) || 50).toFixed(1)} | MACD_H: ${(Number(ind.macdHist) || 0).toFixed(4)} | MOM: ${((Number(ind.momentum) || 0) * 10000).toFixed(1)}bps | BB_W: ${(Number(ind.bbWidth) || 0).toFixed(6)} | Price: ${(Number(ind.lastPrice) || 0).toFixed(4)}${isDigit ? ` | DigitBias: ${((Number(ind.digitBias) || 0) * 100).toFixed(1)}% | Streak: ${ind.digitStreak || 0} | ConsecAbove: ${ind.consecutiveAbove || 0}` : ''}`;
+    const userMsg = `${ind.symbol}|${ind.category}|${ind.direction||'N/A'}|${ind.signalStrength}|TS:${(ts*100).toFixed(0)}%|RSI:${(Number(ind.rsi)||50).toFixed(0)}|ADX:${(Number(ind.adx)||0).toFixed(0)}|HTF_RSI:${(Number(ind.htfRsi)||50).toFixed(0)}|MACD:${(Number(ind.macdHist)||0).toFixed(4)}|MOM:${((Number(ind.momentum)||0)*10000).toFixed(0)}bps|BB:${(Number(ind.bbWidth)||0).toFixed(6)}|P:${(Number(ind.lastPrice)||0).toFixed(2)}${isDigit?`|Bias:${((Number(ind.digitBias)||0)*100).toFixed(0)}%|Str:${ind.digitStreak||0}|Con:${ind.consecutiveAbove||0}`:''}`;
 
-    // ── CALL GEMINI WITH TIMEOUT ──
-    let parsed: AIResponse;
+    // ── CALL GEMINI VIA REST API (no dynamic import!) ──
+    let parsed: { confidence: number; shouldTrade: boolean; reasoning: string; refinement: string };
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: sysPrompt + '\n\n' + userMsg }] }],
+            generationConfig: { temperature: 0.15, maxOutputTokens: 150 },
+          }),
+          signal: AbortSignal.timeout(8000),
+        }
+      );
 
-      const { GoogleGenerativeAI } = await import('@google/generative-ai');
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({
-        model: 'gemini-2.0-flash',
-        generationConfig: { temperature: 0.15, maxOutputTokens: 150 },
-      });
+      if (!geminiRes.ok) {
+        throw new Error(`Gemini HTTP ${geminiRes.status}`);
+      }
 
-      const result = await Promise.race([
-        model.generateContent(sysPrompt + '\n\n' + userMsg),
-        new Promise<never>((_, reject) => setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, 10000)),
-      ]);
-
-      clearTimeout(timeout);
-      const text = result.response.text();
-      const jsonMatch = text.match(/\{[^]*?\}/);
-      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { confidence: 0, shouldTrade: false, reasoning: 'Parse fail', refinement: text.slice(0, 100) };
+      const geminiData = await geminiRes.json();
+      const text = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const jsonMatch = text.match(/\{[^}]*\}/);
+      parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : { confidence: 0, shouldTrade: false, reasoning: 'Parse fail', refinement: text.slice(0, 80) };
     } catch (e: any) {
-      // AI FAILED - return technical score with small penalty, shouldTrade based on TS
       const fc = Math.min(ts * 0.88, 0.75);
-      return ok(res, { confidence: fc, shouldTrade: fc >= 0.72, reasoning: `AI error: ${(e?.message || 'unknown').slice(0, 60)}`, refinement: `Fallback TS ${(ts * 100).toFixed(0)}% → ${(fc * 100).toFixed(0)}%` });
+      return ok(res, { confidence: fc, shouldTrade: fc >= 0.72, reasoning: `AI error: ${(e?.message||'').slice(0,50)}`, refinement: `Fallback ${(fc*100).toFixed(0)}%` });
     }
 
     // ── POST-AI VALIDATION ──
@@ -153,7 +134,6 @@ RULES:
       refinement: parsed.refinement || 'N/A',
     });
   } catch (err: any) {
-    // LAST RESORT: never return 500
-    return ok(res, { confidence: 0, shouldTrade: false, reasoning: `Fatal: ${(err?.message || 'unknown').slice(0, 80)}`, refinement: 'Safety fallback' });
+    return ok(res, { confidence: 0, shouldTrade: false, reasoning: 'Fatal error', refinement: (err?.message||'unknown').slice(0,60) });
   }
 }
