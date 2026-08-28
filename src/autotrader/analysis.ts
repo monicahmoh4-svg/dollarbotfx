@@ -482,7 +482,7 @@ export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResul
 
     const factorsPassed = [consecutiveStreak >= 3, sameParityRatio10 >= 0.60,
         alternationRate >= 0.35, consecutiveStreak > avgStreak,
-        consecutiveStreak <= 7, nextDigit !== 5].filter(Boolean).length;
+        consecutiveStreak <= 7, longEvenRatio !== 0.5].filter(Boolean).length;
 
     if (factorsPassed < 3) return emptyCat('even_odd', `INSUFFICIENT_FACTORS: ${factorsPassed}/6`, quotes.length);
 
