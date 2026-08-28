@@ -217,8 +217,8 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     const htf_slow = ema(htf_close, 50);
     const htf_diff = htf_fast[htf_fast.length - 1] - htf_slow[htf_slow.length - 1];
     const htf_trend_strength = htf_diff / Math.max(Math.abs(htf_slow[htf_slow.length - 1]), Number.EPSILON);
-    const htf_bullish = htf_trend_strength > 0.0005;
-    const htf_bearish = htf_trend_strength < -0.0005;
+    const htf_bullish = htf_trend_strength > 0.0001;
+    const htf_bearish = htf_trend_strength < -0.0001;
     const htf_slope_val = slope(htf_close, 5);
 
     // === FACTOR 2: HTF MACD ===
@@ -267,25 +267,26 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
         if (last < bb.lower - range * 0.5 && htf_rsi < 25) return empty('EXTREME_OVERSOLD', quotes.length);
     }
 
-    // === DIRECTION DETERMINATION (require BOTH HTF and LTF agreement) ===
+    // === DIRECTION DETERMINATION (require BOTH HTF and LTF MACD agreement) ===
     let direction: 'CALL' | 'PUT';
 
-    // Primary signal: HTF MACD + LTF MACD must agree on direction
-    if (htf_macd_bull && ltf_macd_bull && htf_macd_accel) {
+    // Primary signal: HTF MACD and LTF MACD must agree on direction.
+    // Acceleration is a scoring bonus, not a gate.
+    if (htf_macd_bull && ltf_macd_bull) {
         direction = 'CALL';
-    } else if (htf_macd_bear && ltf_macd_bear && htf_macd_accel) {
+    } else if (htf_macd_bear && ltf_macd_bear) {
         direction = 'PUT';
     } else {
         return empty('NO_DUAL_TIMEFRAME_SIGNAL', quotes.length);
     }
 
-    // Check HTF-LTF agreement
-    const htfAgreement = (direction === 'CALL' && htf_macd_bull && htf_bullish) ||
-        (direction === 'PUT' && htf_macd_bear && htf_bearish);
+    // Check HTF-LTF agreement (MACD direction only, no EMA threshold gate)
+    const htfAgreement = (direction === 'CALL' && htf_macd_bull) ||
+        (direction === 'PUT' && htf_macd_bear);
     const ltfAgreement = (direction === 'CALL' && ltf_macd_bull && momentum_now > 0) ||
         (direction === 'PUT' && ltf_macd_bear && momentum_now < 0);
 
-    // Require minimum HTF agreement - if HTF trend disagrees, reject
+    // Require HTF MACD agreement - the core filter
     if (!htfAgreement) return empty('HTF_DISAGREEMENT', quotes.length);
 
     // === CONFIRMATION SCORING ===
@@ -352,9 +353,9 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     // Factor 6: ADX trend strength (weight 8)
     const f6_weight = 8;
     maxScore += f6_weight;
-    if (adx_val >= 30) score += f6_weight;
-    else if (adx_val >= 20) score += f6_weight * 0.6;
-    else if (adx_val >= 15) score += f6_weight * 0.2;
+    if (adx_val >= 25) score += f6_weight;
+    else if (adx_val >= 18) score += f6_weight * 0.7;
+    else if (adx_val >= 12) score += f6_weight * 0.3;
     else penalties.push('WEAK_TREND');
 
     // Factor 7: Candle pattern (weight 10)
@@ -410,20 +411,20 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     // Require minimum factors to pass
     const factorsPassed = [
         htfAgreement, ltfAgreement, htf_macd_accel, momentum_accel,
-        adx_val >= 20, (direction === 'CALL' && ltf_candle_up_count >= 2) || (direction === 'PUT' && ltf_candle_down_count >= 2),
+        adx_val >= 15, (direction === 'CALL' && ltf_candle_up_count >= 1) || (direction === 'PUT' && ltf_candle_down_count >= 1),
     ].filter(Boolean).length;
 
-    if (factorsPassed < 4) return empty(`INSUFFICIENT_FACTORS: ${factorsPassed}/6`, quotes.length);
+    if (factorsPassed < 3) return empty(`INSUFFICIENT_FACTORS: ${factorsPassed}/6`, quotes.length);
 
     const confidence = Math.min(0.92, Math.max(0, rawConfidence * penaltyMultiplier));
 
     // Signal strength classification
     let signalStrength: SignalStrength;
-    if (confidence >= 0.80 && factorsPassed >= 5 && penalties.length === 0) {
+    if (confidence >= 0.78 && factorsPassed >= 5 && penalties.length === 0) {
         signalStrength = 'STRONG';
-    } else if (confidence >= 0.68 && factorsPassed >= 4) {
+    } else if (confidence >= 0.65 && factorsPassed >= 3) {
         signalStrength = 'MODERATE';
-    } else if (confidence >= 0.55) {
+    } else if (confidence >= 0.50) {
         signalStrength = 'WEAK';
     } else {
         signalStrength = 'NONE';

@@ -94,7 +94,7 @@ const DEFAULT_LIMITS: RiskLimits = {
     maxSessionDurationMs: 24 * 60 * 60 * 1000,
     maxConcurrentTrades: 3,
     maxBalanceTolerance: 0.10,
-    minConfidenceThreshold: 0.70,
+    minConfidenceThreshold: 0.65,
     minExpectedEdge: 0.015,
     contractDurationTicks: 5,
 };
@@ -317,6 +317,7 @@ export class AutoTraderEngine extends EventTarget {
             }
 
             const markets = this.cachedMarkets;
+            let marketsWithSignals = 0;
 
             for (const market of markets) {
                 if (!this.isRunning) break;
@@ -331,6 +332,11 @@ export class AutoTraderEngine extends EventTarget {
 
                     const result = analyzeMarket('rise_fall', quotes, inferDecimalsFromQuotes(quotes));
                     this.stats.marketsScanned += 1;
+
+                    // Log scan result for visibility
+                    if (result.signalStrength !== 'NONE' && result.contractType) {
+                        this.log('info', `Scanned ${market.symbol}: [${result.signalStrength}] ${result.reason} conf=${(result.confidence * 100).toFixed(1)}%`);
+                    }
 
                     // HARD GATE: Require multi-timeframe agreement and non-WEAK signal
                     if (!result.htfAgreement || !result.ltfAgreement) continue;
@@ -347,8 +353,9 @@ export class AutoTraderEngine extends EventTarget {
                         reason: result.reason,
                     };
 
+                    marketsWithSignals += 1;
                     this.stats.signalsDetected += 1;
-                    this.log('info', `[${result.signalStrength}] ${market.display_name} (${market.symbol}) - ${result.reason} [conf: ${(result.confidence * 100).toFixed(1)}%]`);
+                    this.log('info', `SIGNAL [${result.signalStrength}] ${market.display_name} (${market.symbol}) - ${result.reason} [conf: ${(result.confidence * 100).toFixed(1)}%]`);
 
                     // AI refinement: ask Gemini to calibrate the confidence score
                     try {
@@ -376,10 +383,11 @@ export class AutoTraderEngine extends EventTarget {
                             }
                         }
                     } catch {
-                        // AI unavailable: apply safety reduction to confidence
-                        signal.confidenceScore *= 0.88;
+                        // AI unavailable: apply mild safety reduction to confidence
+                        signal.confidenceScore *= 0.92;
+                        this.log('info', `${market.display_name}: AI unavailable, confidence adjusted to ${(signal.confidenceScore * 100).toFixed(1)}%`);
                         if (signal.confidenceScore < this.limits.minConfidenceThreshold) {
-                            this.log('info', `${market.display_name}: AI unavailable, confidence dropped below threshold.`);
+                            this.log('info', `${market.display_name}: Dropped below threshold after AI penalty.`);
                             continue;
                         }
                     }
@@ -398,6 +406,9 @@ export class AutoTraderEngine extends EventTarget {
             this.stats.scanCount += 1;
             this.scanInFlight = false;
             if (this.isRunning && this.openTrades.size === 0 && this.state !== 'COOLDOWN') this.state = 'READY';
+            if (this.stats.scanCount % 10 === 0) {
+                this.log('info', `Scan cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} markets checked, ${this.stats.signalsDetected} signals found, ${this.openTrades.size} open trades.`);
+            }
             this.emit();
         }
     }
