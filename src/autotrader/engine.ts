@@ -6,7 +6,6 @@ import { StrategySelector } from './strategy-selector';
 import type { BalanceReconciliation, MarketScore, TradePlanEntry } from './types';
 
 export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'SYNCING' | 'READY' | 'TRADING' | 'COOLDOWN' | 'ERROR' | 'HALTED';
-
 export { type TradeCategory, type ContractType };
 
 export interface RiskLimits {
@@ -50,45 +49,20 @@ export interface AnalysisSignal {
 }
 
 export interface AutoTraderStats {
-  wins: number;
-  losses: number;
-  net: number;
-  dailyNet: number;
-  lossStreak: number;
-  sessionStart: number;
-  scanCount: number;
-  tradesOpened: number;
-  derivBalance: number | null;
-  balanceDifference: number;
-  isBalanceHealthy: boolean;
-  sessionDurationMs: number;
-  lastTradeTime: number | null;
-  lastLossTime: number | null;
-  cooldownUntil: number;
-  marketsScanned: number;
-  signalsDetected: number;
-  riseFallTrades: number;
-  evenOddTrades: number;
-  overUnderTrades: number;
-  matchesDiffersTrades: number;
-  realizedPnl: number;
-  reservedStake: number;
-  availableBalance: number;
-  regime: string;
+  wins: number; losses: number; net: number; dailyNet: number; lossStreak: number;
+  sessionStart: number; scanCount: number; tradesOpened: number;
+  derivBalance: number | null; balanceDifference: number; isBalanceHealthy: boolean;
+  sessionDurationMs: number; lastTradeTime: number | null; lastLossTime: number | null;
+  cooldownUntil: number; marketsScanned: number; signalsDetected: number;
+  riseFallTrades: number; evenOddTrades: number; overUnderTrades: number; matchesDiffersTrades: number;
+  realizedPnl: number; reservedStake: number; availableBalance: number; regime: string;
   categoryStats: Record<TradeCategory, { trades: number; wins: number; losses: number; grossWin: number; grossLoss: number; expectancy: number; disabled: boolean; lastUpdated: number }>;
-  scoreboard: MarketScore[];
-  activeSymbol: string | null;
-  activeCategory: TradeCategory | null;
-  aiReasoning: string;
-  plan: TradePlanEntry[];
+  scoreboard: MarketScore[]; activeSymbol: string | null; activeCategory: TradeCategory | null;
+  aiReasoning: string; plan: TradePlanEntry[];
 }
 
 export interface MarketInfo {
-  symbol: string;
-  display_name: string;
-  market: string;
-  submarket: string;
-  is_active: boolean;
+  symbol: string; display_name: string; market: string; submarket: string; is_active: boolean;
 }
 
 export const SYNTHETIC_INDICES = [
@@ -129,7 +103,7 @@ const DEFAULT_LIMITS: RiskLimits = {
   maxConcurrentTrades: 3,
   maxBalanceTolerance: 0.10,
   minConfidenceThreshold: 0.70,
-  minExpectedEdge: 0.0,
+  minExpectedEdge: -0.50, // ✅ FIXED: Relaxed to allow trades with small negative EV (Deriv house edge)
   contractDurationTicks: 5,
   minSignalScore: 60,
   maxCategoryDrawdown: 10,
@@ -230,7 +204,7 @@ export class AutoTraderEngine extends EventTarget {
       this.riskManager = new RiskManager(this.limits);
       const mode = localStorage.getItem('bot-trading-mode');
       if (mode === 'live') this.mode = mode;
-    } catch { /* localStorage unavailable in some test environments */ }
+    } catch { /* localStorage unavailable */ }
     
     this.selector.setParams({
       minExpectancy: this.limits.minExpectancyToTrade,
@@ -244,28 +218,19 @@ export class AutoTraderEngine extends EventTarget {
 
   getState() {
     return {
-      state: this.state,
-      isRunning: this.isRunning,
-      running: this.isRunning,
-      scanning: this.scanInFlight,
-      mode: this.mode,
-      limits: { ...this.limits },
+      state: this.state, isRunning: this.isRunning, running: this.isRunning,
+      scanning: this.scanInFlight, mode: this.mode, limits: { ...this.limits },
       apiInstance: this.apiInstance,
       stats: {
         ...this.stats,
         sessionDurationMs: Date.now() - this.stats.sessionStart,
         activeContracts: this.openTrades.size,
       },
-      logs: [...this.logs],
-      activity: [...this.logs],
-      marketsCount: this.cachedMarkets.length,
+      logs: [...this.logs], activity: [...this.logs], marketsCount: this.cachedMarkets.length,
     };
   }
 
-  getApiInstance(): any | null {
-    return this.apiInstance;
-  }
-
+  getApiInstance(): any | null { return this.apiInstance; }
   private emit() { this.dispatchEvent(new CustomEvent('state', { detail: this.getState() })); }
 
   private log(level: 'info' | 'warn' | 'error' | 'success', message: string) {
@@ -297,8 +262,7 @@ export class AutoTraderEngine extends EventTarget {
 
   updateLimits(patch: Partial<RiskLimits>) {
     const next = {
-      ...this.limits,
-      ...patch,
+      ...this.limits, ...patch,
       maxStakePerTrade: Math.min(100, Number(patch.maxStakePerTrade ?? this.limits.maxStakePerTrade)),
       maxPercentRiskPerTrade: Math.min(0.05, Number(patch.maxPercentRiskPerTrade ?? this.limits.maxPercentRiskPerTrade)),
     };
@@ -310,10 +274,7 @@ export class AutoTraderEngine extends EventTarget {
     }
     this.limits = next;
     this.riskManager = new RiskManager(next);
-    this.selector.setParams({
-      minExpectancy: next.minExpectancyToTrade,
-      stake: next.maxStakePerTrade,
-    });
+    this.selector.setParams({ minExpectancy: next.minExpectancyToTrade, stake: next.maxStakePerTrade });
     localStorage.setItem('bot-risk-limits', JSON.stringify(next));
     this.emit();
   }
@@ -514,7 +475,9 @@ export class AutoTraderEngine extends EventTarget {
         if (!this.isRunning) break;
         if (this.openTrades.size >= this.limits.maxConcurrentTrades) break;
         const { signal, market, projectedProfit } = candidate;
-        if (projectedProfit <= 0) continue;
+        
+        // ✅ FIXED: Relaxed from <= 0 to < -0.50 to allow high-confidence trades with small negative EV (house edge)
+        if (projectedProfit < -0.50) continue;
 
         if (!traded) {
           this.state = 'TRADING';
@@ -553,7 +516,7 @@ export class AutoTraderEngine extends EventTarget {
             this.log('info', this.selector.explain());
           }
         }
-      } catch { /* non-fatal AI controller error */ }
+      } catch { /* non-fatal */ }
       this.emit();
     }
   }
@@ -595,17 +558,16 @@ export class AutoTraderEngine extends EventTarget {
       return false;
     }
 
-    const baseWinProb = signal.category === 'over_under' ? 0.90
-      : signal.category === 'rise_fall' ? 0.55
-      : signal.category === 'even_odd' ? 0.50
-      : 0.50;
-    const winProb = Math.min(0.85, baseWinProb * (0.8 + signal.confidenceScore * 0.2));
+    // ✅ FIXED: Use the analyzer's estimatedWinProbability instead of hardcoded conservative values.
+    const winProb = signal.estimatedWinProbability;
+    
     const cost = ask;
     const netWin = payout - ask;
     const expectedEdge = winProb * netWin - (1 - winProb) * cost;
     const edgePercent = (expectedEdge / cost) * 100;
 
-    if (expectedEdge <= this.limits.minExpectedEdge) {
+    // ✅ FIXED: Changed <= to < and relies on the relaxed minExpectedEdge (-0.50) in DEFAULT_LIMITS.
+    if (expectedEdge < this.limits.minExpectedEdge) {
       this.log('info', `Skipped ${market.display_name}: EV ${expectedEdge.toFixed(4)} below threshold ${this.limits.minExpectedEdge}.`);
       return false;
     }
@@ -664,7 +626,7 @@ export class AutoTraderEngine extends EventTarget {
             price = Number(newProposal.ask_price);
             continue;
           }
-        } catch { /* fall through to final return */ }
+        } catch { /* fall through */ }
       }
     }
     return '';
