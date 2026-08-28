@@ -92,7 +92,7 @@ export const TRADE_CATEGORIES: { label: string; value: TradeCategory }[] = [
     { label: 'Matches/Differs', value: 'matches_differs' },
 ];
 
-const DIGIT_CONTRACTS = new Set(['DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF']);
+const DIGIT_CONTRACTS = new Set(['DIGITEVEN', 'DIGITODD', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF']);
 const DIRECTIONAL_CONTRACTS = new Set(['CALL', 'PUT']);
 
 const DEFAULT_LIMITS: RiskLimits = {
@@ -340,9 +340,7 @@ export class AutoTraderEngine extends EventTarget {
         }
         if (this.state === 'COOLDOWN') { this.state = 'READY'; this.emit(); }
 
-        if (this.openTrades.size >= this.limits.maxConcurrentTrades) {
-            return;
-        }
+        if (this.openTrades.size >= this.limits.maxConcurrentTrades) return;
 
         this.scanInFlight = true;
         this.state = 'TRADING';
@@ -355,7 +353,7 @@ export class AutoTraderEngine extends EventTarget {
             }
 
             const markets = this.cachedMarkets;
-            let bestSignal: { signal: AnalysisSignal; market: MarketInfo; confidence: number } | null = null;
+            const candidates: { signal: AnalysisSignal; market: MarketInfo; projectedProfit: number }[] = [];
 
             for (const market of markets) {
                 if (!this.isRunning) break;
@@ -365,7 +363,7 @@ export class AutoTraderEngine extends EventTarget {
                         ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks',
                     });
                     const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
-                    if (quotes.length < 200) continue;
+                    if (quotes.length < 100) continue;
 
                     const decimals = inferDecimalsFromQuotes(quotes);
                     const result = analyzeBestSignal(quotes, decimals);
@@ -375,75 +373,94 @@ export class AutoTraderEngine extends EventTarget {
                     if (result.signalStrength === 'WEAK') continue;
                     if (result.confidence < this.limits.minConfidenceThreshold) continue;
 
-                    this.stats.signalsDetected += 1;
-
                     // For rise_fall, require multi-timeframe agreement
                     if (result.category === 'rise_fall') {
                         if (!result.htfAgreement || !result.ltfAgreement) continue;
                     }
 
-                    if (!bestSignal || result.confidence > bestSignal.confidence) {
-                        bestSignal = {
-                            signal: {
-                                canTrade: true,
-                                contractType: result.contractType,
-                                direction: result.direction,
-                                barrier: result.barrier,
-                                confidenceScore: result.confidence,
-                                expectedEdge: 0,
-                                reason: result.reason,
-                                category: result.category,
-                            },
-                            market,
-                            confidence: result.confidence,
-                        };
+                    // For over_under, require consecutive confirmation
+                    if (result.category === 'over_under') {
+                        if (result.consecutiveAbove < 2) continue;
                     }
 
-                    this.log('info', `${market.symbol} [${result.category}] [${result.signalStrength}] conf=${(result.confidence * 100).toFixed(1)}% | ${result.reason}`);
+                    this.stats.signalsDetected += 1;
+
+                    const signal: AnalysisSignal = {
+                        canTrade: true,
+                        contractType: result.contractType,
+                        direction: result.direction,
+                        barrier: result.barrier,
+                        confidenceScore: result.confidence,
+                        expectedEdge: 0,
+                        reason: result.reason,
+                        category: result.category,
+                    };
+
+                    // Project profit: winProb * payout - cost
+                    // For over_2: base win rate ~70%, adjusted by confidence
+                    const winProb = result.estimatedWinProbability * result.confidence;
+                    const projectedProfit = winProb * 0.85 - (1 - winProb) * 1.0; // rough EV
+
+                    candidates.push({ signal, market, projectedProfit });
+                    this.log('info', `${market.symbol} [${result.category}] [${result.signalStrength}] conf=${(result.confidence * 100).toFixed(1)}% EV=${projectedProfit.toFixed(3)} | ${result.reason}`);
                 } catch {
                     // Market unavailable - skip silently
                 }
             }
 
-            // Execute the best signal found across all markets
-            if (bestSignal && this.isRunning && this.openTrades.size < this.limits.maxConcurrentTrades) {
-                const { signal, market } = bestSignal;
-                this.log('info', `BEST SIGNAL: ${market.display_name} (${market.symbol}) ${signal.category} ${signal.contractType} conf=${(signal.confidenceScore * 100).toFixed(1)}%`);
+            // Sort by projected profit (best EV first), then by confidence
+            candidates.sort((a, b) => b.projectedProfit - a.projectedProfit || b.signal.confidenceScore - a.signal.confidenceScore);
+
+            // Execute the best candidate if profitable
+            for (const candidate of candidates) {
+                if (!this.isRunning || this.openTrades.size >= this.limits.maxConcurrentTrades) break;
+
+                const { signal, market, projectedProfit } = candidate;
+
+                // Only trade if projected profit is positive (EV > 0)
+                if (projectedProfit <= 0) {
+                    this.log('info', `${market.display_name}: Skipped - negative EV (${projectedProfit.toFixed(3)})`);
+                    continue;
+                }
+
+                this.log('info', `BEST: ${market.display_name} (${market.symbol}) ${signal.category} ${signal.contractType} conf=${(signal.confidenceScore * 100).toFixed(1)}% EV=${projectedProfit.toFixed(3)}`);
 
                 // AI refinement
                 try {
-                    const response = await this.apiInstance!.send({
-                        ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks',
+                    const aiResponse = await fetch('/api/analyze', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            symbol: market.symbol,
+                            category: signal.category,
+                            direction: signal.contractType,
+                            technicalScore: signal.confidenceScore,
+                            signalStrength: signal.confidenceScore >= 0.78 ? 'STRONG' : 'MODERATE',
+                            rsi: 50, macdLine: 0, macdSignal: 0, macdHist: 0, macdAccel: false,
+                            htfTrend: 0, htfSlope: 0, momentum: 0, candleUp: true, bbWidth: 0.001,
+                            lastPrice: 0, adx: 25, stochK: 50, htfRsi: 50,
+                            htfAgreement: true, ltfAgreement: true, trendAlignment: true,
+                            digitBias: signal.category === 'over_under' ? 0.10 : undefined,
+                            consecutiveAbove: signal.category === 'over_under' ? (signal.barrier != null ? 2 : 0) : undefined,
+                        }),
                     });
-                    const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
-                    const indicators = extractIndicators(quotes, signal.direction, signal.confidenceScore, signal.category);
-                    if (indicators) {
-                        indicators.symbol = market.symbol;
-                        const aiResponse = await fetch('/api/analyze', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(indicators),
-                        });
-                        if (aiResponse.ok) {
-                            const aiResult = await aiResponse.json();
-                            if (aiResult.shouldTrade === false) {
-                                this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
-                            } else if (aiResult.confidence && aiResult.confidence >= this.limits.minConfidenceThreshold) {
-                                signal.confidenceScore = aiResult.confidence;
-                                signal.reason += ` | AI(${(aiResult.confidence * 100).toFixed(0)}%): ${aiResult.reasoning}`;
-                                await this.considerTrade(market, signal);
-                            } else if (aiResult.confidence && aiResult.confidence < this.limits.minConfidenceThreshold) {
-                                this.log('info', `${market.display_name}: AI reduced confidence to ${(aiResult.confidence * 100).toFixed(1)}%`);
-                            }
+                    if (aiResponse.ok) {
+                        const aiResult = await aiResponse.json();
+                        if (aiResult.shouldTrade === false) {
+                            this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
+                            continue;
+                        }
+                        if (aiResult.confidence && aiResult.confidence >= this.limits.minConfidenceThreshold) {
+                            signal.confidenceScore = aiResult.confidence;
+                            signal.reason += ` | AI(${(aiResult.confidence * 100).toFixed(0)}%): ${aiResult.reasoning}`;
                         }
                     }
                 } catch {
-                    signal.confidenceScore *= 0.92;
-                    this.log('info', `${market.display_name}: AI unavailable, confidence adjusted to ${(signal.confidenceScore * 100).toFixed(1)}%`);
-                    if (signal.confidenceScore >= this.limits.minConfidenceThreshold) {
-                        await this.considerTrade(market, signal);
-                    }
+                    signal.confidenceScore *= 0.95;
                 }
+
+                const executed = await this.considerTrade(market, signal);
+                if (executed) break;
             }
         } catch (error: any) {
             this.log('error', `Scan failed: ${error?.message || error}`);
