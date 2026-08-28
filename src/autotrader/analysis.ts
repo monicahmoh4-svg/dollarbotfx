@@ -662,8 +662,8 @@ export function analyzeOverUnder(input: number[], decimals: number): AnalysisRes
         penalties.length > 0 ? `PEN[${penalties.join(',')}]` : '', `F=${factorsPassed}/7`,
     ].filter(Boolean).join(' | ');
 
-    return { category: 'over_under', contractType: 'DIGITMATCH', contractLabel: 'OVER 2',
-        direction: null, barrier: BARRIER, confidence, estimatedWinProbability: adjustedWinProb,
+    return { category: 'over_under', contractType: 'DIGITDIFF', contractLabel: 'NOT 2',
+        direction: null, barrier: BARRIER, confidence, estimatedWinProbability: 0.90,
         volatility: Math.abs(bias50), sampleSize: quotes.length, reason: reasons, signalStrength,
         htfAgreement: true, ltfAgreement: true, trendAlignment: true,
         consecutiveAbove, digitAboveThreshold: aboveRatio50 };
@@ -758,7 +758,7 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Analys
     ].filter(Boolean).join(' | ');
 
     return { category: 'matches_differs', contractType, contractLabel: useMatch ? 'MATCH' : 'DIFFER',
-        direction: null, barrier: useMatch ? maxDigitIdx : null, confidence,
+        direction: null, barrier: maxDigitIdx, confidence,
         estimatedWinProbability: useMatch ? 0.10 : 0.90, volatility: skew, sampleSize: quotes.length,
         reason: reasons, signalStrength, htfAgreement: true, ltfAgreement: true, trendAlignment: true,
         consecutiveAbove: 0, digitAboveThreshold: 0 };

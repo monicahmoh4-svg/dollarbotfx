@@ -522,7 +522,7 @@ export class AutoTraderEngine extends EventTarget {
 
         // Proper Expected Value: EV = winProb * netWin - (1-winProb) * cost
         // Use category-specific base win rates (signal confidence gates whether we trade, not the win rate)
-        const baseWinProb = signal.category === 'over_under' ? 0.70
+        const baseWinProb = signal.category === 'over_under' ? 0.90
             : signal.category === 'rise_fall' ? 0.55
             : signal.category === 'even_odd' ? 0.50
             : 0.50;
