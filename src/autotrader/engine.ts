@@ -4,6 +4,7 @@ import { ledger } from './ledger';
 import { recordMarketTicks } from './history-store';
 
 export type BotState = 'DISCONNECTED' | 'SYNCING' | 'READY' | 'TRADING' | 'COOLDOWN' | 'ERROR' | 'HALTED';
+export { type TradeCategory, type ContractType };
 
 export interface RiskLimits {
   maxStakePerTrade: number;
@@ -16,7 +17,7 @@ export interface RiskLimits {
   maxSessionDurationMs: number;
   maxConcurrentTrades: number;
   maxBalanceTolerance: number;
-  minExpectedEdge: number; // Minimum statistical edge required (e.g., 0.02 for 2%)
+  minExpectedEdge: number;
   contractDurationTicks: number;
 }
 
@@ -47,6 +48,14 @@ export const SYNTHETIC_INDICES = [
   { symbol: '1HZ100V', display_name: 'Volatility 100 (1s) Index' },
 ];
 
+// ✅ FIXED: Re-added TRADE_CATEGORIES export required by autotrader-panel.tsx
+export const TRADE_CATEGORIES: { label: string; value: TradeCategory }[] = [
+  { label: 'Rise/Fall', value: 'rise_fall' },
+  { label: 'Even/Odd', value: 'even_odd' },
+  { label: 'Over/Under', value: 'over_under' },
+  { label: 'Matches/Differs', value: 'matches_differs' },
+];
+
 const DIGIT_CONTRACTS = new Set(['DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF']);
 
 const DEFAULT_LIMITS: RiskLimits = {
@@ -60,7 +69,7 @@ const DEFAULT_LIMITS: RiskLimits = {
   maxSessionDurationMs: 24 * 60 * 60 * 1000,
   maxConcurrentTrades: 3,
   maxBalanceTolerance: 0.10,
-  minExpectedEdge: 0.02, // Require 2% statistical edge over break-even
+  minExpectedEdge: 0.02,
   contractDurationTicks: 5,
 };
 
@@ -285,17 +294,16 @@ export class AutoTraderEngine extends EventTarget {
           this.stats.marketsScanned += 1;
 
           if (signal.signalStrength === 'NO_EDGE' || !signal.contractType) {
-            continue; // NO TRADE: No statistical edge
+            continue;
           }
 
           this.stats.signalsDetected += 1;
           this.log('info', `[SIGNAL] ${market.display_name} | ${signal.category} ${signal.contractLabel} | Cons. Prob: ${(signal.conservativeProbability * 100).toFixed(1)}% | Baseline: ${(signal.theoreticalBaseline * 100).toFixed(1)}% | Reason: ${signal.reason}`);
 
-          // EXECUTION ENGINE: Fetch fresh proposal and calculate actual EV
           const executed = await this.executeTrade(market, signal);
           if (executed) {
             this.recentlyTraded.set(market.symbol, Date.now() + 120_000);
-            break; // Only one trade per scan cycle
+            break;
           }
 
         } catch (marketErr: any) {
@@ -328,7 +336,6 @@ export class AutoTraderEngine extends EventTarget {
       return false;
     }
 
-    // 1. Request FRESH proposal from Deriv
     const proposalRequest = buildProposal(
       signal.contractType, stake, market.symbol,
       this.limits.contractDurationTicks, currencyOf(this.client), signal.barrier,
@@ -351,19 +358,14 @@ export class AutoTraderEngine extends EventTarget {
       return false;
     }
 
-    // 2. Calculate actual break-even probability from Deriv's payout
     const breakEvenProbability = ask / payout;
-    
-    // 3. Calculate statistical edge
     const statisticalEdge = signal.conservativeProbability - breakEvenProbability;
 
-    // 4. GO/NO-GO Decision
     if (statisticalEdge < this.limits.minExpectedEdge) {
       this.log('info', `[NO-GO] ${market.display_name}: Edge ${(statisticalEdge * 100).toFixed(2)}% < Min ${(this.limits.minExpectedEdge * 100).toFixed(2)}% | Break-even: ${(breakEvenProbability * 100).toFixed(1)}%`);
       return false;
     }
 
-    // 5. EXECUTE TRADE
     this.log('success', `[GO] ${market.display_name} | ${signal.contractType} ${signal.contractLabel} | Edge: ${(statisticalEdge * 100).toFixed(2)}% | Stake: $${stake.toFixed(2)}`);
 
     const contractId = await this.buyWithRetry(proposal.id, ask, market.symbol);
