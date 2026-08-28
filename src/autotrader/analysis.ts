@@ -477,7 +477,10 @@ export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResul
     else if (penalties.length >= 2) penaltyMultiplier = 0.70;
     else if (penalties.length >= 1) penaltyMultiplier = 0.85;
 
-    const factorsPassed = [consecutiveStreak >= 2, sameParityRatio10 >= 0.60,
+    // Require at least 3 consecutive same-parity digits to trade
+    if (consecutiveStreak < 3) return emptyCat('even_odd', `STREAK_TOO_SHORT: ${consecutiveStreak}`, quotes.length);
+
+    const factorsPassed = [consecutiveStreak >= 3, sameParityRatio10 >= 0.60,
         alternationRate >= 0.35, consecutiveStreak > avgStreak,
         consecutiveStreak <= 7, nextDigit !== 5].filter(Boolean).length;
 
@@ -493,10 +496,9 @@ export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResul
     const contractType: ContractType = predictEven ? 'DIGITEVEN' : 'DIGITODD';
     const contractLabel = predictEven ? 'EVEN' : 'ODD';
 
-    // Win probability: after N consecutive same-parity, reversal probability
-    // Statistical: base 50%, streak of 2 adds ~3-5%, streak of 3 adds ~5-8%
-    const reversalBoost = Math.min(0.15, consecutiveStreak * 0.025);
-    const winProb = 0.50 + reversalBoost;
+    // Win probability: For a random digit generator, even/odd is always 50/50.
+    // Only add a tiny edge for very long streaks (3+) based on empirical patterns
+    const winProb = consecutiveStreak >= 3 ? 0.52 : 0.50;
 
     const reasons = [
         `STREAK=${consecutiveStreak}${lastParity === 'even' ? 'E' : 'O'}`,
@@ -650,8 +652,8 @@ export function analyzeOverUnder(input: number[], decimals: number): AnalysisRes
     else signalStrength = 'NONE';
 
     // Win probability for OVER 2: P(digit > 2) = 7/10 = 0.70 base
-    // Adjusted by actual observed rate
-    const adjustedWinProb = Math.min(0.85, Math.max(0.55, aboveRatio50 * 0.7 + aboveRatio10 * 0.3));
+    // Conservative: weight toward base rate, slight adjustment from observed
+    const adjustedWinProb = Math.min(0.78, Math.max(0.62, 0.70 + (aboveRatio50 - 0.70) * 0.3));
 
     const reasons = [
         `OVER2_BIAS=${(aboveRatio50 * 100).toFixed(0)}%`, `CONSEC=${consecutiveAbove}`,
@@ -757,7 +759,7 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Analys
 
     return { category: 'matches_differs', contractType, contractLabel: useMatch ? 'MATCH' : 'DIFFER',
         direction: null, barrier: useMatch ? maxDigitIdx : null, confidence,
-        estimatedWinProbability: confidence, volatility: skew, sampleSize: quotes.length,
+        estimatedWinProbability: useMatch ? 0.10 : 0.90, volatility: skew, sampleSize: quotes.length,
         reason: reasons, signalStrength, htfAgreement: true, ltfAgreement: true, trendAlignment: true,
         consecutiveAbove: 0, digitAboveThreshold: 0 };
 }

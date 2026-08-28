@@ -163,6 +163,7 @@ export class AutoTraderEngine extends EventTarget {
     private sessionTimer: ReturnType<typeof setInterval> | null = null;
     private scanInFlight = false;
     private openTrades = new Map<string, { stake: number; timer: ReturnType<typeof setInterval> }>();
+    private recentlyTraded = new Map<string, number>(); // symbol -> expiry timestamp
     private startingBalance: number | null = null;
     private realizedNet = 0;
     private cooldownUntil = 0;
@@ -222,6 +223,20 @@ export class AutoTraderEngine extends EventTarget {
         this.logs.unshift({ time: new Date().toLocaleTimeString(), level, message });
         this.logs = this.logs.slice(0, 200);
         this.emit();
+    }
+
+    private static stringifyError(err: unknown): string {
+        if (typeof err === 'string') return err;
+        if (err && typeof err === 'object') {
+            const obj = err as Record<string, unknown>;
+            if (obj.error) {
+                const apiErr = obj.error as Record<string, unknown>;
+                return `API ${apiErr.code || 'ERR'}: ${apiErr.message || JSON.stringify(apiErr)}`;
+            }
+            if (obj.message) return String(obj.message);
+            try { return JSON.stringify(obj); } catch { return String(obj); }
+        }
+        return String(err);
     }
 
     setMode(mode: 'paper' | 'live') {
@@ -348,6 +363,12 @@ export class AutoTraderEngine extends EventTarget {
         this.state = 'READY';
         this.emit();
 
+        // Clean up expired recently-traded entries
+        const now = Date.now();
+        this.recentlyTraded.forEach((expiry, symbol) => {
+            if (now >= expiry) this.recentlyTraded.delete(symbol);
+        });
+
         try {
             const now = Date.now();
             if (now - this.marketCacheTime > 60_000 || this.cachedMarkets.length === 0) {
@@ -359,6 +380,10 @@ export class AutoTraderEngine extends EventTarget {
 
             for (const market of markets) {
                 if (!this.isRunning) break;
+
+                // Skip recently traded markets (cooldown after any trade on this symbol)
+                const recentExpiry = this.recentlyTraded.get(market.symbol) || 0;
+                if (Date.now() < recentExpiry) continue;
 
                 try {
                     const response = await this.apiInstance!.send({
@@ -407,13 +432,15 @@ export class AutoTraderEngine extends EventTarget {
                         consecutiveStreak: result.consecutiveAbove,
                     };
 
-                    const winProb = result.estimatedWinProbability * result.confidence;
-                    const projectedProfit = winProb * 0.85 - (1 - winProb) * 1.0;
+                    // Use raw estimatedWinProbability (don't multiply by confidence - confidence gates whether we trade)
+                    const winProb = result.estimatedWinProbability;
+                    // Deriv payout varies by contract type: rise/fall ~90%, digit contracts ~95%
+                    const payoutRatio = result.category === 'rise_fall' ? 0.90 : 0.95;
+                    const projectedProfit = winProb * payoutRatio - (1 - winProb) * 1.0;
 
                     candidates.push({ signal, market, projectedProfit });
                 } catch (marketErr: any) {
-                    // Individual market failed - log and continue to next
-                    const errMsg = typeof marketErr === 'string' ? marketErr : marketErr?.message || String(marketErr);
+                    const errMsg = AutoTraderEngine.stringifyError(marketErr);
                     this.log('warn', `Market ${market.symbol} scan error: ${errMsg}`);
                 }
             }
@@ -439,11 +466,13 @@ export class AutoTraderEngine extends EventTarget {
 
                 const executed = await this.considerTrade(market, signal);
                 if (executed) {
+                    // Mark this market as recently traded (cooldown 120s)
+                    this.recentlyTraded.set(market.symbol, Date.now() + 120_000);
                     this.emit();
                 }
             }
         } catch (error: any) {
-            const errMsg = typeof error === 'string' ? error : error?.message || String(error);
+            const errMsg = AutoTraderEngine.stringifyError(error);
             this.log('error', `Scan failed: ${errMsg}`);
         } finally {
             this.stats.scanCount += 1;
@@ -492,8 +521,12 @@ export class AutoTraderEngine extends EventTarget {
         }
 
         // Proper Expected Value: EV = winProb * netWin - (1-winProb) * cost
-        // netWin = payout - ask (what you receive minus what you paid)
-        const winProb = Math.min(0.95, signal.confidenceScore);
+        // Use category-specific base win rates (signal confidence gates whether we trade, not the win rate)
+        const baseWinProb = signal.category === 'over_under' ? 0.70
+            : signal.category === 'rise_fall' ? 0.55
+            : signal.category === 'even_odd' ? 0.50
+            : 0.50;
+        const winProb = Math.min(0.85, baseWinProb * (0.8 + signal.confidenceScore * 0.2));
         const cost = ask;
         const netWin = payout - ask;
         const expectedEdge = winProb * netWin - (1 - winProb) * cost;
@@ -684,6 +717,7 @@ export class AutoTraderEngine extends EventTarget {
         if (this.sessionTimer) clearInterval(this.sessionTimer);
         this.openTrades.forEach(({ timer }) => clearInterval(timer));
         this.openTrades.clear();
+        this.recentlyTraded.clear();
         ledger.append({ type: 'HALT', symbol: 'ALL', message: `TRADING HALTED: ${reason}` });
         this.log('error', `TRADING HALTED: ${reason}`);
     }
@@ -695,6 +729,7 @@ export class AutoTraderEngine extends EventTarget {
         if (this.sessionTimer) clearInterval(this.sessionTimer);
         this.openTrades.forEach(({ timer }) => clearInterval(timer));
         this.openTrades.clear();
+        this.recentlyTraded.clear();
         this.state = 'DISCONNECTED';
         this.log('info', 'Stopped.');
     }
