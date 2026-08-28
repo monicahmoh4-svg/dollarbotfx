@@ -1,4 +1,4 @@
-export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'SYNCING' | 'READY' | 'TRADING' | 'RECONNECTING' | 'ERROR' | 'HALTED';
+export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'SYNCING' | 'READY' | 'TRADING' | 'RECONNECTING' | 'COOLDOWN' | 'ERROR' | 'HALTED';
 
 export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
 export type ContractType = 'CALL' | 'PUT' | 'DIGITEVEN' | 'DIGITODD' | 'DIGITOVER' | 'DIGITUNDER' | 'DIGITMATCH' | 'DIGITDIFF';
@@ -9,7 +9,7 @@ export interface AnalysisSignal {
     contractType: ContractType | null;
     direction: 'CALL' | 'PUT' | null;
     barrier: number | null;
-    confidenceScore: number; // 0.0 to 1.0
+    confidenceScore: number;
     expectedEdge: number;
     reason: string;
 }
@@ -45,6 +45,8 @@ export interface AutoTraderStats {
     derivBalance: number | null;
     balanceDifference: number;
     isBalanceHealthy: boolean;
+    marketsScanned: number;
+    signalsDetected: number;
 }
 
 export interface LedgerEntry {
@@ -58,4 +60,12 @@ export interface LedgerEntry {
     stake?: number;
     profit?: number;
     contractId?: string;
+}
+
+export interface MarketInfo {
+    symbol: string;
+    display_name: string;
+    market: string;
+    submarket: string;
+    is_active: boolean;
 }
