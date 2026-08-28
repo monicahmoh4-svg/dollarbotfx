@@ -327,13 +327,18 @@ export class AutoTraderEngine extends EventTarget {
                         ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks',
                     });
                     const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
-                    if (quotes.length < 100) continue;
+                    if (quotes.length < 200) continue;
 
                     const result = analyzeMarket('rise_fall', quotes, inferDecimalsFromQuotes(quotes));
                     this.stats.marketsScanned += 1;
 
+                    // HARD GATE: Require multi-timeframe agreement and non-WEAK signal
+                    if (!result.htfAgreement || !result.ltfAgreement) continue;
+                    if (result.signalStrength === 'NONE' || result.signalStrength === 'WEAK') continue;
+                    if (!result.contractType || result.confidence < this.limits.minConfidenceThreshold) continue;
+
                     const signal: AnalysisSignal = {
-                        canTrade: Boolean(result.contractType && result.confidence >= this.limits.minConfidenceThreshold),
+                        canTrade: true,
                         contractType: result.contractType as ContractType | null,
                         direction: result.direction,
                         barrier: null,
@@ -342,11 +347,10 @@ export class AutoTraderEngine extends EventTarget {
                         reason: result.reason,
                     };
 
-                    if (!signal.canTrade) continue;
-
                     this.stats.signalsDetected += 1;
-                    this.log('info', `Signal: ${market.display_name} (${market.symbol}) - ${result.reason} [conf: ${(result.confidence * 100).toFixed(1)}%]`);
+                    this.log('info', `[${result.signalStrength}] ${market.display_name} (${market.symbol}) - ${result.reason} [conf: ${(result.confidence * 100).toFixed(1)}%]`);
 
+                    // AI refinement: ask Gemini to calibrate the confidence score
                     try {
                         const indicators = extractIndicators(quotes, signal.direction!, signal.confidenceScore);
                         if (indicators) {
@@ -358,19 +362,26 @@ export class AutoTraderEngine extends EventTarget {
                             });
                             if (aiResponse.ok) {
                                 const aiResult = await aiResponse.json();
+                                if (aiResult.shouldTrade === false) {
+                                    this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
+                                    continue;
+                                }
                                 if (aiResult.confidence && aiResult.confidence >= this.limits.minConfidenceThreshold) {
                                     signal.confidenceScore = aiResult.confidence;
-                                    signal.reason = signal.reason + ' | AI: ' + (aiResult.reasoning || aiResult.refinement || 'calibrated');
-                                } else if (aiResult.shouldTrade === false) {
-                                    this.log('info', `${market.display_name}: AI vetoed trade (${aiResult.reasoning || 'low confidence'})`);
+                                    signal.reason += ` | AI(${(aiResult.confidence * 100).toFixed(0)}%): ${aiResult.reasoning}`;
+                                } else if (aiResult.confidence && aiResult.confidence < this.limits.minConfidenceThreshold) {
+                                    this.log('info', `${market.display_name}: AI reduced confidence to ${(aiResult.confidence * 100).toFixed(1)}% - ${aiResult.reasoning}`);
                                     continue;
-                                } else {
-                                    signal.reason = signal.reason + ' | AI: ' + (aiResult.refinement || 'fallback');
                                 }
                             }
                         }
                     } catch {
-                        // AI refinement unavailable - use technical score as-is
+                        // AI unavailable: apply safety reduction to confidence
+                        signal.confidenceScore *= 0.88;
+                        if (signal.confidenceScore < this.limits.minConfidenceThreshold) {
+                            this.log('info', `${market.display_name}: AI unavailable, confidence dropped below threshold.`);
+                            continue;
+                        }
                     }
 
                     const executed = await this.considerTrade(market, signal);
@@ -422,7 +433,9 @@ export class AutoTraderEngine extends EventTarget {
         const proposal = proposalResponse?.proposal;
         const ask = Number(proposal?.ask_price);
         const payout = Number(proposal?.payout);
-        const modelProbability = signal.confidenceScore;
+        // Conservative edge calculation: discount model probability by 15%
+        // to account for overconfidence bias in the technical + AI scoring
+        const modelProbability = signal.confidenceScore * 0.85;
         const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSILON);
         if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) ||
             expectedEdge < this.limits.minExpectedEdge) {
