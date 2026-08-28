@@ -196,17 +196,6 @@ export class AutoTraderEngine extends EventTarget {
         scoreboard: [], activeSymbol: null, activeCategory: null, aiReasoning: '', plan: [],
     };
 
-    // (re)initialize the adaptive AI controller params from limits
-    this.selector.setParams({
-        minExpectancy: this.limits.minExpectancyToTrade,
-        stake: this.limits.maxStakePerTrade,
-        lookback: 1000,
-    });
-    this.recentQuotes.clear();
-    this.prevActiveSymbol = null;
-    this.prevActiveCategory = null;
-
-
     // §31 Adaptive AI controller
     private selector = new StrategySelector();
     private recentQuotes = new Map<string, number[]>(); // rolling tick buffer per symbol
@@ -227,6 +216,16 @@ export class AutoTraderEngine extends EventTarget {
             const mode = localStorage.getItem('bot-trading-mode');
             if (mode === 'live') this.mode = mode;
         } catch { /* localStorage unavailable in some test environments */ }
+
+        // (re)initialize the adaptive AI controller params from (possibly overridden) limits
+        this.selector.setParams({
+            minExpectancy: this.limits.minExpectancyToTrade,
+            stake: this.limits.maxStakePerTrade,
+            lookback: 1000,
+        });
+        this.recentQuotes.clear();
+        this.prevActiveSymbol = null;
+        this.prevActiveCategory = null;
     }
 
     getState() {
