@@ -100,7 +100,7 @@ export const SYNTHETIC_INDICES = [
   { symbol: '1HZ10V', display_name: 'Volatility 10 (1s) Index' },
   { symbol: '1HZ25V', display_name: 'Volatility 25 (1s) Index' },
   { symbol: '1HZ50V', display_name: 'Volatility 50 (1s) Index' },
-  { symbol: '1HZ75V', display_name: 'Volatility 75 (1s) Index' }, // Fixed typo
+  { symbol: '1HZ75V', display_name: 'Volatility 75 (1s) Index' },
   { symbol: '1HZ100V', display_name: 'Volatility 100 (1s) Index' },
 ];
 
@@ -464,14 +464,11 @@ export class AutoTraderEngine extends EventTarget {
           if (result.signalStrength === 'WEAK') continue;
           if (result.confidence < this.limits.minConfidenceThreshold) continue;
 
-          // ✅ FIXED: Allow immediate execution of high-confidence signals without waiting for AI backtest approval.
-          // The minConfidenceThreshold and signalStrength checks already gate the quality of the trade.
           const aiApproved = this.selector.isApproved(market.symbol, result.category);
           if (!aiApproved && this.selector.isReady()) {
             this.log('info', `AI suggests skipping ${market.symbol} ${result.category}, but confidence ${(result.confidence * 100).toFixed(0)}% meets threshold. Proceeding.`);
           }
 
-          // §33: skip categories auto-disabled due to negative expectancy
           if (this.stats.categoryStats?.[result.category]?.disabled) continue;
 
           if (result.category === 'rise_fall') {

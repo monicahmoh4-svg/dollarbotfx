@@ -251,8 +251,6 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
   if (quotes.length < 500) return empty(`INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
   const regime = classifyRegime(quotes, 2);
 
-  // ✅ FIXED: Relaxed regime check to allow high-confidence signals in favorable regimes.
-  // The scoring system already applies a regimeMultiplier to naturally reduce confidence in weak regimes.
   if ((regime === 'HIGH_VOLATILITY' || regime === 'UNCLEAR') && quotes.length < 200) {
     return empty(`REGIME_UNFAVORABLE:${regime}`, quotes.length);
   }
@@ -524,7 +522,6 @@ export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResul
   const contractLabel = predictEven ? 'EVEN' : 'ODD';
   const winProb = consecutiveStreak >= 3 ? 0.52 : 0.50;
   
-  // ✅ FIXED: Removed artificial 55 cap. The EV gate in engine.ts will still prevent negative-EV trades.
   const signalScore = Math.round(Math.min(100, confidence * 100));
   const regime = classifyRegime(quotes, decimals);
 
@@ -655,7 +652,6 @@ export function analyzeOverUnder(input: number[], decimals: number): AnalysisRes
     penalties.length > 0 ? `PEN[${penalties.join(',')}]` : '', `F=${factorsPassed}/7`,
   ].filter(Boolean).join(' | ');
 
-  // ✅ FIXED: Removed artificial 55 cap. The EV gate in engine.ts will still prevent negative-EV trades.
   const signalScore = Math.round(Math.min(100, confidence * 100));
   const regime = classifyRegime(quotes, decimals);
 
@@ -744,7 +740,6 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Analys
   const useMatch = maxRatio >= 0.16 && sameDigitStreak >= 2;
   const contractType: ContractType = useMatch ? 'DIGITMATCH' : 'DIGITDIFF';
   
-  // ✅ FIXED: Removed artificial 55 cap. The EV gate in engine.ts will still prevent negative-EV trades.
   const signalScore = Math.round(Math.min(100, confidence * 100));
   const regime = classifyRegime(quotes, decimals);
 
