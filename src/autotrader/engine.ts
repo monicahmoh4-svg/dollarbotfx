@@ -1,6 +1,7 @@
 import { analyzeBestSignal, inferDecimalsFromQuotes, extractIndicators, type TradeCategory, type ContractType } from './analysis';
 import { RiskManager } from './risk-manager';
 import { ledger } from './ledger';
+import { recordMarketTicks } from './history-store';
 import type { BalanceReconciliation } from './types';
 
 export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'SYNCING' | 'READY' | 'TRADING' | 'COOLDOWN' | 'ERROR' | 'HALTED';
@@ -214,6 +215,7 @@ export class AutoTraderEngine extends EventTarget {
             scanning: this.scanInFlight,
             mode: this.mode,
             limits: { ...this.limits },
+            apiInstance: this.apiInstance,
             stats: {
                 ...this.stats,
                 sessionDurationMs: Date.now() - this.stats.sessionStart,
@@ -223,6 +225,10 @@ export class AutoTraderEngine extends EventTarget {
             activity: [...this.logs],
             marketsCount: this.cachedMarkets.length,
         };
+    }
+
+    getApiInstance(): any | null {
+        return this.apiInstance;
     }
 
     private emit() { this.dispatchEvent(new CustomEvent('state', { detail: this.getState() })); }
@@ -409,6 +415,9 @@ export class AutoTraderEngine extends EventTarget {
 
                     const quotes = prices.map(Number).filter(Number.isFinite);
                     if (quotes.length < 100) continue;
+
+                    // Best-effort: persist ticks for later backtesting (non-blocking)
+                    recordMarketTicks(market.symbol, response?.history?.times as number[] | undefined, quotes);
 
                     const decimals = inferDecimalsFromQuotes(quotes);
                     const result = analyzeBestSignal(quotes, decimals);

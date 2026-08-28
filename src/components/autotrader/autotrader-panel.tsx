@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { observer } from 'mobx-react-lite';
 import { useStore } from '@/hooks/useStore';
 import { useAutoTraderUI } from '@/hooks/useAutoTraderUI';
-import { autoTrader, TRADE_CATEGORIES } from '@/autotrader/engine';
+import { autoTrader, TRADE_CATEGORIES, SYNTHETIC_INDICES } from '@/autotrader/engine';
+import { runBacktest, walkForward, monteCarlo, fetchDerivHistory, type BacktestReport, type WalkForwardReport, type MonteCarloResult, type SendFn } from '@/autotrader/backtest';
+import { loadStoredTicks } from '@/autotrader/history-store';
 
 function getSessionCurrency(client: any): string {
   if (!client) return 'USD';
@@ -62,7 +64,7 @@ const styles = `
 @keyframes atPulse { 0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); } 70% { box-shadow: 0 0 0 8px rgba(34, 197, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); } }
 `;
 
-type Tab = 'dashboard' | 'config' | 'logs';
+type Tab = 'dashboard' | 'config' | 'logs' | 'backtest';
 
 function AutoTraderPanel() {
   const { open, hide } = useAutoTraderUI();
@@ -72,6 +74,80 @@ function AutoTraderPanel() {
   const [state, setState] = useState(autoTrader.getState());
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [limits, setLimits] = useState(state.limits || {});
+
+  // Backtest harness state (MASTER PROMPT §18-20)
+  const [btSymbol, setBtSymbol] = useState('R_50');
+  const [btDuration, setBtDuration] = useState(5);
+  const [btStake, setBtStake] = useState(2);
+  const [btLookback, setBtLookback] = useState(300);
+  const [btSource, setBtSource] = useState<'stored' | 'fetch'>('stored');
+  const [btHours, setBtHours] = useState(24);
+  const [btReport, setBtReport] = useState<BacktestReport | null>(null);
+  const [btPrices, setBtPrices] = useState<number[]>([]);
+  const [btWalk, setBtWalk] = useState<WalkForwardReport | null>(null);
+  const [btMC, setBtMC] = useState<MonteCarloResult[] | null>(null);
+  const [btRunning, setBtRunning] = useState(false);
+  const [btMsg, setBtMsg] = useState('');
+  const CATS = ['rise_fall', 'even_odd', 'over_under', 'matches_differs'] as const;
+
+  const loadBacktestPrices = async (): Promise<number[]> => {
+    if (btSource === 'stored') {
+      const prices = await loadStoredTicks(btSymbol);
+      return prices;
+    }
+    const api = autoTrader.getApiInstance();
+    if (!api || typeof api.send !== 'function') {
+      throw new Error('Bot API not connected. Start the engine (or connect) first.');
+    }
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - btHours * 3600;
+    const hist = await fetchDerivHistory((api.send.bind(api)) as SendFn, btSymbol, start, end);
+    return hist.map(h => h.price);
+  };
+
+  const runBacktestHandler = async () => {
+    setBtRunning(true);
+    setBtMsg('Loading ticks...');
+    try {
+      const prices = await loadBacktestPrices();
+      setBtPrices(prices);
+      if (prices.length < 400) {
+        setBtMsg(`Not enough ticks (${prices.length}). Try fetching more history or a different symbol.`);
+        return;
+      }
+      setBtMsg(`Running backtest on ${prices.length} ticks...`);
+      const report = runBacktest(prices, btSymbol, { durationTicks: btDuration, stake: btStake, lookback: btLookback });
+      setBtReport(report);
+      setBtMC(null);
+      setBtWalk(null);
+      setBtMsg(`Done. Best category: ${report.bestCategory || 'none (all negative EV)'}`);
+    } catch (e: any) {
+      setBtMsg('Error: ' + (e?.message || e));
+    } finally {
+      setBtRunning(false);
+    }
+  };
+
+  const runWalk = async () => {
+    if (btPrices.length === 0) {
+      setBtMsg('Run a backtest first to load tick data.');
+      return;
+    }
+    setBtRunning(true);
+    setBtMsg('Running walk-forward...');
+    try {
+      const wf = walkForward(btPrices, btSymbol, 5, { durationTicks: btDuration, stake: btStake, lookback: btLookback });
+      setBtWalk(wf);
+      setBtMsg('Walk-forward complete.');
+    } finally {
+      setBtRunning(false);
+    }
+  };
+
+  const runMonteCarlo = () => {
+    if (!btReport) return;
+    setBtMC(monteCarlo(btReport, 1000));
+  };
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -176,7 +252,7 @@ function AutoTraderPanel() {
         </div>
 
         <div className='at-tabbar'>
-          {(['dashboard', 'config', 'logs'] as Tab[]).map(id => (
+          {(['dashboard', 'config', 'logs', 'backtest'] as Tab[]).map(id => (
             <button
               key={id}
               className={`at-tab ${activeTab === id ? 'active' : ''}`}
@@ -211,6 +287,30 @@ function AutoTraderPanel() {
                   </div>
                 </div>
                 <div className='at-field'>
+                  <label>Market Regime</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#60a5fa' }}>
+                    {state.stats?.regime || 'UNCLEAR'}
+                  </div>
+                </div>
+                <div className='at-field'>
+                  <label>Realized P/L</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: (state.stats?.realizedPnl || 0) >= 0 ? '#4ade80' : '#f87171' }}>
+                    {state.stats?.realizedPnl != null ? `${sessionCurrency} ${(state.stats.realizedPnl || 0).toFixed(2)}` : 'N/A'}
+                  </div>
+                </div>
+                <div className='at-field'>
+                  <label>Reserved Stake (open)</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#f59e0b' }}>
+                    {state.stats?.reservedStake != null ? `${sessionCurrency} ${state.stats.reservedStake.toFixed(2)}` : 'N/A'}
+                  </div>
+                </div>
+                <div className='at-field'>
+                  <label>Available Balance</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#4ade80' }}>
+                    {state.stats?.availableBalance != null ? `${sessionCurrency} ${state.stats.availableBalance.toFixed(2)}` : 'N/A'}
+                  </div>
+                </div>
+                <div className='at-field'>
                   <label>Markets Scanned</label>
                   <div style={{ fontSize: '14px', fontWeight: 700, color: '#3b82f6' }}>
                     {state.stats?.marketsScanned || 0}
@@ -240,6 +340,9 @@ function AutoTraderPanel() {
                     : cat.value === 'even_odd' ? (state.stats?.evenOddTrades || 0)
                     : cat.value === 'over_under' ? (state.stats?.overUnderTrades || 0)
                     : (state.stats?.matchesDiffersTrades || 0);
+                  const catStat = (state.stats?.categoryStats as any)?.[cat.value];
+                  const expectancy = catStat?.expectancy || 0;
+                  const disabled = Boolean(catStat?.disabled);
                   const isActive = catTrades > 0;
                   const colors: Record<string, string> = {
                     rise_fall: '#22c55e', even_odd: '#3b82f6', over_under: '#a855f7', matches_differs: '#f59e0b',
@@ -247,13 +350,15 @@ function AutoTraderPanel() {
                   return (
                     <div key={cat.value} style={{
                       background: isActive ? `${colors[cat.value]}10` : 'rgba(255,255,255,0.03)',
-                      border: `1px solid ${isActive ? colors[cat.value] + '40' : 'rgba(255,255,255,0.08)'}`,
+                      border: `1px solid ${disabled ? '#ef444460' : isActive ? colors[cat.value] + '40' : 'rgba(255,255,255,0.08)'}`,
                       borderRadius: '8px', padding: '12px', display: 'flex', alignItems: 'center', gap: '10px',
                     }}>
-                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: colors[cat.value], flexShrink: 0, boxShadow: isActive ? `0 0 6px ${colors[cat.value]}` : 'none' }} />
+                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: disabled ? '#ef4444' : colors[cat.value], flexShrink: 0, boxShadow: isActive ? `0 0 6px ${disabled ? '#ef4444' : colors[cat.value]}` : 'none' }} />
                       <div>
                         <div style={{ fontSize: '12px', fontWeight: 700, color: isActive ? '#f8fafc' : '#94a3b8' }}>{cat.label}</div>
-                        <div style={{ fontSize: '11px', color: '#64748b' }}>{catTrades} trades</div>
+                        <div style={{ fontSize: '11px', color: '#64748b' }}>
+                          {catTrades} trades{disabled ? ' • DISABLED' : ` • EV ${expectancy >= 0 ? '+' : ''}${expectancy.toFixed(2)}`}
+                        </div>
                       </div>
                     </div>
                   );
@@ -486,6 +591,167 @@ function AutoTraderPanel() {
                   ))
                 )}
               </div>
+            </>
+          )}
+
+          {activeTab === 'backtest' && (
+            <>
+              <div className='at-section-title'>Backtest Configuration (§18-20)</div>
+              <div className='at-grid'>
+                <div className='at-field'>
+                  <label>Symbol</label>
+                  <select className='at-input' value={btSymbol} onChange={e => setBtSymbol(e.target.value)}>
+                    {SYNTHETIC_INDICES.map(m => (
+                      <option key={m.symbol} value={m.symbol}>{m.symbol}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className='at-field'>
+                  <label>Data Source</label>
+                  <select className='at-input' value={btSource} onChange={e => setBtSource(e.target.value as 'stored' | 'fetch')}>
+                    <option value='stored'>Stored ticks (from live scanning)</option>
+                    <option value='fetch'>Fetch from Deriv (last N hours)</option>
+                  </select>
+                </div>
+                {btSource === 'fetch' && (
+                  <div className='at-field'>
+                    <label>History Window (hours)</label>
+                    <input className='at-input' type='number' value={btHours} onChange={e => setBtHours(Number(e.target.value))} />
+                  </div>
+                )}
+                <div className='at-field'>
+                  <label>Duration (ticks)</label>
+                  <input className='at-input' type='number' value={btDuration} onChange={e => setBtDuration(Number(e.target.value))} />
+                </div>
+                <div className='at-field'>
+                  <label>Stake ({sessionCurrency})</label>
+                  <input className='at-input' type='number' value={btStake} onChange={e => setBtStake(Number(e.target.value))} />
+                </div>
+                <div className='at-field'>
+                  <label>Lookback (ticks)</label>
+                  <input className='at-input' type='number' value={btLookback} onChange={e => setBtLookback(Number(e.target.value))} />
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+                <button className='at-button at-button-primary' disabled={btRunning} onClick={runBacktestHandler}>
+                  {btRunning ? 'Running...' : 'Run Backtest'}
+                </button>
+                <button className='at-button at-button-secondary' disabled={btRunning || btPrices.length === 0} onClick={runWalk}>
+                  Walk-Forward
+                </button>
+                <button className='at-button at-button-secondary' disabled={!btReport} onClick={runMonteCarlo}>
+                  Monte Carlo
+                </button>
+              </div>
+              {btMsg && <div className='at-banner info' style={{ marginTop: '12px' }}>{btMsg}</div>}
+
+              {btReport && (
+                <>
+                  <div className='at-section-title'>Per-Category Results (EV over {btReport.totalTicks} ticks)</div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead>
+                        <tr style={{ color: '#94a3b8', textAlign: 'right' }}>
+                          <th style={{ textAlign: 'left', padding: '8px' }}>Category</th>
+                          <th style={{ padding: '8px' }}>Trades</th>
+                          <th style={{ padding: '8px' }}>Win%</th>
+                          <th style={{ padding: '8px' }}>Expectancy</th>
+                          <th style={{ padding: '8px' }}>Profit Factor</th>
+                          <th style={{ padding: '8px' }}>Max DD</th>
+                          <th style={{ padding: '8px' }}>Net</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {CATS.map(c => {
+                          const cb = btReport.categories[c];
+                          return (
+                            <tr key={c} style={{ borderTop: '1px solid rgba(255,255,255,0.06)', textAlign: 'right' }}>
+                              <td style={{ textAlign: 'left', padding: '8px', fontWeight: 700, color: btReport.bestCategory === c ? '#4ade80' : '#e2e8f0' }}>
+                                {c}{btReport.bestCategory === c ? ' ★' : ''}
+                              </td>
+                              <td style={{ padding: '8px' }}>{cb.trades.length}</td>
+                              <td style={{ padding: '8px' }}>{(cb.winRate * 100).toFixed(1)}</td>
+                              <td style={{ padding: '8px', color: cb.expectancy >= 0 ? '#4ade80' : '#f87171' }}>
+                                {cb.expectancy >= 0 ? '+' : ''}{cb.expectancy.toFixed(3)}
+                              </td>
+                              <td style={{ padding: '8px' }}>{cb.profitFactor === Infinity ? '∞' : cb.profitFactor.toFixed(2)}</td>
+                              <td style={{ padding: '8px', color: '#f87171' }}>{cb.maxDrawdown.toFixed(2)}</td>
+                              <td style={{ padding: '8px', color: cb.finalEquity >= 0 ? '#4ade80' : '#f87171' }}>{cb.finalEquity.toFixed(2)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748b', marginTop: '8px' }}>
+                    Digit categories (even/odd, over/under, matches/differs) are structurally negative-EV on Deriv; the backtest confirms this and the live MIN_SIGNAL_SCORE gate keeps them disabled in trading.
+                  </div>
+                </>
+              )}
+
+              {btWalk && (
+                <>
+                  <div className='at-section-title'>Walk-Forward Stability ({btWalk.totalFolds} folds)</div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead>
+                        <tr style={{ color: '#94a3b8' }}>
+                          <th style={{ textAlign: 'left', padding: '8px' }}>Fold</th>
+                          {CATS.map(c => <th key={c} style={{ padding: '8px', textAlign: 'right' }}>{c}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {btWalk.folds.map((f, i) => (
+                          <tr key={i} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                            <td style={{ padding: '8px', color: '#94a3b8' }}>Fold {i + 1}</td>
+                            {CATS.map(c => (
+                              <td key={c} style={{ padding: '8px', textAlign: 'right', color: f.expectancy[c] >= 0 ? '#4ade80' : '#f87171' }}>
+                                {f.expectancy[c] >= 0 ? '+' : ''}{f.expectancy[c].toFixed(3)}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#cbd5e1' }}>
+                    Profitable folds: {CATS.map(c => `${c} ${btWalk.profitableFoldCount[c]}/${btWalk.totalFolds}`).join(' · ')}
+                  </div>
+                </>
+              )}
+
+              {btMC && (
+                <>
+                  <div className='at-section-title'>Monte Carlo (1000 resamples)</div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead>
+                        <tr style={{ color: '#94a3b8' }}>
+                          <th style={{ textAlign: 'left', padding: '8px' }}>Category</th>
+                          <th style={{ padding: '8px' }}>Mean Equity</th>
+                          <th style={{ padding: '8px' }}>P5</th>
+                          <th style={{ padding: '8px' }}>P95</th>
+                          <th style={{ padding: '8px' }}>P(Profit)</th>
+                          <th style={{ padding: '8px' }}>P(Ruin)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {btMC.map(m => (
+                          <tr key={m.category} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                            <td style={{ padding: '8px', fontWeight: 700 }}>{m.category}</td>
+                            <td style={{ padding: '8px', textAlign: 'right', color: m.meanFinalEquity >= 0 ? '#4ade80' : '#f87171' }}>{m.meanFinalEquity.toFixed(2)}</td>
+                            <td style={{ padding: '8px', textAlign: 'right' }}>{m.p5.toFixed(2)}</td>
+                            <td style={{ padding: '8px', textAlign: 'right' }}>{m.p95.toFixed(2)}</td>
+                            <td style={{ padding: '8px', textAlign: 'right' }}>{(m.probProfit * 100).toFixed(0)}%</td>
+                            <td style={{ padding: '8px', textAlign: 'right', color: '#f87171' }}>{(m.probRuin * 100).toFixed(0)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
