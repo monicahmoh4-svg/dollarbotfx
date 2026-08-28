@@ -8,7 +8,7 @@ export interface StatisticalSignal {
   contractType: ContractType | null;
   contractLabel: string;
   barrier: number | null;
-  conservativeProbability: number; // Statistically validated lower bound
+  conservativeProbability: number;
   sampleSize: number;
   theoreticalBaseline: number;
   signalStrength: SignalStrength;
@@ -31,7 +31,6 @@ const emptySignal = (reason: string, sampleSize = 0): StatisticalSignal => ({
   regime: 'UNCLEAR',
 });
 
-// Wilson score interval lower bound for conservative probability estimation
 function conservativeBinomialLowerBound(successes: number, trials: number, z: number = 1.96): number {
   if (trials === 0) return 0.5;
   const pHat = successes / trials;
@@ -43,12 +42,13 @@ function conservativeBinomialLowerBound(successes: number, trials: number, z: nu
 
 const finiteQuotes = (quotes: number[]) => quotes.filter((q) => Number.isFinite(q) && q > 0);
 
-function lastDigitOf(quote: number, decimals: number): number {
+// ✅ FIXED: Added missing export required by backtest.ts
+export function lastDigitOfExport(quote: number, decimals: number): number {
   return Math.abs(Math.round(quote * 10 ** decimals) % 10);
 }
 
 function extractLastDigits(quotes: number[], decimals: number): number[] {
-  return quotes.map((q) => lastDigitOf(q, decimals));
+  return quotes.map((q) => lastDigitOfExport(q, decimals));
 }
 
 export function classifyRegime(quotes: number[], decimals: number): MarketRegime {
@@ -149,25 +149,20 @@ function adx(data: Candle[], period = 14): number {
   return Math.abs(plusDI - minusDI) / diSum * 100;
 }
 
-// ═══════════════════════════════════════════════════════
-// DIGIT CONTRACTS: STATISTICAL EDGE VERIFICATION
-// ═══════════════════════════════════════════════════════
-
 export function analyzeEvenOdd(input: number[], decimals: number): StatisticalSignal {
   const quotes = finiteQuotes(input);
-  const sampleSize = 500; // Require sufficient sample size
+  const sampleSize = 500;
   if (quotes.length < sampleSize) return { ...emptySignal('INSUFFICIENT_DATA', quotes.length), category: 'even_odd' };
   
   const digits = extractLastDigits(quotes.slice(-sampleSize), decimals);
   const evenCount = digits.filter(d => d % 2 === 0).length;
   const oddCount = digits.length - evenCount;
   
-  // Calculate conservative lower bounds for both probabilities
   const pEvenLower = conservativeBinomialLowerBound(evenCount, digits.length);
   const pOddLower = conservativeBinomialLowerBound(oddCount, digits.length);
   
   const theoreticalBaseline = 0.5;
-  const minEdge = 0.02; // Require at least 2% statistical edge
+  const minEdge = 0.02;
   
   if (pEvenLower > theoreticalBaseline + minEdge) {
     return {
@@ -201,7 +196,7 @@ export function analyzeOverUnder(input: number[], decimals: number, barrier: num
   const pOverLower = conservativeBinomialLowerBound(overCount, digits.length);
   const pUnderLower = conservativeBinomialLowerBound(underCount, digits.length);
   
-  const theoreticalBaseline = (9 - barrier) / 10; // e.g., >2 means 3,4,5,6,7,8,9 = 7/10 = 0.7
+  const theoreticalBaseline = (9 - barrier) / 10;
   const minEdge = 0.02;
   
   if (pOverLower > theoreticalBaseline + minEdge) {
@@ -237,7 +232,6 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Statis
   const theoreticalBaselineDiffer = 0.9;
   const minEdge = 0.02;
   
-  // Check for Matches edge
   for (let d = 0; d < 10; d++) {
     const pMatchLower = conservativeBinomialLowerBound(dist[d], digits.length);
     if (pMatchLower > theoreticalBaselineMatch + minEdge) {
@@ -250,7 +244,6 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Statis
     }
   }
   
-  // Check for Differs edge
   for (let d = 0; d < 10; d++) {
     const differsCount = digits.length - dist[d];
     const pDifferLower = conservativeBinomialLowerBound(differsCount, digits.length);
@@ -266,10 +259,6 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Statis
   
   return { ...emptySignal('NO_STATISTICAL_EDGE', digits.length), category: 'matches_differs' };
 }
-
-// ═══════════════════════════════════════════════════════
-// RISE/FALL: PRICE DIRECTION MODEL
-// ═══════════════════════════════════════════════════════
 
 export function analyzeRiseFall(input: number[]): StatisticalSignal {
   const quotes = finiteQuotes(input);
@@ -308,9 +297,8 @@ export function analyzeRiseFall(input: number[]): StatisticalSignal {
     return { ...emptySignal('NO_TREND_ALIGNMENT', quotes.length), category: 'rise_fall', regime };
   }
   
-  // Map score to conservative probability (penalize model uncertainty)
-  const rawProb = 0.5 + (score / 100) * 0.3; // Max 0.8
-  const conservativeProbability = rawProb * 0.85; // 15% penalty for model uncertainty
+  const rawProb = 0.5 + (score / 100) * 0.3;
+  const conservativeProbability = rawProb * 0.85;
   
   if (conservativeProbability <= 0.55) {
     return { ...emptySignal('INSUFFICIENT_PROBABILITY', quotes.length), category: 'rise_fall', regime };
@@ -341,7 +329,6 @@ export function analyzeBestSignal(quotes: number[], decimals: number): Statistic
   const valid = results.filter(r => r.signalStrength !== 'NO_EDGE' && r.conservativeProbability > 0);
   if (valid.length === 0) return emptySignal('NO_EDGE_IN_ANY_CATEGORY', quotes.length);
   
-  // Return the signal with the highest conservative probability
   return valid.sort((a, b) => b.conservativeProbability - a.conservativeProbability)[0];
 }
 
