@@ -311,6 +311,12 @@ function AutoTraderPanel() {
                   </div>
                 </div>
                 <div className='at-field'>
+                  <label>AI Focus (best edge)</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#a855f7' }}>
+                    {state.stats?.activeSymbol ? `${state.stats.activeSymbol} / ${state.stats.activeCategory}` : 'Evaluating markets…'}
+                  </div>
+                </div>
+                <div className='at-field'>
                   <label>Markets Scanned</label>
                   <div style={{ fontSize: '14px', fontWeight: 700, color: '#3b82f6' }}>
                     {state.stats?.marketsScanned || 0}

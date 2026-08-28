@@ -50,6 +50,27 @@ export interface CategoryPerformance {
     lastUpdated: number;
 }
 
+// Per-market score produced by the adaptive AI controller (StrategySelector).
+export interface MarketScore {
+    symbol: string;
+    lastUpdated: number;
+    regime: MarketRegime;
+    bestCategory: TradeCategory | null; // category with highest recent backtest expectancy
+    bestExpectancy: number; // per-trade expectancy of the best category
+    bestWinRate: number;
+    sampleTrades: number; // trades in the backtest window used
+    perCategory: Record<TradeCategory, CategoryPerformance>;
+}
+
+// An approved (market, category) pair the AI controller will trade.
+export interface TradePlanEntry {
+    symbol: string;
+    category: TradeCategory;
+    expectancy: number;
+    winRate: number;
+    rank: number; // 1 = best opportunity
+}
+
 export interface RiskLimits {
     maxStakePerTrade: number;
     maxPercentRiskPerTrade: number;
@@ -58,8 +79,9 @@ export interface RiskLimits {
     maxConcurrentTrades: number;
     maxBalanceTolerance: number;
     minConfidenceThreshold: number;
-    minSignalScore: number; // §11: normalized 0-100 gate
+    minSignalScore: number; // §11: normalized 0-100 gate (used only as a fallback before the AI plan is ready)
     maxCategoryDrawdown: number; // §33: auto-disable strategy if its realized loss exceeds this
+    minExpectancyToTrade: number; // §31: AI only trades (market,category) whose live backtest expectancy >= this
 }
 
 export interface AutoTraderStats {
@@ -86,6 +108,12 @@ export interface AutoTraderStats {
     availableBalance: number; // AVAILABLE_BALANCE (deriv - reserved)
     regime: MarketRegime;
     categoryStats: Record<TradeCategory, CategoryPerformance>;
+    // §31 Adaptive AI controller state
+    scoreboard: MarketScore[];
+    activeSymbol: string | null; // market the AI is currently concentrating on
+    activeCategory: TradeCategory | null; // category the AI is currently concentrating on
+    aiReasoning: string; // human-readable AI decision narrative
+    plan: TradePlanEntry[]; // ranked approved (market,category) opportunities
 }
 
 export interface LedgerEntry {

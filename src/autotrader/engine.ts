@@ -2,7 +2,8 @@ import { analyzeBestSignal, inferDecimalsFromQuotes, extractIndicators, type Tra
 import { RiskManager } from './risk-manager';
 import { ledger } from './ledger';
 import { recordMarketTicks } from './history-store';
-import type { BalanceReconciliation } from './types';
+import { StrategySelector } from './strategy-selector';
+import type { BalanceReconciliation, MarketScore, TradePlanEntry } from './types';
 
 export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'SYNCING' | 'READY' | 'TRADING' | 'COOLDOWN' | 'ERROR' | 'HALTED';
 export { type TradeCategory, type ContractType };
@@ -115,6 +116,7 @@ const DEFAULT_LIMITS: RiskLimits = {
     minExpectedEdge: 0.03,
     minSignalScore: 62, // §11: normalized 0-100 gate (digit categories capped at 55 → won't pass)
     maxCategoryDrawdown: 10, // §33: auto-disable a category if its realized loss exceeds this
+    minExpectancyToTrade: 0.0, // §31: AI only trades (market,category) whose live backtest expectancy >= this
     contractDurationTicks: 5,
 };
 
@@ -191,7 +193,25 @@ export class AutoTraderEngine extends EventTarget {
             over_under: { trades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0, expectancy: 0, disabled: false, lastUpdated: 0 },
             matches_differs: { trades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0, expectancy: 0, disabled: false, lastUpdated: 0 },
         },
+        scoreboard: [], activeSymbol: null, activeCategory: null, aiReasoning: '', plan: [],
     };
+
+    // (re)initialize the adaptive AI controller params from limits
+    this.selector.setParams({
+        minExpectancy: this.limits.minExpectancyToTrade,
+        stake: this.limits.maxStakePerTrade,
+        lookback: 1000,
+    });
+    this.recentQuotes.clear();
+    this.prevActiveSymbol = null;
+    this.prevActiveCategory = null;
+
+
+    // §31 Adaptive AI controller
+    private selector = new StrategySelector();
+    private recentQuotes = new Map<string, number[]>(); // rolling tick buffer per symbol
+    private prevActiveSymbol: string | null = null;
+    private prevActiveCategory: TradeCategory | null = null;
 
     constructor() {
         super();
@@ -277,6 +297,10 @@ export class AutoTraderEngine extends EventTarget {
         }
         this.limits = next;
         this.riskManager = new RiskManager(next);
+        this.selector.setParams({
+            minExpectancy: next.minExpectancyToTrade,
+            stake: next.maxStakePerTrade,
+        });
         localStorage.setItem('bot-risk-limits', JSON.stringify(next));
         this.emit();
     }
@@ -427,15 +451,24 @@ export class AutoTraderEngine extends EventTarget {
                     // Track the prevailing regime of the most recent analyzed market
                     this.stats.regime = result.regime;
 
+                    // §31: continuously backtest this market and feed the AI controller
+                    // (throttled internally; only re-runs when its cached eval is stale)
+                    try { this.selector.maybeEvaluate(market.symbol, quotes, result.regime); } catch { /* non-fatal */ }
+
                     if (result.signalStrength === 'NONE' || !result.contractType) continue;
                     if (result.signalStrength === 'WEAK') continue;
                     if (result.confidence < this.limits.minConfidenceThreshold) continue;
 
-                    // §11/§31: normalized signal-score gate (digit categories capped at 55 → filtered)
-                    if (result.signalScore < this.limits.minSignalScore) continue;
+                    // §31 AI controller: only trade (market,category) pairs the live backtest
+                    // shows a positive edge for. Before the AI is ready, fall back to safe
+                    // strong-trend rise/fall only (no forced/blind trades).
+                    const aiApproved = this.selector.isApproved(market.symbol, result.category);
+                    if (this.selector.isReady() && !aiApproved) continue;
+                    if (!this.selector.isReady() &&
+                        !(result.category === 'rise_fall' && (result.regime === 'STRONG_BULL' || result.regime === 'STRONG_BEAR'))) continue;
 
                     // §33: skip categories auto-disabled due to negative expectancy
-                    if (this.stats.categoryStats[result.category].disabled) continue;
+                    if (this.stats.categoryStats?.[result.category]?.disabled) continue;
 
                     if (result.category === 'rise_fall') {
                         if (!result.htfAgreement || !result.ltfAgreement) continue;
@@ -467,6 +500,8 @@ export class AutoTraderEngine extends EventTarget {
                     // Deriv payout varies by contract type: rise/fall ~90%, digit contracts ~95%
                     const payoutRatio = result.category === 'rise_fall' ? 0.90 : 0.95;
                     const projectedProfit = winProb * payoutRatio - (1 - winProb) * 1.0;
+
+                    this.log('info', `Opportunity ${market.symbol} ${result.category} [${result.contractLabel}] conf=${(result.confidence * 100).toFixed(0)}% proj=$${(projectedProfit * this.limits.maxStakePerTrade).toFixed(2)} regime=${result.regime}${aiApproved ? ' AI✓' : ''}`);
 
                     candidates.push({ signal, market, projectedProfit });
                 } catch (marketErr: any) {
@@ -511,6 +546,24 @@ export class AutoTraderEngine extends EventTarget {
             if (this.stats.scanCount % 5 === 0) {
                 this.log('info', `Cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} scanned, ${this.stats.signalsDetected} signals, ${this.openTrades.size} open`);
             }
+            // §31: re-rank all markets via live backtest and shift the AI's focus to the
+            // best edge; surface the plan + reasoning to the dashboard and activity log.
+            try {
+                if (this.isRunning && this.selector.getScores().length > 0) {
+                    const { shifted, prevSymbol, prevCategory } = this.selector.rebuildPlan();
+                    this.stats.activeSymbol = this.selector.getActiveSymbol();
+                    this.stats.activeCategory = this.selector.getActiveCategory();
+                    this.stats.plan = this.selector.getPlan();
+                    this.stats.scoreboard = this.selector.getScores();
+                    this.stats.aiReasoning = this.selector.explain();
+                    if (shifted) {
+                        this.log('success', `AI shifted focus → ${this.stats.activeSymbol}/${this.stats.activeCategory} (was ${prevSymbol}/${prevCategory})`);
+                    }
+                    if (this.stats.scanCount % 5 === 0) {
+                        this.log('info', this.selector.explain());
+                    }
+                }
+            } catch { /* non-fatal AI controller error */ }
             this.emit();
         }
     }
@@ -650,7 +703,13 @@ export class AutoTraderEngine extends EventTarget {
                 this.stats.realizedPnl = this.realizedNet;
 
                 // §16/§33: update per-category performance and auto-disable on deterioration
-                const cs = this.stats.categoryStats[category];
+                let cs = this.stats.categoryStats[category];
+                if (!cs) {
+                    cs = this.stats.categoryStats[category] = {
+                        trades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0,
+                        expectancy: 0, drawdown: 0, lastUpdated: Date.now(), disabled: false,
+                    };
+                }
                 cs.trades += 1;
                 if (profit > 0) {
                     cs.wins += 1;
