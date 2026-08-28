@@ -114,7 +114,9 @@ function atr(data: Candle[], period = 14): number {
 function slope(values: number[], lookback: number): number {
     if (values.length <= lookback) return 0;
     const start = values[values.length - 1 - lookback];
-    return (values[values.length - 1] - start) / Math.max(Math.abs(start), Number.EPSILON);
+    const end = values[values.length - 1];
+    const meanAbs = values.slice(-lookback).reduce((s, v) => s + Math.abs(v), 0) / lookback;
+    return meanAbs === 0 ? 0 : (end - start) / Math.max(meanAbs, 1e-8);
 }
 
 function macd(values: number[], fast = 12, slow = 26, signal = 9): {
@@ -477,7 +479,7 @@ export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResul
 
     const factorsPassed = [consecutiveStreak >= 2, sameParityRatio10 >= 0.60,
         alternationRate >= 0.35, consecutiveStreak > avgStreak,
-        consecutiveStreak <= 7, true].filter(Boolean).length;
+        consecutiveStreak <= 7, nextDigit !== 5].filter(Boolean).length;
 
     if (factorsPassed < 3) return emptyCat('even_odd', `INSUFFICIENT_FACTORS: ${factorsPassed}/6`, quotes.length);
 
@@ -635,7 +637,7 @@ export function analyzeOverUnder(input: number[], decimals: number): AnalysisRes
     else if (penalties.length >= 1) penaltyMultiplier = 0.85;
 
     const factorsPassed = [consecutiveAbove >= 2, aboveRatio10 >= 0.60, aboveRatio50 >= 0.68,
-        longAboveRatio >= 0.68, momentumAccel || secondAboveRate >= 0.70, lowStreak < 8, highRatio >= 0.40].filter(Boolean).length;
+        longAboveRatio >= 0.68, momentumAccel || secondAboveRate >= 0.70, lowStreak < 5, highRatio >= 0.40].filter(Boolean).length;
 
     if (factorsPassed < 4) return emptyCat('over_under', `INSUFFICIENT_FACTORS: ${factorsPassed}/7`, quotes.length);
 
@@ -897,7 +899,7 @@ export function extractIndicators(
 
     return {
         symbol: '',
-        rsi: rsi(ltfClose)[rsi(ltfClose).length - 1],
+        rsi: (() => { const r = rsi(ltfClose); return r[r.length - 1]; })(),
         macdLine: ltfM.line,
         macdSignal: ltfM.signal,
         macdHist: ltfM.hist,

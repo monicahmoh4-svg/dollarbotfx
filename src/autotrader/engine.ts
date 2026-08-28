@@ -108,8 +108,8 @@ const DEFAULT_LIMITS: RiskLimits = {
     maxSessionDurationMs: 24 * 60 * 60 * 1000,
     maxConcurrentTrades: 3,
     maxBalanceTolerance: 0.10,
-    minConfidenceThreshold: 0.65,
-    minExpectedEdge: 0.015,
+    minConfidenceThreshold: 0.70,
+    minExpectedEdge: 0.03,
     contractDurationTicks: 5,
 };
 
@@ -345,7 +345,7 @@ export class AutoTraderEngine extends EventTarget {
         if (this.openTrades.size >= this.limits.maxConcurrentTrades) return;
 
         this.scanInFlight = true;
-        this.state = 'TRADING';
+        this.state = 'READY';
         this.emit();
 
         try {
@@ -422,6 +422,7 @@ export class AutoTraderEngine extends EventTarget {
             candidates.sort((a, b) => b.projectedProfit - a.projectedProfit || b.signal.confidenceScore - a.signal.confidenceScore);
 
             // Execute ALL qualifying candidates (non-stop trading)
+            let traded = false;
             for (const candidate of candidates) {
                 if (!this.isRunning) break;
                 if (this.openTrades.size >= this.limits.maxConcurrentTrades) break;
@@ -430,8 +431,12 @@ export class AutoTraderEngine extends EventTarget {
 
                 if (projectedProfit <= 0) continue;
 
-                // Execute directly - skip AI call to avoid 500 errors and delays
-                // The technical analysis is already thorough; AI was just adding latency
+                if (!traded) {
+                    this.state = 'TRADING';
+                    this.emit();
+                    traded = true;
+                }
+
                 const executed = await this.considerTrade(market, signal);
                 if (executed) {
                     this.emit();
@@ -481,17 +486,27 @@ export class AutoTraderEngine extends EventTarget {
         const proposal = proposalResponse?.proposal;
         const ask = Number(proposal?.ask_price);
         const payout = Number(proposal?.payout);
-        const modelProbability = signal.confidenceScore * 0.85;
-        const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSILON);
-        if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) ||
-            expectedEdge < this.limits.minExpectedEdge) {
-            this.log('info', `Skipped ${market.display_name} ${signal.contractType}: edge ${(expectedEdge * 100).toFixed(2)}% below threshold.`);
+        if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) || ask <= 0 || payout <= 0) {
+            this.log('info', `Skipped ${market.display_name}: invalid proposal (ask=${ask}, payout=${payout})`);
+            return false;
+        }
+
+        // Proper Expected Value: EV = winProb * netWin - (1-winProb) * cost
+        // netWin = payout - ask (what you receive minus what you paid)
+        const winProb = Math.min(0.95, signal.confidenceScore);
+        const cost = ask;
+        const netWin = payout - ask;
+        const expectedEdge = winProb * netWin - (1 - winProb) * cost;
+        const edgePercent = (expectedEdge / cost) * 100;
+
+        if (expectedEdge <= this.limits.minExpectedEdge) {
+            this.log('info', `Skipped ${market.display_name}: EV ${expectedEdge.toFixed(4)} below threshold ${this.limits.minExpectedEdge}.`);
             return false;
         }
 
         signal.expectedEdge = expectedEdge;
-        this.log('info', `Qualified ${market.display_name}: ${signal.category} ${signal.contractType} [${signal.contractLabel}], conf ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
-        const contractId = await this.buyWithRetry(proposal.id, ask, market.symbol, signal.contractType, signal.barrier);
+        this.log('info', `Qualified ${market.display_name}: ${signal.category} ${signal.contractType} [${signal.contractLabel}], conf=${(winProb * 100).toFixed(1)}%, EV=${expectedEdge.toFixed(4)} (${edgePercent.toFixed(1)}%).`);
+        const contractId = await this.buyWithRetry(proposal.id, ask, stake, market.symbol, signal.contractType, signal.barrier);
         if (!contractId) return false;
 
         this.stats.tradesOpened += 1;
@@ -519,7 +534,7 @@ export class AutoTraderEngine extends EventTarget {
         }
     }
 
-    private async buyWithRetry(proposalId: string, price: number, symbol: string, contractType: ContractType, barrier?: number | null): Promise<string> {
+    private async buyWithRetry(proposalId: string, price: number, stake: number, symbol: string, contractType: ContractType, barrier?: number | null): Promise<string> {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
                 const buy = await this.apiInstance!.send({ buy: proposalId, price });
@@ -531,7 +546,7 @@ export class AutoTraderEngine extends EventTarget {
             if (attempt === 0) {
                 try {
                     const refreshed = await this.apiInstance!.send(buildProposal(
-                        contractType, price, symbol, this.limits.contractDurationTicks,
+                        contractType, stake, symbol, this.limits.contractDurationTicks,
                         currencyOf(this.client), barrier,
                     ));
                     const newProposal = refreshed?.proposal;
@@ -549,13 +564,20 @@ export class AutoTraderEngine extends EventTarget {
     private watchContract(contractId: string, market: string, stake: number) {
         const timer = setInterval(async () => {
             try {
-                const response = await this.apiInstance!.send({ proposal_open_contract: 1, contract_id: contractId });
+                if (!this.apiInstance || !this.isRunning) {
+                    clearInterval(timer);
+                    return;
+                }
+                const response = await this.apiInstance.send({ proposal_open_contract: 1, contract_id: contractId });
                 const contract = response?.proposal_open_contract;
                 if (!isSettled(contract)) return;
                 clearInterval(timer);
                 this.openTrades.delete(contractId);
                 const profit = Number(contract.profit);
-                if (!Number.isFinite(profit)) return;
+                if (!Number.isFinite(profit)) {
+                    this.log('warn', `Contract ${contractId} settled with non-finite profit: ${contract.profit}`);
+                    return;
+                }
 
                 this.realizedNet += profit;
                 this.stats.net = this.realizedNet;
@@ -592,6 +614,8 @@ export class AutoTraderEngine extends EventTarget {
                 this.checkLimits();
             } catch (error: any) {
                 this.log('error', `Contract ${contractId} monitor failed: ${error?.message || error}`);
+                clearInterval(timer);
+                this.openTrades.delete(contractId);
             }
         }, 2_000);
         this.openTrades.set(contractId, { stake, timer });
@@ -610,7 +634,7 @@ export class AutoTraderEngine extends EventTarget {
             this.stats.derivBalance = balance;
             this.stats.balanceDifference = Math.abs(expected - balance);
 
-            const tolerance = this.limits.maxBalanceTolerance + reserved;
+            const tolerance = this.limits.maxBalanceTolerance;
             if (this.stats.balanceDifference <= tolerance) {
                 this.stats.isBalanceHealthy = true;
                 this.mismatchReadings = 0;
@@ -658,6 +682,8 @@ export class AutoTraderEngine extends EventTarget {
         if (this.scanTimer) clearInterval(this.scanTimer);
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
         if (this.sessionTimer) clearInterval(this.sessionTimer);
+        this.openTrades.forEach(({ timer }) => clearInterval(timer));
+        this.openTrades.clear();
         ledger.append({ type: 'HALT', symbol: 'ALL', message: `TRADING HALTED: ${reason}` });
         this.log('error', `TRADING HALTED: ${reason}`);
     }
@@ -667,8 +693,10 @@ export class AutoTraderEngine extends EventTarget {
         if (this.scanTimer) clearInterval(this.scanTimer);
         if (this.reconciliationTimer) clearInterval(this.reconciliationTimer);
         if (this.sessionTimer) clearInterval(this.sessionTimer);
+        this.openTrades.forEach(({ timer }) => clearInterval(timer));
+        this.openTrades.clear();
         this.state = 'DISCONNECTED';
-        this.log('info', 'Stopped. Existing contracts remain monitored until settlement.');
+        this.log('info', 'Stopped.');
     }
 }
 
