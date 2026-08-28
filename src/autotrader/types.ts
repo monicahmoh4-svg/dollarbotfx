@@ -12,6 +12,7 @@ export interface AnalysisSignal {
     confidenceScore: number;
     expectedEdge: number;
     reason: string;
+    category: TradeCategory;
 }
 
 export interface BalanceReconciliation {
@@ -47,6 +48,10 @@ export interface AutoTraderStats {
     isBalanceHealthy: boolean;
     marketsScanned: number;
     signalsDetected: number;
+    riseFallTrades: number;
+    evenOddTrades: number;
+    overUnderTrades: number;
+    matchesDiffersTrades: number;
 }
 
 export interface LedgerEntry {

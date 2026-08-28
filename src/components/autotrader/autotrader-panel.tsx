@@ -233,6 +233,33 @@ function AutoTraderPanel() {
                 </div>
               </div>
 
+              <div className='at-section-title'>Trade Categories</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', marginBottom: '16px' }}>
+                {TRADE_CATEGORIES.map((cat) => {
+                  const catTrades = cat.value === 'rise_fall' ? (state.stats?.riseFallTrades || 0)
+                    : cat.value === 'even_odd' ? (state.stats?.evenOddTrades || 0)
+                    : cat.value === 'over_under' ? (state.stats?.overUnderTrades || 0)
+                    : (state.stats?.matchesDiffersTrades || 0);
+                  const isActive = catTrades > 0;
+                  const colors: Record<string, string> = {
+                    rise_fall: '#22c55e', even_odd: '#3b82f6', over_under: '#a855f7', matches_differs: '#f59e0b',
+                  };
+                  return (
+                    <div key={cat.value} style={{
+                      background: isActive ? `${colors[cat.value]}10` : 'rgba(255,255,255,0.03)',
+                      border: `1px solid ${isActive ? colors[cat.value] + '40' : 'rgba(255,255,255,0.08)'}`,
+                      borderRadius: '8px', padding: '12px', display: 'flex', alignItems: 'center', gap: '10px',
+                    }}>
+                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: colors[cat.value], flexShrink: 0, boxShadow: isActive ? `0 0 6px ${colors[cat.value]}` : 'none' }} />
+                      <div>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: isActive ? '#f8fafc' : '#94a3b8' }}>{cat.label}</div>
+                        <div style={{ fontSize: '11px', color: '#64748b' }}>{catTrades} trades</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
               <div className='at-section-title'>Performance Metrics</div>
               <div className='at-stats'>
                 <div className='at-stat-card'>

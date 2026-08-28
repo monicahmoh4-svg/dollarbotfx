@@ -1,11 +1,10 @@
-import { analyzeMarket, inferDecimalsFromQuotes, extractIndicators } from './analysis';
+import { analyzeBestSignal, inferDecimalsFromQuotes, extractIndicators, type TradeCategory, type ContractType } from './analysis';
 import { RiskManager } from './risk-manager';
 import { ledger } from './ledger';
 import type { BalanceReconciliation } from './types';
 
 export type BotState = 'DISCONNECTED' | 'CONNECTING' | 'SYNCING' | 'READY' | 'TRADING' | 'COOLDOWN' | 'ERROR' | 'HALTED';
-export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
-export type ContractType = 'CALL' | 'PUT';
+export { type TradeCategory, type ContractType };
 
 export interface RiskLimits {
     maxStakePerTrade: number;
@@ -33,10 +32,11 @@ export interface AnalysisSignal {
     canTrade: boolean;
     contractType: ContractType | null;
     direction: 'CALL' | 'PUT' | null;
-    barrier: null;
+    barrier: number | null;
     confidenceScore: number;
     expectedEdge: number;
     reason: string;
+    category: TradeCategory;
 }
 
 export interface AutoTraderStats {
@@ -57,6 +57,10 @@ export interface AutoTraderStats {
     cooldownUntil: number;
     marketsScanned: number;
     signalsDetected: number;
+    riseFallTrades: number;
+    evenOddTrades: number;
+    overUnderTrades: number;
+    matchesDiffersTrades: number;
 }
 
 export interface MarketInfo {
@@ -81,7 +85,15 @@ export const SYNTHETIC_INDICES = [
 ];
 export const REAL_MARKETS = SYNTHETIC_INDICES;
 export const SYNTHETIC_SYMBOL_PRESETS = SYNTHETIC_INDICES.map((market) => market.symbol).join(',');
-export const TRADE_CATEGORIES = [{ label: 'Rise/Fall', value: 'rise_fall' as TradeCategory }];
+export const TRADE_CATEGORIES: { label: string; value: TradeCategory }[] = [
+    { label: 'Rise/Fall', value: 'rise_fall' },
+    { label: 'Even/Odd', value: 'even_odd' },
+    { label: 'Over/Under', value: 'over_under' },
+    { label: 'Matches/Differs', value: 'matches_differs' },
+];
+
+const DIGIT_CONTRACTS = new Set(['DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF']);
+const DIRECTIONAL_CONTRACTS = new Set(['CALL', 'PUT']);
 
 const DEFAULT_LIMITS: RiskLimits = {
     maxStakePerTrade: 2,
@@ -112,6 +124,30 @@ function isSettled(contract: any): boolean {
     ));
 }
 
+function buildProposal(
+    contractType: ContractType,
+    stake: number,
+    symbol: string,
+    durationTicks: number,
+    currency: string,
+    barrier?: number | null,
+) {
+    const proposal: Record<string, unknown> = {
+        proposal: 1,
+        amount: Number(stake.toFixed(2)),
+        basis: 'stake',
+        contract_type: contractType,
+        currency,
+        duration: durationTicks,
+        duration_unit: 't',
+        underlying_symbol: symbol,
+    };
+    if (DIGIT_CONTRACTS.has(contractType) && barrier != null) {
+        proposal.barrier = String(barrier);
+    }
+    return proposal;
+}
+
 export class AutoTraderEngine extends EventTarget {
     private client: any = null;
     private apiInstance: AutoTraderSettings['apiInstance'] = null;
@@ -139,6 +175,7 @@ export class AutoTraderEngine extends EventTarget {
         derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
         sessionDurationMs: 0, lastTradeTime: null, lastLossTime: null,
         cooldownUntil: 0, marketsScanned: 0, signalsDetected: 0,
+        riseFallTrades: 0, evenOddTrades: 0, overUnderTrades: 0, matchesDiffersTrades: 0,
     };
 
     constructor() {
@@ -229,6 +266,7 @@ export class AutoTraderEngine extends EventTarget {
             derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
             sessionDurationMs: 0, lastTradeTime: null, lastLossTime: null,
             cooldownUntil: 0, marketsScanned: 0, signalsDetected: 0,
+            riseFallTrades: 0, evenOddTrades: 0, overUnderTrades: 0, matchesDiffersTrades: 0,
         };
         this.realizedNet = 0;
         this.startingBalance = null;
@@ -243,7 +281,7 @@ export class AutoTraderEngine extends EventTarget {
 
             await this.refreshMarketCache();
             const marketCount = this.cachedMarkets.length;
-            this.log('success', `Engine started. Scanning ${marketCount} Deriv markets continuously.`);
+            this.log('success', `Engine started. Scanning ${marketCount} markets across 4 categories.`);
 
             this.scanTimer = setInterval(() => void this.scan(), 8_000);
             this.reconciliationTimer = setInterval(() => void this.synchronizeBalance(), 5_000);
@@ -317,11 +355,10 @@ export class AutoTraderEngine extends EventTarget {
             }
 
             const markets = this.cachedMarkets;
-            let marketsWithSignals = 0;
+            let bestSignal: { signal: AnalysisSignal; market: MarketInfo; confidence: number } | null = null;
 
             for (const market of markets) {
                 if (!this.isRunning) break;
-                if (this.openTrades.size >= this.limits.maxConcurrentTrades) break;
 
                 try {
                     const response = await this.apiInstance!.send({
@@ -330,74 +367,82 @@ export class AutoTraderEngine extends EventTarget {
                     const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
                     if (quotes.length < 200) continue;
 
-                    const result = analyzeMarket('rise_fall', quotes, inferDecimalsFromQuotes(quotes));
+                    const decimals = inferDecimalsFromQuotes(quotes);
+                    const result = analyzeBestSignal(quotes, decimals);
                     this.stats.marketsScanned += 1;
 
-                    // Log scan result for visibility
-                    if (result.signalStrength !== 'NONE' && result.contractType) {
-                        this.log('info', `Scanned ${market.symbol}: [${result.signalStrength}] ${result.reason} conf=${(result.confidence * 100).toFixed(1)}%`);
+                    if (result.signalStrength === 'NONE' || !result.contractType) continue;
+                    if (result.signalStrength === 'WEAK') continue;
+                    if (result.confidence < this.limits.minConfidenceThreshold) continue;
+
+                    this.stats.signalsDetected += 1;
+
+                    // For rise_fall, require multi-timeframe agreement
+                    if (result.category === 'rise_fall') {
+                        if (!result.htfAgreement || !result.ltfAgreement) continue;
                     }
 
-                    // HARD GATE: Require multi-timeframe agreement and non-WEAK signal
-                    if (!result.htfAgreement || !result.ltfAgreement) continue;
-                    if (result.signalStrength === 'NONE' || result.signalStrength === 'WEAK') continue;
-                    if (!result.contractType || result.confidence < this.limits.minConfidenceThreshold) continue;
+                    if (!bestSignal || result.confidence > bestSignal.confidence) {
+                        bestSignal = {
+                            signal: {
+                                canTrade: true,
+                                contractType: result.contractType,
+                                direction: result.direction,
+                                barrier: result.barrier,
+                                confidenceScore: result.confidence,
+                                expectedEdge: 0,
+                                reason: result.reason,
+                                category: result.category,
+                            },
+                            market,
+                            confidence: result.confidence,
+                        };
+                    }
 
-                    const signal: AnalysisSignal = {
-                        canTrade: true,
-                        contractType: result.contractType as ContractType | null,
-                        direction: result.direction,
-                        barrier: null,
-                        confidenceScore: result.confidence,
-                        expectedEdge: 0,
-                        reason: result.reason,
-                    };
+                    this.log('info', `${market.symbol} [${result.category}] [${result.signalStrength}] conf=${(result.confidence * 100).toFixed(1)}% | ${result.reason}`);
+                } catch {
+                    // Market unavailable - skip silently
+                }
+            }
 
-                    marketsWithSignals += 1;
-                    this.stats.signalsDetected += 1;
-                    this.log('info', `SIGNAL [${result.signalStrength}] ${market.display_name} (${market.symbol}) - ${result.reason} [conf: ${(result.confidence * 100).toFixed(1)}%]`);
+            // Execute the best signal found across all markets
+            if (bestSignal && this.isRunning && this.openTrades.size < this.limits.maxConcurrentTrades) {
+                const { signal, market } = bestSignal;
+                this.log('info', `BEST SIGNAL: ${market.display_name} (${market.symbol}) ${signal.category} ${signal.contractType} conf=${(signal.confidenceScore * 100).toFixed(1)}%`);
 
-                    // AI refinement: ask Gemini to calibrate the confidence score
-                    try {
-                        const indicators = extractIndicators(quotes, signal.direction!, signal.confidenceScore);
-                        if (indicators) {
-                            indicators.symbol = market.symbol;
-                            const aiResponse = await fetch('/api/analyze', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(indicators),
-                            });
-                            if (aiResponse.ok) {
-                                const aiResult = await aiResponse.json();
-                                if (aiResult.shouldTrade === false) {
-                                    this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
-                                    continue;
-                                }
-                                if (aiResult.confidence && aiResult.confidence >= this.limits.minConfidenceThreshold) {
-                                    signal.confidenceScore = aiResult.confidence;
-                                    signal.reason += ` | AI(${(aiResult.confidence * 100).toFixed(0)}%): ${aiResult.reasoning}`;
-                                } else if (aiResult.confidence && aiResult.confidence < this.limits.minConfidenceThreshold) {
-                                    this.log('info', `${market.display_name}: AI reduced confidence to ${(aiResult.confidence * 100).toFixed(1)}% - ${aiResult.reasoning}`);
-                                    continue;
-                                }
+                // AI refinement
+                try {
+                    const response = await this.apiInstance!.send({
+                        ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks',
+                    });
+                    const quotes = (response?.history?.prices || []).map(Number).filter(Number.isFinite);
+                    const indicators = extractIndicators(quotes, signal.direction, signal.confidenceScore, signal.category);
+                    if (indicators) {
+                        indicators.symbol = market.symbol;
+                        const aiResponse = await fetch('/api/analyze', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(indicators),
+                        });
+                        if (aiResponse.ok) {
+                            const aiResult = await aiResponse.json();
+                            if (aiResult.shouldTrade === false) {
+                                this.log('info', `${market.display_name}: AI vetoed - ${aiResult.reasoning}`);
+                            } else if (aiResult.confidence && aiResult.confidence >= this.limits.minConfidenceThreshold) {
+                                signal.confidenceScore = aiResult.confidence;
+                                signal.reason += ` | AI(${(aiResult.confidence * 100).toFixed(0)}%): ${aiResult.reasoning}`;
+                                await this.considerTrade(market, signal);
+                            } else if (aiResult.confidence && aiResult.confidence < this.limits.minConfidenceThreshold) {
+                                this.log('info', `${market.display_name}: AI reduced confidence to ${(aiResult.confidence * 100).toFixed(1)}%`);
                             }
                         }
-                    } catch {
-                        // AI unavailable: apply mild safety reduction to confidence
-                        signal.confidenceScore *= 0.92;
-                        this.log('info', `${market.display_name}: AI unavailable, confidence adjusted to ${(signal.confidenceScore * 100).toFixed(1)}%`);
-                        if (signal.confidenceScore < this.limits.minConfidenceThreshold) {
-                            this.log('info', `${market.display_name}: Dropped below threshold after AI penalty.`);
-                            continue;
-                        }
-                    }
-
-                    const executed = await this.considerTrade(market, signal);
-                    if (executed) {
-                        break;
                     }
                 } catch {
-                    // Market unavailable - skip silently and continue to next
+                    signal.confidenceScore *= 0.92;
+                    this.log('info', `${market.display_name}: AI unavailable, confidence adjusted to ${(signal.confidenceScore * 100).toFixed(1)}%`);
+                    if (signal.confidenceScore >= this.limits.minConfidenceThreshold) {
+                        await this.considerTrade(market, signal);
+                    }
                 }
             }
         } catch (error: any) {
@@ -407,7 +452,7 @@ export class AutoTraderEngine extends EventTarget {
             this.scanInFlight = false;
             if (this.isRunning && this.openTrades.size === 0 && this.state !== 'COOLDOWN') this.state = 'READY';
             if (this.stats.scanCount % 10 === 0) {
-                this.log('info', `Scan cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} markets checked, ${this.stats.signalsDetected} signals found, ${this.openTrades.size} open trades.`);
+                this.log('info', `Cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} scanned, ${this.stats.signalsDetected} signals, ${this.openTrades.size} open`);
             }
             this.emit();
         }
@@ -435,46 +480,53 @@ export class AutoTraderEngine extends EventTarget {
             return false;
         }
 
-        const proposalResponse = await this.apiInstance.send({
-            proposal: 1, amount: Number(stake.toFixed(2)), basis: 'stake',
-            contract_type: signal.contractType, currency: currencyOf(this.client),
-            duration: this.limits.contractDurationTicks, duration_unit: 't',
-            underlying_symbol: market.symbol,
-        });
+        const proposalRequest = buildProposal(
+            signal.contractType, stake, market.symbol,
+            this.limits.contractDurationTicks, currencyOf(this.client), signal.barrier,
+        );
+        const proposalResponse = await this.apiInstance.send(proposalRequest);
         const proposal = proposalResponse?.proposal;
         const ask = Number(proposal?.ask_price);
         const payout = Number(proposal?.payout);
-        // Conservative edge calculation: discount model probability by 15%
-        // to account for overconfidence bias in the technical + AI scoring
         const modelProbability = signal.confidenceScore * 0.85;
         const expectedEdge = (modelProbability * payout - ask) / Math.max(ask, Number.EPSILON);
         if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) ||
             expectedEdge < this.limits.minExpectedEdge) {
-            this.log('info', `Skipped ${market.display_name}: edge ${(expectedEdge * 100).toFixed(2)}% below threshold.`);
+            this.log('info', `Skipped ${market.display_name} ${signal.contractType}: edge ${(expectedEdge * 100).toFixed(2)}% below threshold.`);
             return false;
         }
 
         signal.expectedEdge = expectedEdge;
-        this.log('info', `Qualified ${market.display_name}: ${signal.contractType}, confidence ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
-        const contractId = await this.buyWithRetry(proposal.id, ask, market.symbol, signal.contractType);
+        this.log('info', `Qualified ${market.display_name}: ${signal.category} ${signal.contractType}, conf ${(modelProbability * 100).toFixed(1)}%, edge ${(expectedEdge * 100).toFixed(1)}%.`);
+        const contractId = await this.buyWithRetry(proposal.id, ask, market.symbol, signal.contractType, signal.barrier);
         if (!contractId) return false;
 
         this.stats.tradesOpened += 1;
         this.stats.lastTradeTime = Date.now();
+        this.incrementCategoryCount(signal.category);
         ledger.append({
             type: 'TRADE_OPEN',
             symbol: market.symbol,
-            message: `Opened ${market.display_name} ${signal.contractType} contract ${contractId}`,
+            message: `Opened ${market.display_name} ${signal.contractType} [${signal.category}] contract ${contractId}`,
             balanceBefore: balance,
             stake,
             contractId,
         });
-        this.log('success', `Opened ${market.display_name} (${market.symbol}) ${signal.contractType}, contract ${contractId}.`);
+        this.log('success', `Opened ${market.display_name} (${market.symbol}) ${signal.contractType} [${signal.category}], contract ${contractId}.`);
         this.watchContract(contractId, market.display_name, stake);
         return true;
     }
 
-    private async buyWithRetry(proposalId: string, price: number, symbol: string, contractType: ContractType): Promise<string> {
+    private incrementCategoryCount(category: TradeCategory) {
+        switch (category) {
+            case 'rise_fall': this.stats.riseFallTrades++; break;
+            case 'even_odd': this.stats.evenOddTrades++; break;
+            case 'over_under': this.stats.overUnderTrades++; break;
+            case 'matches_differs': this.stats.matchesDiffersTrades++; break;
+        }
+    }
+
+    private async buyWithRetry(proposalId: string, price: number, symbol: string, contractType: ContractType, barrier?: number | null): Promise<string> {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
                 const buy = await this.apiInstance!.send({ buy: proposalId, price });
@@ -485,12 +537,10 @@ export class AutoTraderEngine extends EventTarget {
             }
             if (attempt === 0) {
                 try {
-                    const refreshed = await this.apiInstance!.send({
-                        proposal: 1, amount: Number(price.toFixed(2)), basis: 'stake',
-                        contract_type: contractType, currency: currencyOf(this.client),
-                        duration: this.limits.contractDurationTicks, duration_unit: 't',
-                        underlying_symbol: symbol,
-                    });
+                    const refreshed = await this.apiInstance!.send(buildProposal(
+                        contractType, price, symbol, this.limits.contractDurationTicks,
+                        currencyOf(this.client), barrier,
+                    ));
                     const newProposal = refreshed?.proposal;
                     if (newProposal?.id && Number.isFinite(Number(newProposal.ask_price))) {
                         proposalId = newProposal.id;
