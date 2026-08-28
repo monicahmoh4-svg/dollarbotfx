@@ -36,6 +36,8 @@ export interface AnalysisSignal {
     direction: 'CALL' | 'PUT' | null;
     barrier: number | null;
     confidenceScore: number;
+    signalScore: number;
+    regime: string;
     expectedEdge: number;
     reason: string;
     category: TradeCategory;

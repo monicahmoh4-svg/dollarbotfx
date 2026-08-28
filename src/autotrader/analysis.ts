@@ -59,35 +59,51 @@ const emptyCat = (category: TradeCategory, reason: string, sampleSize = 0): Anal
 // ═══════════════════════════════════════════════════════
 export function classifyRegime(quotes: number[], decimals: number): MarketRegime {
     const q = finiteQuotes(quotes);
-    if (q.length < 200) return 'UNCLEAR';
-    const c = candles(q, 20);
-    const close = c.map((x) => x.close);
-    if (close.length < 30) return 'UNCLEAR';
+    if (q.length < 50) return 'UNCLEAR';
+    const n = q.length;
 
-    const emaFast = ema(close, 20);
-    const emaSlow = ema(close, 50);
+    // EMAs and slope scale with the window so behaviour is consistent for any lookback.
+    const emaFast = ema(q, Math.max(3, Math.floor(n / 8)));
+    const emaSlow = ema(q, Math.max(5, Math.floor(n / 3)));
     const f = emaFast[emaFast.length - 1];
     const s = emaSlow[emaSlow.length - 1];
-    const slopeFast = slope(close, 10);
-    const adxVal = adx(c, 14);
-    const bb = bollinger(close, 20, 2.0);
+    const slopeFast = slope(q, Math.max(5, Math.floor(n / 8)));
+
+    // Volatility measured as stdev of per-tick returns (scale-independent).
+    const rets: number[] = [];
+    for (let i = 1; i < q.length; i += 1) {
+        rets.push((q[i] - q[i - 1]) / Math.max(q[i - 1], 1e-9));
+    }
+    const vol = std(rets);
+
+    const bb = bollinger(q, Math.max(10, Math.floor(n / 5)), 2.0);
     const bbWidth = bb ? bb.width : 0;
-    const atrVal = atr(c, 14);
-    const recentVol = atrVal / (s || 1);
+
+    // Candles for ADX: target ~30 candles regardless of window length.
+    const cw = Math.max(1, Math.floor(n / 30));
+    const c = candles(q, cw);
+    const adxVal = c.length >= 4 ? adx(c, Math.min(14, c.length - 1)) : 0;
 
     const bullStructure = f > s && slopeFast > 0;
     const bearStructure = f < s && slopeFast < 0;
 
-    // High/low volatility measured relative to normal band width
-    if (recentVol > 0.004) return 'HIGH_VOLATILITY';
-    if (recentVol < 0.0008 && bbWidth < 0.0012) return 'LOW_VOLATILITY';
-    if (adxVal < 15 && Math.abs(f - s) / (s || 1) < 0.0015) return 'RANGE_BOUND';
+    // Calibrated to per-tick return stdev (~1.3e-4 on R_50).
+    if (vol > 0.00025) return 'HIGH_VOLATILITY';
+    if (vol < 0.00005) return 'LOW_VOLATILITY';
+    if (adxVal < 15 && Math.abs(f - s) / (s || 1) < 0.002) return 'RANGE_BOUND';
 
-    if (bullStructure && adxVal >= 25) return 'STRONG_BULL';
+    if (bullStructure && adxVal >= 20) return 'STRONG_BULL';
     if (bullStructure) return 'WEAK_BULL';
-    if (bearStructure && adxVal >= 25) return 'STRONG_BEAR';
+    if (bearStructure && adxVal >= 20) return 'STRONG_BEAR';
     if (bearStructure) return 'WEAK_BEAR';
     return 'UNCLEAR';
+}
+
+function std(values: number[]): number {
+    if (values.length === 0) return 0;
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / values.length;
+    return Math.sqrt(variance);
 }
 
 const finiteQuotes = (quotes: number[]) =>
@@ -254,8 +270,9 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     if (quotes.length < 500) return empty(`INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
 
     const regime = classifyRegime(quotes, 2);
-    // §31 No-forced-trade: do not attempt directional trades in unclear/dead regimes
-    if (regime === 'UNCLEAR' || regime === 'LOW_VOLATILITY') return empty(`REGIME_UNFAVORABLE:${regime}`, quotes.length);
+    // §31 No-forced-trade: only trade directional in CONFIRMED strong trends.
+    // (R_50 is mean-reverting; weak/choppy regimes are anti-predictive for momentum.)
+    if (regime !== 'STRONG_BULL' && regime !== 'STRONG_BEAR') return empty(`REGIME_UNFAVORABLE:${regime}`, quotes.length);
 
     const htf = candles(quotes, 20);
     const ltf = candles(quotes, 5);

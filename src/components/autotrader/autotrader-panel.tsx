@@ -79,7 +79,7 @@ function AutoTraderPanel() {
   const [btSymbol, setBtSymbol] = useState('R_50');
   const [btDuration, setBtDuration] = useState(5);
   const [btStake, setBtStake] = useState(2);
-  const [btLookback, setBtLookback] = useState(300);
+  const [btLookback, setBtLookback] = useState(1000);
   const [btSource, setBtSource] = useState<'stored' | 'fetch'>('stored');
   const [btHours, setBtHours] = useState(24);
   const [btReport, setBtReport] = useState<BacktestReport | null>(null);

@@ -66,11 +66,18 @@ export interface BacktestReport {
     bestCategory: TradeCategory | null;
 }
 
+// Realistic Deriv payout assumptions (profit / stake on a win):
+//  - rise/fall: ~0.90 return per win.
+//  - even/odd: ~50/50 → Deriv pays ~0.95, a structural house edge (negative EV).
+//  - over_under / matches_differs are "DIGITDIFF" (NOT-x) contracts: ~90% win
+//    probability but Deriv prices them with a LOW payout (~0.05-0.15), making them
+//    at best break-even. We model 0.10; without a live proposal this is the
+//    conservative, honest assumption that justifies the live gate filtering them.
 const PAYOUT_RATIO: Record<TradeCategory, number> = {
     rise_fall: 0.90,
     even_odd: 0.95,
-    over_under: 0.95,
-    matches_differs: 0.95,
+    over_under: 0.10,
+    matches_differs: 0.10,
 };
 
 const ANALYZERS: Record<TradeCategory, (w: number[], d: number) => AnalysisResult> = {
@@ -131,7 +138,7 @@ function isTradeable(result: AnalysisResult, category: TradeCategory, minConfide
 export function runBacktest(prices: number[], symbol: string, config: BacktestConfig = {}): BacktestReport {
     const durationTicks = config.durationTicks ?? 5;
     const stake = config.stake ?? 2;
-    const lookback = config.lookback ?? 300;
+    const lookback = config.lookback ?? 1000;
     const step = Math.max(1, config.step ?? 1);
     const minConfidence = config.minConfidence ?? 0.70;
     const useLiveGate = config.useLiveGate ?? false;
@@ -223,13 +230,17 @@ export interface WalkForwardReport {
 }
 
 export function walkForward(prices: number[], symbol: string, folds = 5, config: BacktestConfig = {}): WalkForwardReport {
-    const foldSize = Math.floor(prices.length / folds);
+    const lookback = config.lookback ?? 300;
+    // Each fold must be large enough to hold trading windows (>= ~1.5x lookback).
+    const minFold = lookback + Math.floor(lookback / 2);
+    const actualFolds = Math.max(1, Math.min(folds, Math.floor(prices.length / minFold)));
+    const foldSize = Math.floor(prices.length / actualFolds);
     const report: WalkForwardReport = {
         folds: [],
         profitableFoldCount: { rise_fall: 0, even_odd: 0, over_under: 0, matches_differs: 0 },
-        totalFolds: folds,
+        totalFolds: actualFolds,
     };
-    for (let f = 0; f < folds; f += 1) {
+    for (let f = 0; f < actualFolds; f += 1) {
         const start = f * foldSize;
         const end = f === folds - 1 ? prices.length : (f + 1) * foldSize;
         const slice = prices.slice(start, end);
@@ -321,15 +332,17 @@ export async function fetchDerivHistory(
     symbol: string,
     startEpoch: number,
     endEpoch: number,
-    maxTicks = 20000,
+    maxTicks = 15000,
 ): Promise<HistoricalTick[]> {
-    const ticks: HistoricalTick[] = [];
-    let cursor = startEpoch;
-    while (ticks.length < maxTicks && cursor < endEpoch) {
+    // Paginate backward from endEpoch so we can accumulate more than one
+    // 5000-tick batch (Deriv caps a single response at 5000 ticks).
+    const batches: HistoricalTick[][] = [];
+    let cursorEnd = endEpoch;
+    while (batches.length < maxTicks && cursorEnd > startEpoch) {
         const res = await sendFn({
             ticks_history: symbol,
-            start: cursor,
-            end: endEpoch,
+            start: startEpoch,
+            end: cursorEnd,
             count: 5000,
             style: 'ticks',
             adjust_start_time: 1,
@@ -337,13 +350,19 @@ export async function fetchDerivHistory(
         const prices = res?.history?.prices;
         const times = res?.history?.times;
         if (!Array.isArray(prices) || prices.length === 0) break;
+        const batch: HistoricalTick[] = [];
         for (let i = 0; i < prices.length; i += 1) {
             const price = Number(prices[i]);
-            const time = Array.isArray(times) ? Number(times[i]) : cursor + i;
-            if (Number.isFinite(price)) ticks.push({ time, price });
+            const time = Array.isArray(times) ? Number(times[i]) : cursorEnd - (prices.length - i);
+            if (Number.isFinite(price)) batch.push({ time, price });
         }
+        batches.push(batch);
         if (!Array.isArray(times) || times.length < 5000) break;
-        cursor = Number(times[times.length - 1]) + 1;
+        const firstTime = Number(times[0]);
+        if (firstTime <= startEpoch) break;
+        cursorEnd = firstTime - 1;
     }
-    return ticks;
+    // Batches were collected newest-first; concatenate oldest→newest.
+    const ticks = batches.reverse().flat();
+    return ticks.length > maxTicks ? ticks.slice(ticks.length - maxTicks) : ticks;
 }
