@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { observer } from 'mobx-react-lite';
 import { useStore } from '@/hooks/useStore';
 import { useAutoTraderUI } from '@/hooks/useAutoTraderUI';
-import { autoTrader, TRADE_CATEGORIES, SYNTHETIC_INDICES } from '@/autotrader/engine';
+import { autoTrader, TRADE_CATEGORIES } from '@/autotrader/engine';
 
 function getSessionCurrency(client: any): string {
   if (!client) return 'USD';
@@ -22,10 +22,12 @@ const styles = `
 .at-status-dot.trading { background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.2); animation: atPulse 2s infinite; }
 .at-status-dot.halted { background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2); }
 .at-status-dot.ready { background: #3b82f6; }
+.at-status-dot.cooldown { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.2); }
 .at-close { border: none; border-radius: 8px; padding: 8px 12px; background: rgba(255,255,255,0.1); color: #e2e8f0; font-weight: 600; cursor: pointer; transition: background 0.15s; }
 .at-close:hover { background: rgba(255,255,255,0.2); }
 .at-banner { margin: 16px 24px 0; background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd; border-radius: 8px; padding: 12px 16px; font-size: 13px; line-height: 1.5; display: flex; align-items: center; gap: 8px; }
 .at-banner.warn { background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); color: #fca5a5; }
+.at-banner.info { background: rgba(34, 197, 94, 0.1); border-color: rgba(34, 197, 94, 0.3); color: #86efac; }
 .at-tabbar { display: flex; gap: 4px; margin: 20px 24px 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
 .at-tab { border: none; background: none; color: #94a3b8; font-weight: 600; font-size: 13px; padding: 10px 16px; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
 .at-tab.active { color: #f8fafc; border-color: #3b82f6; }
@@ -53,9 +55,6 @@ const styles = `
 .at-logs { max-height: 350px; overflow-y: auto; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; font-size: 12px; font-family: ui-monospace, monospace; }
 .at-log-line { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.05); word-break: break-word; display: flex; gap: 8px; }
 .at-log-line:last-child { border-bottom: none; margin-bottom: 0; }
-.at-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 700; }
-.at-badge-ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
-.at-badge-warn { background: rgba(239, 68, 68, 0.15); color: #f87171; }
 .at-progress-bar { width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden; margin-top: 8px; }
 .at-progress-fill { height: 100%; background: linear-gradient(90deg, #22c55e, #16a34a); transition: width 0.3s ease; }
 .at-progress-fill.danger { background: linear-gradient(90deg, #ef4444, #dc2626); }
@@ -69,7 +68,7 @@ function AutoTraderPanel() {
   const { open, hide } = useAutoTraderUI();
   const store = useStore();
   const client = store?.client;
-  
+
   const [state, setState] = useState(autoTrader.getState());
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [limits, setLimits] = useState(state.limits || {});
@@ -93,10 +92,10 @@ function AutoTraderPanel() {
 
   const handleStart = async () => {
     if (!isLoggedIn) {
-      alert('⚠️ Please log in to your Deriv account first.');
+      alert('Please log in to your Deriv account first.');
       return;
     }
-    
+
     let apiInstance = null;
     if (store) {
       const candidates = [
@@ -114,7 +113,7 @@ function AutoTraderPanel() {
         }
       }
     }
-    
+
     await autoTrader.start({ client, apiInstance });
     setActiveTab('dashboard');
   };
@@ -126,7 +125,7 @@ function AutoTraderPanel() {
   const handleSaveLimits = () => {
     if ((autoTrader as any).updateLimits) {
       (autoTrader as any).updateLimits(limits);
-      alert('✅ Risk limits updated successfully.');
+      alert('Risk limits updated successfully.');
     } else {
       localStorage.setItem('bot-risk-limits', JSON.stringify(limits));
       alert('Risk limits saved to local storage. Restart the bot to apply.');
@@ -134,17 +133,18 @@ function AutoTraderPanel() {
   };
 
   const isHalted = state.state === 'HALTED';
+  const isCooldown = state.state === 'COOLDOWN';
   const isTrading = state.state === 'TRADING' || state.state === 'READY';
-  const dotClass = isHalted ? 'halted' : isTrading ? 'trading' : 'ready';
+  const dotClass = isHalted ? 'halted' : isCooldown ? 'cooldown' : isTrading ? 'trading' : 'ready';
 
   const sessionDuration = state.stats?.sessionDurationMs || 0;
   const sessionMinutes = Math.floor(sessionDuration / 60000);
   const sessionSeconds = Math.floor((sessionDuration % 60000) / 1000);
-  const maxSessionMinutes = Math.floor((limits.maxSessionDurationMs || 14400000) / 60000);
-  const sessionProgress = Math.min(100, (sessionDuration / (limits.maxSessionDurationMs || 14400000)) * 100);
+  const maxSessionMinutes = Math.floor((limits.maxSessionDurationMs || 86400000) / 60000);
+  const sessionProgress = Math.min(100, (sessionDuration / (limits.maxSessionDurationMs || 86400000)) * 100);
 
-  const profitProgress = Math.min(100, ((state.stats?.net || 0) / (limits.targetProfit || 100)) * 100);
-  const lossProgress = Math.min(100, (Math.abs(state.stats?.dailyNet || 0) / (limits.maxDailyLoss || 50)) * 100);
+  const profitProgress = Math.min(100, ((state.stats?.net || 0) / (limits.targetProfit || 50)) * 100);
+  const lossProgress = Math.min(100, (Math.abs(state.stats?.dailyNet || 0) / (limits.maxDailyLoss || 20)) * 100);
 
   return (
     <div className='at-overlay' onClick={hide}>
@@ -154,30 +154,32 @@ function AutoTraderPanel() {
           <div>
             <h2 className='at-title'>
               <span className={`at-status-dot ${dotClass}`} />
-              Quantitative Trading Engine
+              Autonomous Trading Engine
             </h2>
             <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-              Live market streaming, multi-factor analysis, and strict risk enforcement.
+              Continuously scanning all Deriv markets with multi-factor analysis and strict risk enforcement.
             </div>
           </div>
           <button className='at-close' onClick={hide}>Close</button>
         </div>
 
-        <div className={`at-banner ${isHalted ? 'warn' : ''}`}>
+        <div className={`at-banner ${isHalted ? 'warn' : isCooldown ? '' : isLoggedIn ? 'info' : ''}`} style={isCooldown ? { background: 'rgba(245, 158, 11, 0.1)', borderColor: 'rgba(245, 158, 11, 0.3)', color: '#fcd34d' } : undefined}>
           {isHalted ? (
-            <>🚨 <b>KILL SWITCH ACTIVE:</b> Trading halted due to risk limits. Review logs.</>
+            <>Trading halted due to risk limits. Review logs.</>
+          ) : isCooldown ? (
+            <>Cooldown active. Bot will resume scanning automatically...</>
           ) : isLoggedIn ? (
-            <>✓ Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b> ({isVirtualAccount ? 'DEMO' : 'REAL'} | {sessionCurrency})</>
+            <>Logged in as <b style={{ color: '#fff' }}>{sessionLoginId}</b> ({isVirtualAccount ? 'DEMO' : 'REAL'} | {sessionCurrency}) | Markets: <b style={{ color: '#fff' }}>{state.marketsCount || 0}</b> active</>
           ) : (
-            <>⚠️ Not logged into a Deriv account. Please log in first to enable trading.</>
+            <>Not logged into a Deriv account. Please log in first to enable trading.</>
           )}
         </div>
 
         <div className='at-tabbar'>
           {(['dashboard', 'config', 'logs'] as Tab[]).map(id => (
-            <button 
-              key={id} 
-              className={`at-tab ${activeTab === id ? 'active' : ''}`} 
+            <button
+              key={id}
+              className={`at-tab ${activeTab === id ? 'active' : ''}`}
               onClick={() => setActiveTab(id)}
             >
               {id.charAt(0).toUpperCase() + id.slice(1)}
@@ -188,11 +190,11 @@ function AutoTraderPanel() {
         <div className='at-body'>
           {activeTab === 'dashboard' && (
             <>
-              <div className='at-section-title'>System Status & Reconciliation</div>
+              <div className='at-section-title'>System Status</div>
               <div className='at-grid'>
                 <div className='at-field'>
                   <label>Engine State</label>
-                  <div style={{ fontSize: '14px', fontWeight: 700, color: isHalted ? '#f87171' : '#4ade80' }}>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: isHalted ? '#f87171' : isCooldown ? '#fcd34d' : '#4ade80' }}>
                     {state.state}
                   </div>
                 </div>
@@ -205,7 +207,19 @@ function AutoTraderPanel() {
                 <div className='at-field'>
                   <label>Balance Drift</label>
                   <div style={{ fontSize: '14px', fontWeight: 700, color: (state.stats?.balanceDifference || 0) > 0.5 ? '#f87171' : '#4ade80' }}>
-                    {state.stats?.balanceDifference != null ? `$${state.stats.balanceDifference.toFixed(2)}` : 'N/A'}
+                    {state.stats?.balanceDifference != null ? `${sessionCurrency} ${state.stats.balanceDifference.toFixed(2)}` : 'N/A'}
+                  </div>
+                </div>
+                <div className='at-field'>
+                  <label>Markets Scanned</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#3b82f6' }}>
+                    {state.stats?.marketsScanned || 0}
+                  </div>
+                </div>
+                <div className='at-field'>
+                  <label>Signals Detected</label>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: '#a855f7' }}>
+                    {state.stats?.signalsDetected || 0}
                   </div>
                 </div>
                 <div className='at-field'>
@@ -224,25 +238,25 @@ function AutoTraderPanel() {
                 <div className='at-stat-card'>
                   <div className='at-stat-label'>Net P/L</div>
                   <div className='at-stat-value' style={{ color: (state.stats?.net || 0) >= 0 ? '#4ade80' : '#f87171' }}>
-                    ${(state.stats?.net || 0).toFixed(2)}
+                    {(state.stats?.net || 0).toFixed(2)}
                   </div>
                   <div className='at-progress-bar'>
                     <div className='at-progress-fill' style={{ width: `${profitProgress}%` }} />
                   </div>
                   <div style={{ fontSize: '10px', color: '#64748b', marginTop: '4px' }}>
-                    Target: ${limits.targetProfit || 100}
+                    Target: {limits.targetProfit || 50}
                   </div>
                 </div>
                 <div className='at-stat-card'>
                   <div className='at-stat-label'>Daily P/L</div>
                   <div className='at-stat-value' style={{ color: (state.stats?.dailyNet || 0) >= 0 ? '#4ade80' : '#f87171' }}>
-                    ${(state.stats?.dailyNet || 0).toFixed(2)}
+                    {(state.stats?.dailyNet || 0).toFixed(2)}
                   </div>
                   <div className='at-progress-bar'>
                     <div className={`at-progress-fill ${(state.stats?.dailyNet || 0) < 0 ? 'danger' : ''}`} style={{ width: `${lossProgress}%` }} />
                   </div>
                   <div style={{ fontSize: '10px', color: '#64748b', marginTop: '4px' }}>
-                    Stop Loss: -${limits.maxDailyLoss || 50}
+                    Stop Loss: -{limits.maxDailyLoss || 20}
                   </div>
                 </div>
                 <div className='at-stat-card'>
@@ -258,8 +272,16 @@ function AutoTraderPanel() {
                   <div className='at-stat-value'>{state.stats?.lossStreak || 0} / {limits.maxConsecutiveLosses || 5}</div>
                 </div>
                 <div className='at-stat-card'>
-                  <div className='at-stat-label'>Trades</div>
-                  <div className='at-stat-value'>{state.stats?.tradesOpened || 0} / {limits.maxTradesPerSession || 100}</div>
+                  <div className='at-stat-label'>Trades Opened</div>
+                  <div className='at-stat-value'>{state.stats?.tradesOpened || 0} / {limits.maxTradesPerSession || 200}</div>
+                </div>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Scan Cycles</div>
+                  <div className='at-stat-value' style={{ color: '#3b82f6' }}>{state.stats?.scanCount || 0}</div>
+                </div>
+                <div className='at-stat-card'>
+                  <div className='at-stat-label'>Active Contracts</div>
+                  <div className='at-stat-value' style={{ color: '#f59e0b' }}>{state.stats?.activeContracts || 0} / {limits.maxConcurrentTrades || 3}</div>
                 </div>
               </div>
             </>
@@ -271,22 +293,22 @@ function AutoTraderPanel() {
               <div className='at-grid'>
                 <div className='at-field'>
                   <label>Max Stake per Trade ({sessionCurrency})</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    step='0.1' 
-                    value={limits.maxStakePerTrade ?? 1.0} 
-                    onChange={e => setLimits({ ...limits, maxStakePerTrade: Number(e.target.value) })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    step='0.1'
+                    value={limits.maxStakePerTrade ?? 2.0}
+                    onChange={e => setLimits({ ...limits, maxStakePerTrade: Number(e.target.value) })}
                   />
                 </div>
                 <div className='at-field'>
                   <label>Max Risk per Trade (%)</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    step='0.1' 
-                    value={(limits.maxPercentRiskPerTrade ?? 0.02) * 100} 
-                    onChange={e => setLimits({ ...limits, maxPercentRiskPerTrade: Number(e.target.value) / 100 })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    step='0.1'
+                    value={(limits.maxPercentRiskPerTrade ?? 0.01) * 100}
+                    onChange={e => setLimits({ ...limits, maxPercentRiskPerTrade: Number(e.target.value) / 100 })}
                   />
                 </div>
               </div>
@@ -295,29 +317,29 @@ function AutoTraderPanel() {
               <div className='at-grid'>
                 <div className='at-field'>
                   <label>Max Daily Loss ({sessionCurrency})</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    value={limits.maxDailyLoss ?? 50} 
-                    onChange={e => setLimits({ ...limits, maxDailyLoss: Number(e.target.value) })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    value={limits.maxDailyLoss ?? 20}
+                    onChange={e => setLimits({ ...limits, maxDailyLoss: Number(e.target.value) })}
                   />
                 </div>
                 <div className='at-field'>
                   <label>Max Consecutive Losses</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    value={limits.maxConsecutiveLosses ?? 5} 
-                    onChange={e => setLimits({ ...limits, maxConsecutiveLosses: Number(e.target.value) })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    value={limits.maxConsecutiveLosses ?? 5}
+                    onChange={e => setLimits({ ...limits, maxConsecutiveLosses: Number(e.target.value) })}
                   />
                 </div>
                 <div className='at-field'>
                   <label>Cooldown After Loss (seconds)</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    value={(limits.cooldownAfterLossMs ?? 10000) / 1000} 
-                    onChange={e => setLimits({ ...limits, cooldownAfterLossMs: Number(e.target.value) * 1000 })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    value={(limits.cooldownAfterLossMs ?? 30000) / 1000}
+                    onChange={e => setLimits({ ...limits, cooldownAfterLossMs: Number(e.target.value) * 1000 })}
                   />
                 </div>
               </div>
@@ -326,21 +348,11 @@ function AutoTraderPanel() {
               <div className='at-grid'>
                 <div className='at-field'>
                   <label>Target Profit ({sessionCurrency})</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    value={limits.targetProfit ?? 100} 
-                    onChange={e => setLimits({ ...limits, targetProfit: Number(e.target.value) })} 
-                  />
-                </div>
-                <div className='at-field'>
-                  <label>Min Profit per Trade ({sessionCurrency})</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    step='0.1' 
-                    value={limits.targetProfitPerTrade ?? 0.50} 
-                    onChange={e => setLimits({ ...limits, targetProfitPerTrade: Number(e.target.value) })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    value={limits.targetProfit ?? 50}
+                    onChange={e => setLimits({ ...limits, targetProfit: Number(e.target.value) })}
                   />
                 </div>
               </div>
@@ -349,21 +361,21 @@ function AutoTraderPanel() {
               <div className='at-grid'>
                 <div className='at-field'>
                   <label>Max Trades per Session</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    value={limits.maxTradesPerSession ?? 100} 
-                    onChange={e => setLimits({ ...limits, maxTradesPerSession: Number(e.target.value) })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    value={limits.maxTradesPerSession ?? 200}
+                    onChange={e => setLimits({ ...limits, maxTradesPerSession: Number(e.target.value) })}
                   />
                 </div>
                 <div className='at-field'>
                   <label>Max Session Duration (hours)</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    step='0.5' 
-                    value={(limits.maxSessionDurationMs ?? 14400000) / 3600000} 
-                    onChange={e => setLimits({ ...limits, maxSessionDurationMs: Number(e.target.value) * 3600000 })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    step='0.5'
+                    value={(limits.maxSessionDurationMs ?? 86400000) / 3600000}
+                    onChange={e => setLimits({ ...limits, maxSessionDurationMs: Number(e.target.value) * 3600000 })}
                   />
                 </div>
               </div>
@@ -372,44 +384,55 @@ function AutoTraderPanel() {
               <div className='at-grid'>
                 <div className='at-field'>
                   <label>Min Confidence Threshold (%)</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    step='1' 
-                    min='50' 
-                    max='95' 
-                    value={(limits.minConfidenceThreshold ?? 0.60) * 100} 
-                    onChange={e => setLimits({ ...limits, minConfidenceThreshold: Number(e.target.value) / 100 })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    step='1'
+                    min='50'
+                    max='95'
+                    value={(limits.minConfidenceThreshold ?? 0.70) * 100}
+                    onChange={e => setLimits({ ...limits, minConfidenceThreshold: Number(e.target.value) / 100 })}
                   />
                 </div>
                 <div className='at-field'>
                   <label>Max Concurrent Trades</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    value={limits.maxConcurrentTrades ?? 1} 
-                    onChange={e => setLimits({ ...limits, maxConcurrentTrades: Number(e.target.value) })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    value={limits.maxConcurrentTrades ?? 3}
+                    onChange={e => setLimits({ ...limits, maxConcurrentTrades: Number(e.target.value) })}
                   />
                 </div>
                 <div className='at-field'>
                   <label>Max Balance Tolerance ({sessionCurrency})</label>
-                  <input 
-                    className='at-input' 
-                    type='number' 
-                    step='0.1' 
-                    value={limits.maxBalanceTolerance ?? 0.50} 
-                    onChange={e => setLimits({ ...limits, maxBalanceTolerance: Number(e.target.value) })} 
+                  <input
+                    className='at-input'
+                    type='number'
+                    step='0.1'
+                    value={limits.maxBalanceTolerance ?? 0.10}
+                    onChange={e => setLimits({ ...limits, maxBalanceTolerance: Number(e.target.value) })}
+                  />
+                </div>
+                <div className='at-field'>
+                  <label>Contract Duration (ticks)</label>
+                  <input
+                    className='at-input'
+                    type='number'
+                    min='1'
+                    max='10'
+                    value={limits.contractDurationTicks ?? 5}
+                    onChange={e => setLimits({ ...limits, contractDurationTicks: Number(e.target.value) })}
                   />
                 </div>
               </div>
 
               <div style={{ marginTop: '24px', display: 'flex', justifyContent: 'flex-end' }}>
                 <button className='at-button at-button-secondary' onClick={handleSaveLimits}>
-                  💾 Save Risk Configuration
+                  Save Risk Configuration
                 </button>
               </div>
               <div style={{ fontSize: '11px', color: '#64748b', marginTop: '8px' }}>
-                * Changes take effect immediately. The bot will automatically stop when any limit is reached.
+                Changes take effect immediately. The bot will automatically stop when any limit is reached.
               </div>
             </>
           )}
@@ -422,11 +445,11 @@ function AutoTraderPanel() {
                   <div style={{ color: '#64748b', textAlign: 'center', padding: '20px' }}>No logs generated yet.</div>
                 ) : (
                   (state.logs || []).map((log: any, index: number) => (
-                    <div 
-                      key={`${log.time}-${index}`} 
-                      className='at-log-line' 
-                      style={{ 
-                        color: log.level === 'error' ? '#f87171' : log.level === 'warn' ? '#fbbf24' : log.level === 'success' ? '#4ade80' : '#cbd5e1' 
+                    <div
+                      key={`${log.time}-${index}`}
+                      className='at-log-line'
+                      style={{
+                        color: log.level === 'error' ? '#f87171' : log.level === 'warn' ? '#fbbf24' : log.level === 'success' ? '#4ade80' : '#cbd5e1'
                       }}
                     >
                       <span style={{ opacity: 0.6 }}>[{log.time}]</span>
@@ -442,16 +465,16 @@ function AutoTraderPanel() {
 
         <div className='at-actions'>
           <div style={{ fontSize: '12px', color: '#94a3b8' }}>
-            Markets: <b>{SYNTHETIC_INDICES.length} Real Markets</b> • Categories: <b>{TRADE_CATEGORIES.length} Active</b>
+            Markets: <b>{state.marketsCount || 0} Active</b> &bull; Categories: <b>{TRADE_CATEGORIES.length}</b> &bull; Contracts: <b>{state.stats?.activeContracts || 0}/{limits.maxConcurrentTrades || 3}</b>
           </div>
           <div style={{ display: 'flex', gap: '12px' }}>
             {!state.isRunning ? (
               <button className='at-button at-button-primary' onClick={handleStart}>
-                ▶ Start Engine
+                Start Engine
               </button>
             ) : (
               <button className='at-button at-button-danger' onClick={handleStop}>
-                ⏹ Stop Engine
+                Stop Engine
               </button>
             )}
           </div>
