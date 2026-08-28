@@ -110,6 +110,8 @@ const DEFAULT_LIMITS: RiskLimits = {
     maxBalanceTolerance: 0.10,
     minConfidenceThreshold: 0.70,
     minExpectedEdge: 0.03,
+    minSignalScore: 62, // §11: normalized 0-100 gate (digit categories capped at 55 → won't pass)
+    maxCategoryDrawdown: 10, // §33: auto-disable a category if its realized loss exceeds this
     contractDurationTicks: 5,
 };
 
@@ -162,7 +164,7 @@ export class AutoTraderEngine extends EventTarget {
     private reconciliationTimer: ReturnType<typeof setInterval> | null = null;
     private sessionTimer: ReturnType<typeof setInterval> | null = null;
     private scanInFlight = false;
-    private openTrades = new Map<string, { stake: number; timer: ReturnType<typeof setInterval> }>();
+    private openTrades = new Map<string, { stake: number; timer: ReturnType<typeof setInterval>; category: TradeCategory }>();
     private recentlyTraded = new Map<string, number>(); // symbol -> expiry timestamp
     private startingBalance: number | null = null;
     private realizedNet = 0;
@@ -179,6 +181,13 @@ export class AutoTraderEngine extends EventTarget {
         sessionDurationMs: 0, lastTradeTime: null, lastLossTime: null,
         cooldownUntil: 0, marketsScanned: 0, signalsDetected: 0,
         riseFallTrades: 0, evenOddTrades: 0, overUnderTrades: 0, matchesDiffersTrades: 0,
+        realizedPnl: 0, reservedStake: 0, availableBalance: 0, regime: 'UNCLEAR',
+        categoryStats: {
+            rise_fall: { trades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0, expectancy: 0, disabled: false, lastUpdated: 0 },
+            even_odd: { trades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0, expectancy: 0, disabled: false, lastUpdated: 0 },
+            over_under: { trades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0, expectancy: 0, disabled: false, lastUpdated: 0 },
+            matches_differs: { trades: 0, wins: 0, losses: 0, grossWin: 0, grossLoss: 0, expectancy: 0, disabled: false, lastUpdated: 0 },
+        },
     };
 
     constructor() {
@@ -404,10 +413,18 @@ export class AutoTraderEngine extends EventTarget {
                     const decimals = inferDecimalsFromQuotes(quotes);
                     const result = analyzeBestSignal(quotes, decimals);
                     this.stats.marketsScanned += 1;
+                    // Track the prevailing regime of the most recent analyzed market
+                    this.stats.regime = result.regime;
 
                     if (result.signalStrength === 'NONE' || !result.contractType) continue;
                     if (result.signalStrength === 'WEAK') continue;
                     if (result.confidence < this.limits.minConfidenceThreshold) continue;
+
+                    // §11/§31: normalized signal-score gate (digit categories capped at 55 → filtered)
+                    if (result.signalScore < this.limits.minSignalScore) continue;
+
+                    // §33: skip categories auto-disabled due to negative expectancy
+                    if (this.stats.categoryStats[result.category].disabled) continue;
 
                     if (result.category === 'rise_fall') {
                         if (!result.htfAgreement || !result.ltfAgreement) continue;
@@ -426,9 +443,11 @@ export class AutoTraderEngine extends EventTarget {
                         direction: result.direction,
                         barrier: result.barrier,
                         confidenceScore: result.confidence,
+                        signalScore: result.signalScore,
                         expectedEdge: 0,
                         reason: result.reason,
                         category: result.category,
+                        regime: result.regime,
                         consecutiveStreak: result.consecutiveAbove,
                     };
 
@@ -488,6 +507,8 @@ export class AutoTraderEngine extends EventTarget {
     private async considerTrade(market: MarketInfo, signal: AnalysisSignal) {
         if (!signal.contractType || !this.apiInstance || !this.stats.isBalanceHealthy) return false;
         const balance = this.stats.derivBalance || 0;
+        // §14 NO MARTINGALE: stake is strictly fixed-fractional of verified balance.
+        // It is NEVER multiplied by lossStreak or previous results.
         const stake = Math.min(this.limits.maxStakePerTrade, balance * this.limits.maxPercentRiskPerTrade);
         if (!Number.isFinite(stake) || stake <= 0) return false;
 
@@ -554,7 +575,7 @@ export class AutoTraderEngine extends EventTarget {
             contractId,
         });
         this.log('success', `Opened ${market.display_name} (${market.symbol}) ${signal.contractType} [${signal.contractLabel}], contract ${contractId}.`);
-        this.watchContract(contractId, market.display_name, stake);
+        this.watchContract(contractId, market.display_name, stake, signal.category);
         return true;
     }
 
@@ -594,7 +615,7 @@ export class AutoTraderEngine extends EventTarget {
         return '';
     }
 
-    private watchContract(contractId: string, market: string, stake: number) {
+    private watchContract(contractId: string, market: string, stake: number, category: TradeCategory) {
         const timer = setInterval(async () => {
             try {
                 if (!this.apiInstance || !this.isRunning) {
@@ -615,6 +636,26 @@ export class AutoTraderEngine extends EventTarget {
                 this.realizedNet += profit;
                 this.stats.net = this.realizedNet;
                 this.stats.dailyNet = this.realizedNet;
+                this.stats.realizedPnl = this.realizedNet;
+
+                // §16/§33: update per-category performance and auto-disable on deterioration
+                const cs = this.stats.categoryStats[category];
+                cs.trades += 1;
+                if (profit > 0) {
+                    cs.wins += 1;
+                    cs.grossWin += profit;
+                } else {
+                    cs.losses += 1;
+                    cs.grossLoss += Math.abs(profit);
+                }
+                const total = cs.wins + cs.losses;
+                cs.expectancy = total > 0 ? (cs.grossWin - cs.grossLoss) / total : 0;
+                cs.lastUpdated = Date.now();
+                if (!cs.disabled && cs.trades >= 8 && (cs.expectancy < 0 || (cs.grossLoss - cs.grossWin) > this.limits.maxCategoryDrawdown)) {
+                    cs.disabled = true;
+                    this.log('warn', `STRATEGY_DISABLED: ${category} expectancy=${cs.expectancy.toFixed(2)}, drawdown=${(cs.grossLoss - cs.grossWin).toFixed(2)} exceeds ${this.limits.maxCategoryDrawdown}.`);
+                    ledger.append({ type: 'HALT', symbol: 'ALL', message: `Strategy ${category} auto-disabled (negative expectancy).` });
+                }
 
                 if (profit > 0) {
                     this.stats.wins += 1;
@@ -651,7 +692,7 @@ export class AutoTraderEngine extends EventTarget {
                 this.openTrades.delete(contractId);
             }
         }, 2_000);
-        this.openTrades.set(contractId, { stake, timer });
+        this.openTrades.set(contractId, { stake, timer, category });
     }
 
     private async synchronizeBalance() {
@@ -666,6 +707,10 @@ export class AutoTraderEngine extends EventTarget {
             const expected = this.startingBalance + this.realizedNet - reserved;
             this.stats.derivBalance = balance;
             this.stats.balanceDifference = Math.abs(expected - balance);
+            // §2: explicit balance-state separation
+            this.stats.reservedStake = reserved; // RESERVED_STAKE (open exposure)
+            this.stats.realizedPnl = this.realizedNet; // REALIZED_PNL
+            this.stats.availableBalance = Math.max(0, balance - reserved); // AVAILABLE_BALANCE
 
             const tolerance = this.limits.maxBalanceTolerance;
             if (this.stats.balanceDifference <= tolerance) {

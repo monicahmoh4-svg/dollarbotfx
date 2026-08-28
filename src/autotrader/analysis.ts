@@ -1,6 +1,9 @@
 export type TradeCategory = 'rise_fall' | 'even_odd' | 'over_under' | 'matches_differs';
 export type ContractType = 'CALL' | 'PUT' | 'DIGITEVEN' | 'DIGITODD' | 'DIGITMATCH' | 'DIGITDIFF';
 export type SignalStrength = 'STRONG' | 'MODERATE' | 'WEAK' | 'NONE';
+export type MarketRegime =
+    | 'STRONG_BULL' | 'WEAK_BULL' | 'STRONG_BEAR' | 'WEAK_BEAR'
+    | 'RANGE_BOUND' | 'HIGH_VOLATILITY' | 'LOW_VOLATILITY' | 'UNCLEAR';
 
 export interface AnalysisResult {
     category: TradeCategory;
@@ -9,6 +12,7 @@ export interface AnalysisResult {
     direction: 'CALL' | 'PUT' | null;
     barrier: number | null;
     confidence: number;
+    signalScore: number; // §11: normalized 0-100
     estimatedWinProbability: number;
     volatility: number;
     sampleSize: number;
@@ -19,6 +23,7 @@ export interface AnalysisResult {
     trendAlignment: boolean;
     consecutiveAbove: number;
     digitAboveThreshold: number;
+    regime: MarketRegime;
 }
 
 type Candle = { open: number; high: number; low: number; close: number };
@@ -30,6 +35,7 @@ const empty = (reason: string, sampleSize = 0): AnalysisResult => ({
     direction: null,
     barrier: null,
     confidence: 0,
+    signalScore: 0,
     estimatedWinProbability: 0.5,
     volatility: 0,
     sampleSize,
@@ -40,12 +46,49 @@ const empty = (reason: string, sampleSize = 0): AnalysisResult => ({
     trendAlignment: false,
     consecutiveAbove: 0,
     digitAboveThreshold: 0,
+    regime: 'UNCLEAR',
 });
 
 const emptyCat = (category: TradeCategory, reason: string, sampleSize = 0): AnalysisResult => ({
     ...empty(reason, sampleSize),
     category,
 });
+
+// ═══════════════════════════════════════════════════════
+// MARKET REGIME CLASSIFIER (MASTER PROMPT §5)
+// ═══════════════════════════════════════════════════════
+export function classifyRegime(quotes: number[], decimals: number): MarketRegime {
+    const q = finiteQuotes(quotes);
+    if (q.length < 200) return 'UNCLEAR';
+    const c = candles(q, 20);
+    const close = c.map((x) => x.close);
+    if (close.length < 30) return 'UNCLEAR';
+
+    const emaFast = ema(close, 20);
+    const emaSlow = ema(close, 50);
+    const f = emaFast[emaFast.length - 1];
+    const s = emaSlow[emaSlow.length - 1];
+    const slopeFast = slope(close, 10);
+    const adxVal = adx(c, 14);
+    const bb = bollinger(close, 20, 2.0);
+    const bbWidth = bb ? bb.width : 0;
+    const atrVal = atr(c, 14);
+    const recentVol = atrVal / (s || 1);
+
+    const bullStructure = f > s && slopeFast > 0;
+    const bearStructure = f < s && slopeFast < 0;
+
+    // High/low volatility measured relative to normal band width
+    if (recentVol > 0.004) return 'HIGH_VOLATILITY';
+    if (recentVol < 0.0008 && bbWidth < 0.0012) return 'LOW_VOLATILITY';
+    if (adxVal < 15 && Math.abs(f - s) / (s || 1) < 0.0015) return 'RANGE_BOUND';
+
+    if (bullStructure && adxVal >= 25) return 'STRONG_BULL';
+    if (bullStructure) return 'WEAK_BULL';
+    if (bearStructure && adxVal >= 25) return 'STRONG_BEAR';
+    if (bearStructure) return 'WEAK_BEAR';
+    return 'UNCLEAR';
+}
 
 const finiteQuotes = (quotes: number[]) =>
     quotes.filter((quote) => Number.isFinite(quote) && quote > 0);
@@ -210,6 +253,10 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     const quotes = finiteQuotes(input);
     if (quotes.length < 500) return empty(`INSUFFICIENT_TICKS: ${quotes.length}`, quotes.length);
 
+    const regime = classifyRegime(quotes, 2);
+    // §31 No-forced-trade: do not attempt directional trades in unclear/dead regimes
+    if (regime === 'UNCLEAR' || regime === 'LOW_VOLATILITY') return empty(`REGIME_UNFAVORABLE:${regime}`, quotes.length);
+
     const htf = candles(quotes, 20);
     const ltf = candles(quotes, 5);
     const htf_close = htf.map((c) => c.close);
@@ -326,13 +373,20 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
     else if (penalties.length >= 2) penaltyMultiplier = 0.75;
     else if (penalties.length >= 1) penaltyMultiplier = 0.9;
 
+    // Regime adjustment (§5/§31): reduce conviction in unfavourable regimes
+    let regimeMultiplier = 1.0;
+    if (regime === 'HIGH_VOLATILITY') regimeMultiplier = 0.7;
+    else if (regime === 'RANGE_BOUND') regimeMultiplier = 0.85;
+    else if (regime === 'WEAK_BULL' || regime === 'WEAK_BEAR') regimeMultiplier = 0.9;
+
     const factorsPassed = [htfAgreement, ltfAgreement, Math.abs(htf_macd.hist) > Math.abs(htf_macd.prev_hist),
         Math.abs(momentum_now) > 0.0003, adx_val >= 15,
         (direction === 'CALL' && ltf_candle_up_count >= 1) || (direction === 'PUT' && ltf_candle_up_count <= 2),
     ].filter(Boolean).length;
     if (factorsPassed < 3) return empty(`INSUFFICIENT_FACTORS: ${factorsPassed}/6`, quotes.length);
 
-    const confidence = Math.min(0.92, Math.max(0, rawConfidence * penaltyMultiplier));
+    const confidence = Math.min(0.92, Math.max(0, rawConfidence * penaltyMultiplier * regimeMultiplier));
+    const signalScore = Math.round(Math.min(100, Math.max(0, rawConfidence * penaltyMultiplier * regimeMultiplier * 100)));
     let signalStrength: SignalStrength;
     if (confidence >= 0.78 && factorsPassed >= 5 && penalties.length === 0) signalStrength = 'STRONG';
     else if (confidence >= 0.65 && factorsPassed >= 3) signalStrength = 'MODERATE';
@@ -341,16 +395,16 @@ export function analyzeRiseFall(input: number[]): AnalysisResult {
 
     const trendAlignment = htfAgreement && ltfAgreement;
     const reasons = [
-        `ADX=${adx_val.toFixed(1)}`, `HTF_RSI=${htf_rsi.toFixed(1)}`,
-        `MOM=${(momentum_now * 10000).toFixed(1)}bps`,
+        `REGIME=${regime}`, `ADX=${adx_val.toFixed(1)}`, `HTF_RSI=${htf_rsi.toFixed(1)}`,
+        `MOM=${(momentum_now * 10000).toFixed(1)}bps`, `SCORE=${signalScore}`,
         trendAlignment ? 'DUAL_TF' : 'PARTIAL_TF',
         penalties.length > 0 ? `PENALTY[${penalties.join(',')}]` : '', `FACTORS=${factorsPassed}/6`,
     ].filter(Boolean).join(' | ');
 
     return { category: 'rise_fall', contractType: direction, contractLabel: direction === 'CALL' ? 'RISE' : 'FALL',
-        direction, barrier: null, confidence, estimatedWinProbability: confidence, volatility: range,
+        direction, barrier: null, confidence, signalScore, estimatedWinProbability: confidence, volatility: range,
         sampleSize: quotes.length, reason: reasons, signalStrength, htfAgreement, ltfAgreement, trendAlignment,
-        consecutiveAbove: 0, digitAboveThreshold: 0 };
+        consecutiveAbove: 0, digitAboveThreshold: 0, regime };
 }
 
 // ═══════════════════════════════════════════════════════
@@ -500,6 +554,12 @@ export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResul
     // Only add a tiny edge for very long streaks (3+) based on empirical patterns
     const winProb = consecutiveStreak >= 3 ? 0.52 : 0.50;
 
+    // Even/Odd is a 50/50 process; with Deriv's <100% payout this is structurally
+    // negative-EV. We cap the reported score low so the signal-score gate + EV gate
+    // prevent trading it (§31 No-forced-trade, §40 do not cheat).
+    const signalScore = Math.round(Math.min(55, confidence * 100));
+    const regime = classifyRegime(quotes, decimals);
+
     const reasons = [
         `STREAK=${consecutiveStreak}${lastParity === 'even' ? 'E' : 'O'}`,
         `PREDICT=${contractLabel}`,
@@ -509,10 +569,10 @@ export function analyzeEvenOdd(input: number[], decimals: number): AnalysisResul
     ].filter(Boolean).join(' | ');
 
     return { category: 'even_odd', contractType, contractLabel,
-        direction: null, barrier: null, confidence, estimatedWinProbability: winProb,
+        direction: null, barrier: null, confidence, signalScore, estimatedWinProbability: winProb,
         volatility: sameParityRatio10, sampleSize: quotes.length, reason: reasons, signalStrength,
         htfAgreement: true, ltfAgreement: true, trendAlignment: true,
-        consecutiveAbove: consecutiveStreak, digitAboveThreshold: sameParityRatio10 };
+        consecutiveAbove: consecutiveStreak, digitAboveThreshold: sameParityRatio10, regime };
 }
 
 // ═══════════════════════════════════════════════════════
@@ -662,11 +722,16 @@ export function analyzeOverUnder(input: number[], decimals: number): AnalysisRes
         penalties.length > 0 ? `PEN[${penalties.join(',')}]` : '', `F=${factorsPassed}/7`,
     ].filter(Boolean).join(' | ');
 
+    // DIGITDIFF "NOT 2" wins ~90% of the time but Deriv pays only a small fraction of
+    // stake, so it is structurally negative-EV. Cap score so it cannot pass the gate.
+    const signalScore = Math.round(Math.min(55, confidence * 100));
+    const regime = classifyRegime(quotes, decimals);
+
     return { category: 'over_under', contractType: 'DIGITDIFF', contractLabel: 'NOT 2',
-        direction: null, barrier: BARRIER, confidence, estimatedWinProbability: 0.90,
+        direction: null, barrier: BARRIER, confidence, signalScore, estimatedWinProbability: 0.90,
         volatility: Math.abs(bias50), sampleSize: quotes.length, reason: reasons, signalStrength,
         htfAgreement: true, ltfAgreement: true, trendAlignment: true,
-        consecutiveAbove, digitAboveThreshold: aboveRatio50 };
+        consecutiveAbove, digitAboveThreshold: aboveRatio50, regime };
 }
 
 // ═══════════════════════════════════════════════════════
@@ -751,6 +816,11 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Analys
     const useMatch = maxRatio >= 0.16 && sameDigitStreak >= 2;
     const contractType: ContractType = useMatch ? 'DIGITMATCH' : 'DIGITDIFF';
 
+    // Digit MATCH/DIFFER payouts are far below fair odds → structurally negative-EV.
+    // Cap score so the gate + EV filter prevent trading it.
+    const signalScore = Math.round(Math.min(55, confidence * 100));
+    const regime = classifyRegime(quotes, decimals);
+
     const reasons = [
         `TOP=${maxDigitIdx}(${(maxRatio * 100).toFixed(0)}%)`, `STREAK=${sameDigitStreak}x${lastDigit}`,
         hasRepeatingPattern ? 'PATTERN' : '',
@@ -758,10 +828,10 @@ export function analyzeMatchesDiffers(input: number[], decimals: number): Analys
     ].filter(Boolean).join(' | ');
 
     return { category: 'matches_differs', contractType, contractLabel: useMatch ? 'MATCH' : 'DIFFER',
-        direction: null, barrier: maxDigitIdx, confidence,
+        direction: null, barrier: maxDigitIdx, confidence, signalScore,
         estimatedWinProbability: useMatch ? 0.10 : 0.90, volatility: skew, sampleSize: quotes.length,
         reason: reasons, signalStrength, htfAgreement: true, ltfAgreement: true, trendAlignment: true,
-        consecutiveAbove: 0, digitAboveThreshold: 0 };
+        consecutiveAbove: 0, digitAboveThreshold: 0, regime };
 }
 
 function clusterScore(dist: number[], total: number): number {
