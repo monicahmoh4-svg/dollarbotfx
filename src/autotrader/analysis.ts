@@ -19,19 +19,11 @@ export interface StatisticalSignal {
 type Candle = { open: number; high: number; low: number; close: number };
 
 const emptySignal = (reason: string, sampleSize = 0): StatisticalSignal => ({
-  category: 'rise_fall',
-  contractType: null,
-  contractLabel: '',
-  barrier: null,
-  conservativeProbability: 0,
-  sampleSize,
-  theoreticalBaseline: 0.5,
-  reason,
-  signalStrength: 'NO_EDGE',
-  regime: 'UNCLEAR',
+  category: 'rise_fall', contractType: null, contractLabel: '', barrier: null,
+  conservativeProbability: 0, sampleSize, theoreticalBaseline: 0.5,
+  reason, signalStrength: 'NO_EDGE', regime: 'UNCLEAR',
 });
 
-// Wilson score interval lower bound for conservative probability estimation
 function conservativeBinomialLowerBound(successes: number, trials: number, z: number = 1.96): number {
   if (trials === 0) return 0.5;
   const pHat = successes / trials;
@@ -61,9 +53,7 @@ export function classifyRegime(quotes: number[], decimals: number): MarketRegime
   const s = emaSlow[emaSlow.length - 1];
   const slopeFast = slope(q, Math.max(5, Math.floor(n / 8)));
   const rets: number[] = [];
-  for (let i = 1; i < q.length; i += 1) {
-    rets.push((q[i] - q[i - 1]) / Math.max(q[i - 1], 1e-9));
-  }
+  for (let i = 1; i < q.length; i += 1) rets.push((q[i] - q[i - 1]) / Math.max(q[i - 1], 1e-9));
   const vol = std(rets);
   const cw = Math.max(1, Math.floor(n / 30));
   const c = candles(q, cw);
@@ -92,9 +82,7 @@ function ema(values: number[], period: number): number[] {
   if (!values.length) return [];
   const alpha = 2 / (period + 1);
   const result = [values[0]];
-  for (let i = 1; i < values.length; i += 1) {
-    result.push(values[i] * alpha + result[i - 1] * (1 - alpha));
-  }
+  for (let i = 1; i < values.length; i += 1) result.push(values[i] * alpha + result[i - 1] * (1 - alpha));
   return result;
 }
 
@@ -142,9 +130,6 @@ function adx(data: Candle[], period = 14): number {
   return Math.abs(plusDI - minusDI) / diSum * 100;
 }
 
-// ═══════════════════════════════════════════════════════
-// STRATEGY 1: EVEN/ODD REVERSAL (2 Consecutive Trigger)
-// ═══════════════════════════════════════════════════════
 export function analyzeEvenOdd(input: number[], decimals: number): StatisticalSignal {
   const quotes = finiteQuotes(input);
   const sampleSize = 300;
@@ -154,42 +139,30 @@ export function analyzeEvenOdd(input: number[], decimals: number): StatisticalSi
   const lastDigit = digits[digits.length - 1];
   const prevDigit = digits[digits.length - 2];
   
-  // Trigger: 2 consecutive odds -> predict EVEN. 2 consecutive evens -> predict ODD.
   const lastTwoOdd = (lastDigit % 2 !== 0) && (prevDigit % 2 !== 0);
   const lastTwoEven = (lastDigit % 2 === 0) && (prevDigit % 2 === 0);
   
-  if (!lastTwoOdd && !lastTwoEven) {
-    return { ...emptySignal('NO_TRIGGER_PATTERN', digits.length), category: 'even_odd' };
-  }
+  if (!lastTwoOdd && !lastTwoEven) return { ...emptySignal('NO_TRIGGER_PATTERN', digits.length), category: 'even_odd' };
   
   const targetIsEven = lastTwoOdd;
   const targetCount = digits.filter(d => (d % 2 === 0) === targetIsEven).length;
-  
   const conservativeProb = conservativeBinomialLowerBound(targetCount, digits.length);
   const theoreticalBaseline = 0.50;
-  const minEdge = 0.025; // Require 2.5% statistical edge over break-even
+  const minEdge = 0.015;
   
   if (conservativeProb > theoreticalBaseline + minEdge) {
     return {
-      category: 'even_odd',
-      contractType: targetIsEven ? 'DIGITEVEN' : 'DIGITODD',
-      contractLabel: targetIsEven ? 'EVEN' : 'ODD',
-      barrier: null,
-      conservativeProbability: conservativeProb,
-      sampleSize: digits.length,
-      theoreticalBaseline,
+      category: 'even_odd', contractType: targetIsEven ? 'DIGITEVEN' : 'DIGITODD',
+      contractLabel: targetIsEven ? 'EVEN' : 'ODD', barrier: null,
+      conservativeProbability: conservativeProb, sampleSize: digits.length, theoreticalBaseline,
       signalStrength: 'STRONG',
       reason: `Trigger: 2x ${targetIsEven ? 'ODD' : 'EVEN'}. Edge: P(${targetIsEven ? 'EVEN' : 'ODD'}) > ${(theoreticalBaseline + minEdge).toFixed(3)}`,
       regime: classifyRegime(quotes, decimals)
     };
   }
-  
   return { ...emptySignal('NO_STATISTICAL_EDGE_AFTER_TRIGGER', digits.length), category: 'even_odd' };
 }
 
-// ═══════════════════════════════════════════════════════
-// STRATEGY 2: OVER/UNDER REVERSAL (1,2 -> OVER 2 | 8,9 -> UNDER 8)
-// ═══════════════════════════════════════════════════════
 export function analyzeOverUnder(input: number[], decimals: number): StatisticalSignal {
   const quotes = finiteQuotes(input);
   const sampleSize = 300;
@@ -198,47 +171,31 @@ export function analyzeOverUnder(input: number[], decimals: number): Statistical
   const digits = extractLastDigits(quotes.slice(-sampleSize), decimals);
   const lastDigit = digits[digits.length - 1];
   
-  let barrier = 2;
-  let targetIsOver = true;
-  let theoreticalBaseline = 0.70; // P(>2) = 7/10
+  let barrier = 2, targetIsOver = true, theoreticalBaseline = 0.70, triggerCondition = '';
   
-  // Trigger: hit 1 or 2 -> trade OVER 2. Hit 8 or 9 -> trade UNDER 8.
   if (lastDigit === 1 || lastDigit === 2) {
-    barrier = 2;
-    targetIsOver = true;
-    theoreticalBaseline = 0.70;
+    barrier = 2; targetIsOver = true; theoreticalBaseline = 0.70; triggerCondition = `Last digit ${lastDigit}`;
   } else if (lastDigit === 8 || lastDigit === 9) {
-    barrier = 8;
-    targetIsOver = false;
-    theoreticalBaseline = 0.80; // P(<8) = 8/10
+    barrier = 8; targetIsOver = false; theoreticalBaseline = 0.80; triggerCondition = `Last digit ${lastDigit}`;
   } else {
     return { ...emptySignal('NO_TRIGGER_PATTERN', digits.length), category: 'over_under' };
   }
   
-  const targetCount = targetIsOver 
-    ? digits.filter(d => d > barrier).length
-    : digits.filter(d => d < barrier).length;
-    
+  const targetCount = targetIsOver ? digits.filter(d => d > barrier).length : digits.filter(d => d < barrier).length;
   const conservativeProb = conservativeBinomialLowerBound(targetCount, digits.length);
-  const minEdge = 0.025; 
+  const minEdge = 0.015;
   
   if (conservativeProb > theoreticalBaseline + minEdge) {
     const label = targetIsOver ? `OVER ${barrier}` : `UNDER ${barrier}`;
     const type = targetIsOver ? 'DIGITOVER' : 'DIGITUNDER';
     return {
-      category: 'over_under',
-      contractType: type,
-      contractLabel: label,
-      barrier: barrier,
-      conservativeProbability: conservativeProb,
-      sampleSize: digits.length,
-      theoreticalBaseline,
+      category: 'over_under', contractType: type, contractLabel: label, barrier: barrier,
+      conservativeProbability: conservativeProb, sampleSize: digits.length, theoreticalBaseline,
       signalStrength: 'STRONG',
-      reason: `Trigger: Last digit ${lastDigit}. Edge: P(${label}) > ${(theoreticalBaseline + minEdge).toFixed(3)}`,
+      reason: `Trigger: ${triggerCondition}. Edge: P(${label}) > ${(theoreticalBaseline + minEdge).toFixed(3)}`,
       regime: classifyRegime(quotes, decimals)
     };
   }
-  
   return { ...emptySignal('NO_STATISTICAL_EDGE_AFTER_TRIGGER', digits.length), category: 'over_under' };
 }
 
@@ -251,43 +208,28 @@ export function analyzeRiseFall(input: number[]): StatisticalSignal {
   if (quotes.length < 200) return { ...emptySignal('INSUFFICIENT_DATA', quotes.length), category: 'rise_fall' };
   
   const regime = classifyRegime(quotes, 2);
-  if (regime === 'UNCLEAR' || regime === 'RANGE_BOUND') {
-    return { ...emptySignal('UNFAVORABLE_REGIME', quotes.length), category: 'rise_fall', regime };
-  }
+  if (regime === 'UNCLEAR' || regime === 'RANGE_BOUND') return { ...emptySignal('UNFAVORABLE_REGIME', quotes.length), category: 'rise_fall', regime };
   
-  const htf = candles(quotes, 20);
-  const ltf = candles(quotes, 5);
-  const htfClose = htf.map(c => c.close);
-  const ltfClose = ltf.map(c => c.close);
+  const htf = candles(quotes, 20), ltf = candles(quotes, 5);
+  const htfClose = htf.map(c => c.close), ltfClose = ltf.map(c => c.close);
   
-  const htfFast = ema(htfClose, 20);
-  const htfSlow = ema(htfClose, 50);
+  const htfFast = ema(htfClose, 20), htfSlow = ema(htfClose, 50);
   const htfTrend = htfFast[htfFast.length - 1] - htfSlow[htfSlow.length - 1];
-  
-  const ltfFast = ema(ltfClose, 10);
-  const ltfSlow = ema(ltfClose, 20);
+  const ltfFast = ema(ltfClose, 10), ltfSlow = ema(ltfClose, 20);
   const ltfTrend = ltfFast[ltfFast.length - 1] - ltfSlow[ltfSlow.length - 1];
-  
   const adxVal = adx(htf, 14);
-  let direction: 'CALL' | 'PUT';
-  let score = 0;
   
+  let direction: 'CALL' | 'PUT', score = 0;
   if (htfTrend > 0 && ltfTrend > 0 && adxVal > 20) {
-    direction = 'CALL';
-    score = Math.min(100, 50 + (adxVal - 20) * 2 + Math.abs(htfTrend) * 1000);
+    direction = 'CALL'; score = Math.min(100, 50 + (adxVal - 20) * 2 + Math.abs(htfTrend) * 1000);
   } else if (htfTrend < 0 && ltfTrend < 0 && adxVal > 20) {
-    direction = 'PUT';
-    score = Math.min(100, 50 + (adxVal - 20) * 2 + Math.abs(htfTrend) * 1000);
+    direction = 'PUT'; score = Math.min(100, 50 + (adxVal - 20) * 2 + Math.abs(htfTrend) * 1000);
   } else {
     return { ...emptySignal('NO_TREND_ALIGNMENT', quotes.length), category: 'rise_fall', regime };
   }
   
-  const rawProb = 0.5 + (score / 100) * 0.3;
-  const conservativeProbability = rawProb * 0.85;
-  
-  if (conservativeProbability <= 0.55) {
-    return { ...emptySignal('INSUFFICIENT_PROBABILITY', quotes.length), category: 'rise_fall', regime };
-  }
+  const conservativeProbability = (0.5 + (score / 100) * 0.3) * 0.85;
+  if (conservativeProbability <= 0.55) return { ...emptySignal('INSUFFICIENT_PROBABILITY', quotes.length), category: 'rise_fall', regime };
   
   return {
     category: 'rise_fall', contractType: direction, contractLabel: direction === 'CALL' ? 'RISE' : 'FALL',
@@ -298,12 +240,7 @@ export function analyzeRiseFall(input: number[]): StatisticalSignal {
 }
 
 export function analyzeBestSignal(quotes: number[], decimals: number): StatisticalSignal {
-  const results = [
-    analyzeRiseFall(quotes),
-    analyzeEvenOdd(quotes, decimals),
-    analyzeOverUnder(quotes, decimals),
-    analyzeMatchesDiffers(quotes, decimals)
-  ];
+  const results = [analyzeRiseFall(quotes), analyzeEvenOdd(quotes, decimals), analyzeOverUnder(quotes, decimals), analyzeMatchesDiffers(quotes, decimals)];
   const valid = results.filter(r => r.signalStrength !== 'NO_EDGE' && r.conservativeProbability > 0);
   if (valid.length === 0) return emptySignal('NO_EDGE_IN_ANY_CATEGORY', quotes.length);
   return valid.sort((a, b) => b.conservativeProbability - a.conservativeProbability)[0];
