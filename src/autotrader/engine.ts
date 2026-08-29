@@ -55,7 +55,7 @@ const DIGIT_CONTRACTS = new Set(['DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUND
 
 const DEFAULT_LIMITS: RiskLimits = {
   maxStakePerTrade: 2,
-  maxPercentRiskPerTrade: 0.01, // FIXED FRACTIONAL: Never Martingale
+  maxPercentRiskPerTrade: 0.01,
   maxDailyLoss: 20,
   maxConsecutiveLosses: 5,
   cooldownAfterLossMs: 30_000,
@@ -64,7 +64,7 @@ const DEFAULT_LIMITS: RiskLimits = {
   maxSessionDurationMs: 24 * 60 * 60 * 1000,
   maxConcurrentTrades: 3,
   maxBalanceTolerance: 0.10,
-  minExpectedEdge: 0.015, // Requires 1.5% statistical edge over live break-even probability
+  minExpectedEdge: 0.015,
   contractDurationTicks: 5,
 };
 
@@ -252,8 +252,8 @@ export class AutoTraderEngine extends EventTarget {
 
           const executed = await this.executeTrade(market, signal);
           if (executed) {
-            this.recentlyTraded.set(market.symbol, Date.now() + 120_000); // 2 min cooldown per market
-            break; // One trade per scan cycle to prevent over-exposure
+            this.recentlyTraded.set(market.symbol, Date.now() + 120_000);
+            break;
           }
 
         } catch (marketErr: any) {
@@ -305,7 +305,6 @@ export class AutoTraderEngine extends EventTarget {
       return false;
     }
 
-    // CRITICAL LOSS PREVENTION: Calculate live break-even probability from Deriv's actual payout
     const breakEvenProbability = ask / payout;
     const statisticalEdge = signal.conservativeProbability - breakEvenProbability;
 
