@@ -1,4 +1,11 @@
-import { analyzeBestSignal, inferDecimalsFromQuotes, type TradeCategory, type ContractType, type StatisticalSignal } from './analysis';
+import {
+  analyzeBestSignal,
+  inferDecimalsFromQuotes,
+  isSignalFresh,
+  type TradeCategory,
+  type ContractType,
+  type StatisticalSignal,
+} from './analysis';
 import { RiskManager } from './risk-manager';
 import { ledger } from './ledger';
 import { recordMarketTicks } from './history-store';
@@ -98,6 +105,7 @@ export class AutoTraderEngine extends EventTarget {
   private scanInFlight = false;
   private openTrades = new Map<string, { stake: number; timer: ReturnType<typeof setInterval>; category: TradeCategory }>();
   private recentlyTraded = new Map<string, number>();
+  private executedSignalIds = new Set<string>();
   private startingBalance: number | null = null;
   private realizedNet = 0;
   private cooldownUntil = 0;
@@ -106,8 +114,8 @@ export class AutoTraderEngine extends EventTarget {
   private marketCacheTime = 0;
   private stats = {
     wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0, sessionStart: Date.now(),
-    scanCount: 0, tradesOpened: 0, derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
-    marketsScanned: 0, signalsDetected: 0,
+    scanCount: 0, tradesOpened: 0, derivBalance: null as number | null, balanceDifference: 0, isBalanceHealthy: false,
+    marketsScanned: 0, signalsDetected: 0, noGoCount: 0,
   };
 
   constructor() {
@@ -142,7 +150,10 @@ export class AutoTraderEngine extends EventTarget {
     if (typeof err === 'string') return err;
     if (err && typeof err === 'object') {
       const obj = err as Record<string, unknown>;
-      if (obj.error) return `API ${obj.error.code || 'ERR'}: ${obj.error.message || JSON.stringify(obj.error)}`;
+      if (obj.error) {
+        const e = obj.error as Record<string, unknown>;
+        return `API ${e.code || 'ERR'}: ${e.message || JSON.stringify(e)}`;
+      }
       if (obj.message) return String(obj.message);
       try { return JSON.stringify(obj); } catch { return String(err); }
     }
@@ -169,17 +180,18 @@ export class AutoTraderEngine extends EventTarget {
 
     this.isRunning = true;
     this.state = 'SYNCING';
-    this.stats = { wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0, sessionStart: Date.now(), scanCount: 0, tradesOpened: 0, derivBalance: null, balanceDifference: 0, isBalanceHealthy: false, marketsScanned: 0, signalsDetected: 0 };
+    this.stats = { wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0, sessionStart: Date.now(), scanCount: 0, tradesOpened: 0, derivBalance: null, balanceDifference: 0, isBalanceHealthy: false, marketsScanned: 0, signalsDetected: 0, noGoCount: 0 };
     this.realizedNet = 0;
     this.startingBalance = null;
     this.cooldownUntil = 0;
+    this.executedSignalIds.clear();
 
     try {
       await this.synchronizeBalance();
       if (!this.stats.isBalanceHealthy) throw new Error('Initial account balance could not be reconciled');
       this.state = 'READY';
       await this.refreshMarketCache();
-      this.log('success', `🚀 Engine started. Scanning ${this.cachedMarkets.length} volatility markets with statistical edge validation.`);
+      this.log('success', `🚀 Engine started. Scanning ${this.cachedMarkets.length} volatility markets. NO TRADE without validated edge.`);
       this.scanTimer = setInterval(() => void this.scan(), 5_000);
       this.reconciliationTimer = setInterval(() => void this.synchronizeBalance(), 5_000);
       void this.scan();
@@ -248,7 +260,7 @@ export class AutoTraderEngine extends EventTarget {
           if (signal.signalStrength === 'NO_EDGE' || !signal.contractType) continue;
 
           this.stats.signalsDetected += 1;
-          this.log('info', `[TRIGGER] ${market.display_name} | ${signal.category} ${signal.contractLabel} | Cons. Prob: ${(signal.conservativeProbability * 100).toFixed(1)}% | Baseline: ${(signal.theoreticalBaseline * 100).toFixed(1)}% | Reason: ${signal.reason}`);
+          this.log('info', `[TRIGGER] ${market.display_name} | ${signal.category} ${signal.contractLabel} | Cons.Prob: ${(signal.conservativeProbability * 100).toFixed(1)}% | Baseline: ${(signal.theoreticalBaseline * 100).toFixed(1)}% | ${signal.reason}`);
 
           const executed = await this.executeTrade(market, signal);
           if (executed) {
@@ -257,7 +269,7 @@ export class AutoTraderEngine extends EventTarget {
           }
 
         } catch (marketErr: any) {
-          this.log('warn', `Market ${market.symbol} scan error: ${AutoTraderEngine.stringifyError(marketErr)}`);
+          this.log('warn', `Market ${market.symbol} error: ${AutoTraderEngine.stringifyError(marketErr)}`);
         }
       }
     } catch (error: any) {
@@ -267,22 +279,41 @@ export class AutoTraderEngine extends EventTarget {
       this.scanInFlight = false;
       if (this.isRunning && this.openTrades.size === 0 && this.state !== 'COOLDOWN') this.state = 'READY';
       if (this.stats.scanCount % 10 === 0) {
-        this.log('info', `Cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} scanned, ${this.stats.signalsDetected} triggers, ${this.openTrades.size} open`);
+        this.log('info', `Cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} scanned | ${this.stats.signalsDetected} triggers | ${this.stats.noGoCount} NO-GO | ${this.openTrades.size} open`);
       }
       this.emit();
     }
   }
 
   private async executeTrade(market: MarketInfo, signal: StatisticalSignal) {
-    if (!signal.contractType || !this.apiInstance || !this.stats.isBalanceHealthy) return false;
+    if (!isSignalFresh(signal)) {
+      this.log('info', `[NO-GO] ${market.display_name}: Signal expired`);
+      this.stats.noGoCount += 1;
+      return false;
+    }
+
+    const signalId = `${market.symbol}-${signal.contractType}-${signal.signalTimestamp}`;
+    if (this.executedSignalIds.has(signalId)) {
+      this.log('info', `[NO-GO] ${market.display_name}: Duplicate signal`);
+      return false;
+    }
+
+    if (!signal.contractType || !this.apiInstance || !this.stats.isBalanceHealthy) {
+      this.stats.noGoCount += 1;
+      return false;
+    }
 
     const balance = this.stats.derivBalance || 0;
     const stake = Math.min(this.limits.maxStakePerTrade, balance * this.limits.maxPercentRiskPerTrade);
-    if (!Number.isFinite(stake) || stake <= 0) return false;
+    if (!Number.isFinite(stake) || stake <= 0) {
+      this.stats.noGoCount += 1;
+      return false;
+    }
 
     const riskCheck = this.riskManager.validatePreTrade(stake, this.stats.lossStreak, this.openTrades.size);
     if (!riskCheck.allowed) {
       this.log('info', `[NO-GO] ${market.display_name}: ${riskCheck.reason}`);
+      this.stats.noGoCount += 1;
       return false;
     }
 
@@ -292,7 +323,8 @@ export class AutoTraderEngine extends EventTarget {
     try {
       proposalResponse = await this.apiInstance.send(proposalRequest);
     } catch (err: any) {
-      this.log('warn', `[NO-GO] ${market.display_name}: Proposal request failed - ${AutoTraderEngine.stringifyError(err)}`);
+      this.log('warn', `[NO-GO] ${market.display_name}: Proposal failed - ${AutoTraderEngine.stringifyError(err)}`);
+      this.stats.noGoCount += 1;
       return false;
     }
 
@@ -301,7 +333,8 @@ export class AutoTraderEngine extends EventTarget {
     const payout = Number(proposal?.payout);
 
     if (!proposal?.id || !Number.isFinite(ask) || !Number.isFinite(payout) || ask <= 0 || payout <= 0) {
-      this.log('info', `[NO-GO] ${market.display_name}: Invalid proposal data`);
+      this.log('info', `[NO-GO] ${market.display_name}: Invalid proposal`);
+      this.stats.noGoCount += 1;
       return false;
     }
 
@@ -310,14 +343,22 @@ export class AutoTraderEngine extends EventTarget {
 
     if (statisticalEdge < this.limits.minExpectedEdge) {
       this.log('info', `[NO-GO] ${market.display_name}: Edge ${(statisticalEdge * 100).toFixed(2)}% < Min ${(this.limits.minExpectedEdge * 100).toFixed(2)}% | Break-even: ${(breakEvenProbability * 100).toFixed(1)}%. Capital preserved.`);
+      this.stats.noGoCount += 1;
       return false;
     }
 
-    this.log('success', `[EXECUTE] ${market.display_name} | ${signal.contractType} ${signal.contractLabel} | Edge: ${(statisticalEdge * 100).toFixed(2)}% | Stake: $${stake.toFixed(2)}`);
+    if (!isSignalFresh(signal)) {
+      this.log('info', `[NO-GO] ${market.display_name}: Signal expired during proposal`);
+      this.stats.noGoCount += 1;
+      return false;
+    }
+
+    this.log('success', `[EXECUTE] ${market.display_name} | ${signal.contractType} ${signal.contractLabel} | Edge: ${(statisticalEdge * 100).toFixed(2)}% | Break-even: ${(breakEvenProbability * 100).toFixed(1)}% | Cons.Prob: ${(signal.conservativeProbability * 100).toFixed(1)}% | Stake: $${stake.toFixed(2)}`);
 
     const contractId = await this.buyWithRetry(proposal.id, ask, market.symbol);
     if (!contractId) return false;
 
+    this.executedSignalIds.add(signalId);
     this.stats.tradesOpened += 1;
     ledger.append({
       type: 'TRADE_OPEN', symbol: market.symbol,
@@ -414,7 +455,7 @@ export class AutoTraderEngine extends EventTarget {
       this.cooldownUntil = Date.now() + 3 * 60 * 1000;
       this.stats.lossStreak = 0;
       this.state = 'COOLDOWN';
-      this.log('warn', `Consecutive loss limit reached. Cooling down 180s to prevent emotional trading.`);
+      this.log('warn', `Consecutive loss limit reached. Cooling down 180s.`);
       this.emit();
     }
   }
