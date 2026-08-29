@@ -28,11 +28,7 @@ export interface AutoTraderSettings {
 }
 
 export interface MarketInfo {
-  symbol: string;
-  display_name: string;
-  market: string;
-  submarket: string;
-  is_active: boolean;
+  symbol: string; display_name: string; market: string; submarket: string; is_active: boolean;
 }
 
 export const SYNTHETIC_INDICES = [
@@ -48,7 +44,6 @@ export const SYNTHETIC_INDICES = [
   { symbol: '1HZ100V', display_name: 'Volatility 100 (1s) Index' },
 ];
 
-// ✅ FIXED: Re-added TRADE_CATEGORIES export required by autotrader-panel.tsx
 export const TRADE_CATEGORIES: { label: string; value: TradeCategory }[] = [
   { label: 'Rise/Fall', value: 'rise_fall' },
   { label: 'Even/Odd', value: 'even_odd' },
@@ -60,7 +55,7 @@ const DIGIT_CONTRACTS = new Set(['DIGITEVEN', 'DIGITODD', 'DIGITOVER', 'DIGITUND
 
 const DEFAULT_LIMITS: RiskLimits = {
   maxStakePerTrade: 2,
-  maxPercentRiskPerTrade: 0.01,
+  maxPercentRiskPerTrade: 0.01, // FIXED FRACTIONAL: Never Martingale
   maxDailyLoss: 20,
   maxConsecutiveLosses: 5,
   cooldownAfterLossMs: 30_000,
@@ -69,7 +64,7 @@ const DEFAULT_LIMITS: RiskLimits = {
   maxSessionDurationMs: 24 * 60 * 60 * 1000,
   maxConcurrentTrades: 3,
   maxBalanceTolerance: 0.10,
-  minExpectedEdge: 0.02,
+  minExpectedEdge: 0.015, // Requires 1.5% statistical edge over live break-even probability
   contractDurationTicks: 5,
 };
 
@@ -78,33 +73,15 @@ function currencyOf(client: any): string {
 }
 
 function isSettled(contract: any): boolean {
-  return Boolean(contract && (
-    contract.is_sold ||
-    ['sold', 'won', 'lost'].includes(String(contract.status).toLowerCase())
-  ));
+  return Boolean(contract && (contract.is_sold || ['sold', 'won', 'lost'].includes(String(contract.status).toLowerCase())));
 }
 
-function buildProposal(
-  contractType: ContractType,
-  stake: number,
-  symbol: string,
-  durationTicks: number,
-  currency: string,
-  barrier?: number | null,
-) {
+function buildProposal(contractType: ContractType, stake: number, symbol: string, durationTicks: number, currency: string, barrier?: number | null) {
   const proposal: Record<string, unknown> = {
-    proposal: 1,
-    amount: Number(stake.toFixed(2)),
-    basis: 'stake',
-    contract_type: contractType,
-    currency,
-    duration: durationTicks,
-    duration_unit: 't',
-    underlying_symbol: symbol,
+    proposal: 1, amount: Number(stake.toFixed(2)), basis: 'stake', contract_type: contractType,
+    currency, duration: durationTicks, duration_unit: 't', underlying_symbol: symbol,
   };
-  if (DIGIT_CONTRACTS.has(contractType) && barrier != null) {
-    proposal.barrier = String(barrier);
-  }
+  if (DIGIT_CONTRACTS.has(contractType) && barrier != null) proposal.barrier = String(barrier);
   return proposal;
 }
 
@@ -128,9 +105,8 @@ export class AutoTraderEngine extends EventTarget {
   private cachedMarkets: MarketInfo[] = [];
   private marketCacheTime = 0;
   private stats = {
-    wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0,
-    sessionStart: Date.now(), scanCount: 0, tradesOpened: 0,
-    derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
+    wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0, sessionStart: Date.now(),
+    scanCount: 0, tradesOpened: 0, derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
     marketsScanned: 0, signalsDetected: 0,
   };
 
@@ -140,15 +116,14 @@ export class AutoTraderEngine extends EventTarget {
       const limits = JSON.parse(localStorage.getItem('bot-risk-limits') || '{}');
       this.limits = { ...this.limits, ...limits };
       this.riskManager = new RiskManager(this.limits);
-      const mode = localStorage.getItem('bot-trading-mode');
-      if (mode === 'live') this.mode = mode;
+      if (localStorage.getItem('bot-trading-mode') === 'live') this.mode = 'live';
     } catch { /* localStorage unavailable */ }
   }
 
   getState() {
     return {
-      state: this.state, isRunning: this.isRunning, running: this.isRunning,
-      scanning: this.scanInFlight, mode: this.mode, limits: { ...this.limits },
+      state: this.state, isRunning: this.isRunning, running: this.isRunning, scanning: this.scanInFlight,
+      mode: this.mode, limits: { ...this.limits },
       stats: { ...this.stats, sessionDurationMs: Date.now() - this.stats.sessionStart, activeContracts: this.openTrades.size },
       logs: [...this.logs], activity: [...this.logs], marketsCount: this.cachedMarkets.length,
     };
@@ -194,12 +169,7 @@ export class AutoTraderEngine extends EventTarget {
 
     this.isRunning = true;
     this.state = 'SYNCING';
-    this.stats = {
-      wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0,
-      sessionStart: Date.now(), scanCount: 0, tradesOpened: 0,
-      derivBalance: null, balanceDifference: 0, isBalanceHealthy: false,
-      marketsScanned: 0, signalsDetected: 0,
-    };
+    this.stats = { wins: 0, losses: 0, net: 0, dailyNet: 0, lossStreak: 0, sessionStart: Date.now(), scanCount: 0, tradesOpened: 0, derivBalance: null, balanceDifference: 0, isBalanceHealthy: false, marketsScanned: 0, signalsDetected: 0 };
     this.realizedNet = 0;
     this.startingBalance = null;
     this.cooldownUntil = 0;
@@ -209,7 +179,7 @@ export class AutoTraderEngine extends EventTarget {
       if (!this.stats.isBalanceHealthy) throw new Error('Initial account balance could not be reconciled');
       this.state = 'READY';
       await this.refreshMarketCache();
-      this.log('success', `🚀 Engine started. Statistical scanning ${this.cachedMarkets.length} markets.`);
+      this.log('success', `🚀 Engine started. Scanning ${this.cachedMarkets.length} volatility markets with statistical edge validation.`);
       this.scanTimer = setInterval(() => void this.scan(), 5_000);
       this.reconciliationTimer = setInterval(() => void this.synchronizeBalance(), 5_000);
       void this.scan();
@@ -224,22 +194,11 @@ export class AutoTraderEngine extends EventTarget {
       const symbols = response?.active_symbols || [];
       const markets: MarketInfo[] = [];
       for (const item of symbols) {
-        if (item.is_trading_suspended) continue;
-        if (!item.symbol) continue;
-        markets.push({
-          symbol: item.symbol,
-          display_name: item.display_name || item.symbol,
-          market: item.market || '',
-          submarket: item.submarket || '',
-          is_active: true,
-        });
+        if (item.is_trading_suspended || !item.symbol) continue;
+        markets.push({ symbol: item.symbol, display_name: item.display_name || item.symbol, market: item.market || '', submarket: item.submarket || '', is_active: true });
       }
-      if (markets.length > 0) {
-        this.cachedMarkets = markets;
-        this.marketCacheTime = Date.now();
-      } else {
-        this.cachedMarkets = SYNTHETIC_INDICES.map((m) => ({ ...m, market: 'synthetic_index', submarket: 'volatility_indices', is_active: true }));
-      }
+      this.cachedMarkets = markets.length > 0 ? markets : SYNTHETIC_INDICES.map((m) => ({ ...m, market: 'synthetic_index', submarket: 'volatility_indices', is_active: true }));
+      this.marketCacheTime = Date.now();
     } catch {
       if (this.cachedMarkets.length === 0) {
         this.cachedMarkets = SYNTHETIC_INDICES.map((m) => ({ ...m, market: 'synthetic_index', submarket: 'volatility_indices', is_active: true }));
@@ -261,26 +220,19 @@ export class AutoTraderEngine extends EventTarget {
     this.emit();
 
     const now = Date.now();
-    this.recentlyTraded.forEach((expiry, symbol) => {
-      if (now >= expiry) this.recentlyTraded.delete(symbol);
-    });
+    this.recentlyTraded.forEach((expiry, symbol) => { if (now >= expiry) this.recentlyTraded.delete(symbol); });
 
     try {
-      if (now - this.marketCacheTime > 60_000 || this.cachedMarkets.length === 0) {
-        await this.refreshMarketCache();
-      }
+      if (now - this.marketCacheTime > 60_000 || this.cachedMarkets.length === 0) await this.refreshMarketCache();
 
       for (const market of this.cachedMarkets) {
         if (!this.isRunning || this.openTrades.size >= this.limits.maxConcurrentTrades) break;
-        const recentExpiry = this.recentlyTraded.get(market.symbol) || 0;
-        if (Date.now() < recentExpiry) continue;
+        if (Date.now() < (this.recentlyTraded.get(market.symbol) || 0)) continue;
 
         try {
-          const response = await this.apiInstance!.send({
-            ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks',
-          });
-
+          const response = await this.apiInstance!.send({ ticks_history: market.symbol, adjust_start_time: 1, count: 1000, end: 'latest', style: 'ticks' });
           if (!response || response.error) continue;
+          
           const prices = response?.history?.prices;
           if (!Array.isArray(prices)) continue;
 
@@ -293,17 +245,15 @@ export class AutoTraderEngine extends EventTarget {
           
           this.stats.marketsScanned += 1;
 
-          if (signal.signalStrength === 'NO_EDGE' || !signal.contractType) {
-            continue;
-          }
+          if (signal.signalStrength === 'NO_EDGE' || !signal.contractType) continue;
 
           this.stats.signalsDetected += 1;
-          this.log('info', `[SIGNAL] ${market.display_name} | ${signal.category} ${signal.contractLabel} | Cons. Prob: ${(signal.conservativeProbability * 100).toFixed(1)}% | Baseline: ${(signal.theoreticalBaseline * 100).toFixed(1)}% | Reason: ${signal.reason}`);
+          this.log('info', `[TRIGGER] ${market.display_name} | ${signal.category} ${signal.contractLabel} | Cons. Prob: ${(signal.conservativeProbability * 100).toFixed(1)}% | Baseline: ${(signal.theoreticalBaseline * 100).toFixed(1)}% | Reason: ${signal.reason}`);
 
           const executed = await this.executeTrade(market, signal);
           if (executed) {
-            this.recentlyTraded.set(market.symbol, Date.now() + 120_000);
-            break;
+            this.recentlyTraded.set(market.symbol, Date.now() + 120_000); // 2 min cooldown per market
+            break; // One trade per scan cycle to prevent over-exposure
           }
 
         } catch (marketErr: any) {
@@ -316,8 +266,8 @@ export class AutoTraderEngine extends EventTarget {
       this.stats.scanCount += 1;
       this.scanInFlight = false;
       if (this.isRunning && this.openTrades.size === 0 && this.state !== 'COOLDOWN') this.state = 'READY';
-      if (this.stats.scanCount % 5 === 0) {
-        this.log('info', `Cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} scanned, ${this.stats.signalsDetected} signals, ${this.openTrades.size} open`);
+      if (this.stats.scanCount % 10 === 0) {
+        this.log('info', `Cycle #${this.stats.scanCount}: ${this.stats.marketsScanned} scanned, ${this.stats.signalsDetected} triggers, ${this.openTrades.size} open`);
       }
       this.emit();
     }
@@ -336,10 +286,7 @@ export class AutoTraderEngine extends EventTarget {
       return false;
     }
 
-    const proposalRequest = buildProposal(
-      signal.contractType, stake, market.symbol,
-      this.limits.contractDurationTicks, currencyOf(this.client), signal.barrier,
-    );
+    const proposalRequest = buildProposal(signal.contractType, stake, market.symbol, this.limits.contractDurationTicks, currencyOf(this.client), signal.barrier);
 
     let proposalResponse;
     try {
@@ -358,27 +305,25 @@ export class AutoTraderEngine extends EventTarget {
       return false;
     }
 
+    // CRITICAL LOSS PREVENTION: Calculate live break-even probability from Deriv's actual payout
     const breakEvenProbability = ask / payout;
     const statisticalEdge = signal.conservativeProbability - breakEvenProbability;
 
     if (statisticalEdge < this.limits.minExpectedEdge) {
-      this.log('info', `[NO-GO] ${market.display_name}: Edge ${(statisticalEdge * 100).toFixed(2)}% < Min ${(this.limits.minExpectedEdge * 100).toFixed(2)}% | Break-even: ${(breakEvenProbability * 100).toFixed(1)}%`);
+      this.log('info', `[NO-GO] ${market.display_name}: Edge ${(statisticalEdge * 100).toFixed(2)}% < Min ${(this.limits.minExpectedEdge * 100).toFixed(2)}% | Break-even: ${(breakEvenProbability * 100).toFixed(1)}%. Capital preserved.`);
       return false;
     }
 
-    this.log('success', `[GO] ${market.display_name} | ${signal.contractType} ${signal.contractLabel} | Edge: ${(statisticalEdge * 100).toFixed(2)}% | Stake: $${stake.toFixed(2)}`);
+    this.log('success', `[EXECUTE] ${market.display_name} | ${signal.contractType} ${signal.contractLabel} | Edge: ${(statisticalEdge * 100).toFixed(2)}% | Stake: $${stake.toFixed(2)}`);
 
     const contractId = await this.buyWithRetry(proposal.id, ask, market.symbol);
     if (!contractId) return false;
 
     this.stats.tradesOpened += 1;
     ledger.append({
-      type: 'TRADE_OPEN',
-      symbol: market.symbol,
+      type: 'TRADE_OPEN', symbol: market.symbol,
       message: `Opened ${market.display_name} ${signal.contractType} [${signal.contractLabel}] contract ${contractId}`,
-      balanceBefore: balance,
-      stake,
-      contractId,
+      balanceBefore: balance, stake, contractId,
     });
 
     this.watchContract(contractId, market.display_name, stake, signal.category);
@@ -399,10 +344,7 @@ export class AutoTraderEngine extends EventTarget {
   private watchContract(contractId: string, market: string, stake: number, category: TradeCategory) {
     const timer = setInterval(async () => {
       try {
-        if (!this.apiInstance || !this.isRunning) {
-          clearInterval(timer);
-          return;
-        }
+        if (!this.apiInstance || !this.isRunning) { clearInterval(timer); return; }
         const response = await this.apiInstance.send({ proposal_open_contract: 1, contract_id: contractId });
         const contract = response?.proposal_open_contract;
         if (!isSettled(contract)) return;
@@ -454,8 +396,7 @@ export class AutoTraderEngine extends EventTarget {
       this.stats.derivBalance = balance;
       this.stats.balanceDifference = Math.abs(expected - balance);
 
-      const tolerance = this.limits.maxBalanceTolerance;
-      if (this.stats.balanceDifference <= tolerance) {
+      if (this.stats.balanceDifference <= this.limits.maxBalanceTolerance) {
         this.stats.isBalanceHealthy = true;
       } else {
         this.stats.isBalanceHealthy = false;
@@ -468,15 +409,13 @@ export class AutoTraderEngine extends EventTarget {
   }
 
   private checkLimits() {
-    if (this.stats.dailyNet <= -this.limits.maxDailyLoss) {
-      this.halt('Daily loss limit reached.');
-    } else if (this.stats.net >= this.limits.targetProfit) {
-      this.halt('Target profit reached.');
-    } else if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses) {
+    if (this.stats.dailyNet <= -this.limits.maxDailyLoss) this.halt('Daily loss limit reached.');
+    else if (this.stats.net >= this.limits.targetProfit) this.halt('Target profit reached.');
+    else if (this.stats.lossStreak >= this.limits.maxConsecutiveLosses) {
       this.cooldownUntil = Date.now() + 3 * 60 * 1000;
       this.stats.lossStreak = 0;
       this.state = 'COOLDOWN';
-      this.log('warn', `Consecutive loss limit reached. Cooling down 180s.`);
+      this.log('warn', `Consecutive loss limit reached. Cooling down 180s to prevent emotional trading.`);
       this.emit();
     }
   }
