@@ -31,6 +31,7 @@ const emptySignal = (reason: string, sampleSize = 0): StatisticalSignal => ({
   regime: 'UNCLEAR',
 });
 
+// Wilson score interval lower bound for conservative probability estimation
 function conservativeBinomialLowerBound(successes: number, trials: number, z: number = 1.96): number {
   if (trials === 0) return 0.5;
   const pHat = successes / trials;
@@ -42,7 +43,6 @@ function conservativeBinomialLowerBound(successes: number, trials: number, z: nu
 
 const finiteQuotes = (quotes: number[]) => quotes.filter((q) => Number.isFinite(q) && q > 0);
 
-// ✅ FIXED: Added missing export required by backtest.ts
 export function lastDigitOfExport(quote: number, decimals: number): number {
   return Math.abs(Math.round(quote * 10 ** decimals) % 10);
 }
@@ -102,12 +102,7 @@ function candles(quotes: number[], width: number): Candle[] {
   const result: Candle[] = [];
   for (let i = 0; i + width <= quotes.length; i += width) {
     const slice = quotes.slice(i, i + width);
-    result.push({
-      open: slice[0],
-      high: Math.max(...slice),
-      low: Math.min(...slice),
-      close: slice[slice.length - 1],
-    });
+    result.push({ open: slice[0], high: Math.max(...slice), low: Math.min(...slice), close: slice[slice.length - 1] });
   }
   return result;
 }
@@ -122,9 +117,7 @@ function slope(values: number[], lookback: number): number {
 
 function adx(data: Candle[], period = 14): number {
   if (data.length < period * 2) return 0;
-  const trList: number[] = [];
-  const plusDM: number[] = [];
-  const minusDM: number[] = [];
+  const trList: number[] = [], plusDM: number[] = [], minusDM: number[] = [];
   for (let i = 1; i < data.length; i++) {
     const highDiff = data[i].high - data[i - 1].high;
     const lowDiff = data[i - 1].low - data[i].low;
@@ -149,115 +142,108 @@ function adx(data: Candle[], period = 14): number {
   return Math.abs(plusDI - minusDI) / diSum * 100;
 }
 
+// ═══════════════════════════════════════════════════════
+// STRATEGY 1: EVEN/ODD REVERSAL (2 Consecutive Trigger)
+// ═══════════════════════════════════════════════════════
 export function analyzeEvenOdd(input: number[], decimals: number): StatisticalSignal {
   const quotes = finiteQuotes(input);
-  const sampleSize = 500;
+  const sampleSize = 300;
   if (quotes.length < sampleSize) return { ...emptySignal('INSUFFICIENT_DATA', quotes.length), category: 'even_odd' };
   
   const digits = extractLastDigits(quotes.slice(-sampleSize), decimals);
-  const evenCount = digits.filter(d => d % 2 === 0).length;
-  const oddCount = digits.length - evenCount;
+  const lastDigit = digits[digits.length - 1];
+  const prevDigit = digits[digits.length - 2];
   
-  const pEvenLower = conservativeBinomialLowerBound(evenCount, digits.length);
-  const pOddLower = conservativeBinomialLowerBound(oddCount, digits.length);
+  // Trigger: 2 consecutive odds -> predict EVEN. 2 consecutive evens -> predict ODD.
+  const lastTwoOdd = (lastDigit % 2 !== 0) && (prevDigit % 2 !== 0);
+  const lastTwoEven = (lastDigit % 2 === 0) && (prevDigit % 2 === 0);
   
-  const theoreticalBaseline = 0.5;
-  const minEdge = 0.02;
+  if (!lastTwoOdd && !lastTwoEven) {
+    return { ...emptySignal('NO_TRIGGER_PATTERN', digits.length), category: 'even_odd' };
+  }
   
-  if (pEvenLower > theoreticalBaseline + minEdge) {
+  const targetIsEven = lastTwoOdd;
+  const targetCount = digits.filter(d => (d % 2 === 0) === targetIsEven).length;
+  
+  const conservativeProb = conservativeBinomialLowerBound(targetCount, digits.length);
+  const theoreticalBaseline = 0.50;
+  const minEdge = 0.025; // Require 2.5% statistical edge over break-even
+  
+  if (conservativeProb > theoreticalBaseline + minEdge) {
     return {
-      category: 'even_odd', contractType: 'DIGITEVEN', contractLabel: 'EVEN', barrier: null,
-      conservativeProbability: pEvenLower, sampleSize: digits.length, theoreticalBaseline,
-      signalStrength: 'STRONG', reason: `Statistical edge: P(EVEN) > ${theoreticalBaseline} + ${minEdge}`,
+      category: 'even_odd',
+      contractType: targetIsEven ? 'DIGITEVEN' : 'DIGITODD',
+      contractLabel: targetIsEven ? 'EVEN' : 'ODD',
+      barrier: null,
+      conservativeProbability: conservativeProb,
+      sampleSize: digits.length,
+      theoreticalBaseline,
+      signalStrength: 'STRONG',
+      reason: `Trigger: 2x ${targetIsEven ? 'ODD' : 'EVEN'}. Edge: P(${targetIsEven ? 'EVEN' : 'ODD'}) > ${(theoreticalBaseline + minEdge).toFixed(3)}`,
       regime: classifyRegime(quotes, decimals)
     };
   }
-  if (pOddLower > theoreticalBaseline + minEdge) {
-    return {
-      category: 'even_odd', contractType: 'DIGITODD', contractLabel: 'ODD', barrier: null,
-      conservativeProbability: pOddLower, sampleSize: digits.length, theoreticalBaseline,
-      signalStrength: 'STRONG', reason: `Statistical edge: P(ODD) > ${theoreticalBaseline} + ${minEdge}`,
-      regime: classifyRegime(quotes, decimals)
-    };
-  }
   
-  return { ...emptySignal('NO_STATISTICAL_EDGE', digits.length), category: 'even_odd' };
+  return { ...emptySignal('NO_STATISTICAL_EDGE_AFTER_TRIGGER', digits.length), category: 'even_odd' };
 }
 
-export function analyzeOverUnder(input: number[], decimals: number, barrier: number = 2): StatisticalSignal {
+// ═══════════════════════════════════════════════════════
+// STRATEGY 2: OVER/UNDER REVERSAL (1,2 -> OVER 2 | 8,9 -> UNDER 8)
+// ═══════════════════════════════════════════════════════
+export function analyzeOverUnder(input: number[], decimals: number): StatisticalSignal {
   const quotes = finiteQuotes(input);
-  const sampleSize = 500;
+  const sampleSize = 300;
   if (quotes.length < sampleSize) return { ...emptySignal('INSUFFICIENT_DATA', quotes.length), category: 'over_under' };
   
   const digits = extractLastDigits(quotes.slice(-sampleSize), decimals);
-  const overCount = digits.filter(d => d > barrier).length;
-  const underCount = digits.length - overCount;
+  const lastDigit = digits[digits.length - 1];
   
-  const pOverLower = conservativeBinomialLowerBound(overCount, digits.length);
-  const pUnderLower = conservativeBinomialLowerBound(underCount, digits.length);
+  let barrier = 2;
+  let targetIsOver = true;
+  let theoreticalBaseline = 0.70; // P(>2) = 7/10
   
-  const theoreticalBaseline = (9 - barrier) / 10;
-  const minEdge = 0.02;
+  // Trigger: hit 1 or 2 -> trade OVER 2. Hit 8 or 9 -> trade UNDER 8.
+  if (lastDigit === 1 || lastDigit === 2) {
+    barrier = 2;
+    targetIsOver = true;
+    theoreticalBaseline = 0.70;
+  } else if (lastDigit === 8 || lastDigit === 9) {
+    barrier = 8;
+    targetIsOver = false;
+    theoreticalBaseline = 0.80; // P(<8) = 8/10
+  } else {
+    return { ...emptySignal('NO_TRIGGER_PATTERN', digits.length), category: 'over_under' };
+  }
   
-  if (pOverLower > theoreticalBaseline + minEdge) {
+  const targetCount = targetIsOver 
+    ? digits.filter(d => d > barrier).length
+    : digits.filter(d => d < barrier).length;
+    
+  const conservativeProb = conservativeBinomialLowerBound(targetCount, digits.length);
+  const minEdge = 0.025; 
+  
+  if (conservativeProb > theoreticalBaseline + minEdge) {
+    const label = targetIsOver ? `OVER ${barrier}` : `UNDER ${barrier}`;
+    const type = targetIsOver ? 'DIGITOVER' : 'DIGITUNDER';
     return {
-      category: 'over_under', contractType: 'DIGITOVER', contractLabel: `OVER ${barrier}`, barrier,
-      conservativeProbability: pOverLower, sampleSize: digits.length, theoreticalBaseline,
-      signalStrength: 'STRONG', reason: `Statistical edge: P(> ${barrier}) > ${theoreticalBaseline.toFixed(2)} + ${minEdge}`,
+      category: 'over_under',
+      contractType: type,
+      contractLabel: label,
+      barrier: barrier,
+      conservativeProbability: conservativeProb,
+      sampleSize: digits.length,
+      theoreticalBaseline,
+      signalStrength: 'STRONG',
+      reason: `Trigger: Last digit ${lastDigit}. Edge: P(${label}) > ${(theoreticalBaseline + minEdge).toFixed(3)}`,
       regime: classifyRegime(quotes, decimals)
     };
   }
-  if (pUnderLower > (1 - theoreticalBaseline) + minEdge) {
-    return {
-      category: 'over_under', contractType: 'DIGITUNDER', contractLabel: `UNDER ${barrier}`, barrier,
-      conservativeProbability: pUnderLower, sampleSize: digits.length, theoreticalBaseline: 1 - theoreticalBaseline,
-      signalStrength: 'STRONG', reason: `Statistical edge: P(< ${barrier}) > ${(1 - theoreticalBaseline).toFixed(2)} + ${minEdge}`,
-      regime: classifyRegime(quotes, decimals)
-    };
-  }
   
-  return { ...emptySignal('NO_STATISTICAL_EDGE', digits.length), category: 'over_under' };
+  return { ...emptySignal('NO_STATISTICAL_EDGE_AFTER_TRIGGER', digits.length), category: 'over_under' };
 }
 
 export function analyzeMatchesDiffers(input: number[], decimals: number): StatisticalSignal {
-  const quotes = finiteQuotes(input);
-  const sampleSize = 500;
-  if (quotes.length < sampleSize) return { ...emptySignal('INSUFFICIENT_DATA', quotes.length), category: 'matches_differs' };
-  
-  const digits = extractLastDigits(quotes.slice(-sampleSize), decimals);
-  const dist = new Array(10).fill(0);
-  digits.forEach(d => dist[d]++);
-  
-  const theoreticalBaselineMatch = 0.1;
-  const theoreticalBaselineDiffer = 0.9;
-  const minEdge = 0.02;
-  
-  for (let d = 0; d < 10; d++) {
-    const pMatchLower = conservativeBinomialLowerBound(dist[d], digits.length);
-    if (pMatchLower > theoreticalBaselineMatch + minEdge) {
-      return {
-        category: 'matches_differs', contractType: 'DIGITMATCH', contractLabel: `MATCH ${d}`, barrier: d,
-        conservativeProbability: pMatchLower, sampleSize: digits.length, theoreticalBaseline: theoreticalBaselineMatch,
-        signalStrength: 'STRONG', reason: `Statistical edge: P(MATCH ${d}) > ${theoreticalBaselineMatch} + ${minEdge}`,
-        regime: classifyRegime(quotes, decimals)
-      };
-    }
-  }
-  
-  for (let d = 0; d < 10; d++) {
-    const differsCount = digits.length - dist[d];
-    const pDifferLower = conservativeBinomialLowerBound(differsCount, digits.length);
-    if (pDifferLower > theoreticalBaselineDiffer + minEdge) {
-      return {
-        category: 'matches_differs', contractType: 'DIGITDIFF', contractLabel: `DIFFER ${d}`, barrier: d,
-        conservativeProbability: pDifferLower, sampleSize: digits.length, theoreticalBaseline: theoreticalBaselineDiffer,
-        signalStrength: 'STRONG', reason: `Statistical edge: P(DIFFER ${d}) > ${theoreticalBaselineDiffer} + ${minEdge}`,
-        regime: classifyRegime(quotes, decimals)
-      };
-    }
-  }
-  
-  return { ...emptySignal('NO_STATISTICAL_EDGE', digits.length), category: 'matches_differs' };
+  return { ...emptySignal('DISABLED_FOR_SAFETY', 0), category: 'matches_differs' };
 }
 
 export function analyzeRiseFall(input: number[]): StatisticalSignal {
@@ -283,7 +269,6 @@ export function analyzeRiseFall(input: number[]): StatisticalSignal {
   const ltfTrend = ltfFast[ltfFast.length - 1] - ltfSlow[ltfSlow.length - 1];
   
   const adxVal = adx(htf, 14);
-  
   let direction: 'CALL' | 'PUT';
   let score = 0;
   
@@ -305,16 +290,10 @@ export function analyzeRiseFall(input: number[]): StatisticalSignal {
   }
   
   return {
-    category: 'rise_fall',
-    contractType: direction,
-    contractLabel: direction === 'CALL' ? 'RISE' : 'FALL',
-    barrier: null,
-    conservativeProbability,
-    sampleSize: quotes.length,
-    theoreticalBaseline: 0.5,
+    category: 'rise_fall', contractType: direction, contractLabel: direction === 'CALL' ? 'RISE' : 'FALL',
+    barrier: null, conservativeProbability, sampleSize: quotes.length, theoreticalBaseline: 0.5,
     signalStrength: conservativeProbability > 0.65 ? 'STRONG' : 'MODERATE',
-    reason: `Trend: ${direction}, ADX: ${adxVal.toFixed(1)}, Score: ${score.toFixed(0)}`,
-    regime
+    reason: `Trend: ${direction}, ADX: ${adxVal.toFixed(1)}, Score: ${score.toFixed(0)}`, regime
   };
 }
 
@@ -322,13 +301,11 @@ export function analyzeBestSignal(quotes: number[], decimals: number): Statistic
   const results = [
     analyzeRiseFall(quotes),
     analyzeEvenOdd(quotes, decimals),
-    analyzeOverUnder(quotes, decimals, 2),
+    analyzeOverUnder(quotes, decimals),
     analyzeMatchesDiffers(quotes, decimals)
   ];
-  
   const valid = results.filter(r => r.signalStrength !== 'NO_EDGE' && r.conservativeProbability > 0);
   if (valid.length === 0) return emptySignal('NO_EDGE_IN_ANY_CATEGORY', quotes.length);
-  
   return valid.sort((a, b) => b.conservativeProbability - a.conservativeProbability)[0];
 }
 
