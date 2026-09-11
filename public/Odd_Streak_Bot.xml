@@ -1,0 +1,591 @@
+<xml xmlns="https://developers.google.com/blockly/xml" is_dbot="true" collection="false">
+  <variables>
+    <variable id="g8=sWfqhx=Mo=?X(iz1C">Prediction BL</variable>
+    <variable id="Q@58K1y5cQ0]@nrB%_F/">Prediction AL</variable>
+    <variable id="bl9gNIKkN@m|.7=Z9Dc%">Stake</variable>
+    <variable id="]5iLl6(7ZfUYNLLS6q.3">Prediction</variable>
+    <variable id="StrDUD`hhvc;uFw^et~W">Take profit</variable>
+    <variable id="!OF|(tiCVEhPXb)|U}|0">text</variable>
+    <variable id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</variable>
+    <variable id="L.cN$B-UUzkS|eDQm2xZ">Stop Loss</variable>
+    <variable id="r?74c|8o~%|1GqS~FuM:">Stake 2</variable>
+    <variable id="split_martingale_mrduke_20260824">Split Martingale</variable>
+    <variable id="new_streak_strategy">Streak</variable>
+    <variable id="new_digit_history">Digit History</variable>
+    <variable id="new_all_even_signal">All Even Signal</variable>
+    <variable id="new_all_odd_signal">All Odd Signal</variable>
+    <variable id="new_streak_loop_index">Streak Loop Index</variable>
+  </variables>
+  <block type="trade_definition" id="L@Q#-]N+XBeV+*Pk~nE2" deletable="false" x="0" y="0">
+    <statement name="TRADE_OPTIONS">
+      <block type="trade_definition_market" id=")7mn7E%5t*N8t[b1%GvP" deletable="false" movable="false">
+        <mutation xmlns="http://www.w3.org/1999/xhtml" vh_enabled="false" vh_max_steps="1" vh_min_trades="1" vh_stake="0.35"></mutation>
+        <field name="MARKET_LIST">synthetic_index</field>
+        <field name="SUBMARKET_LIST">random_index</field>
+        <field name="SYMBOL_LIST">1HZ100V</field>
+        <field name="ALTERNATE_MARKETS">FALSE</field>
+        <field name="ALTERNATE_EVERY">1</field>
+        <field name="MULTI_MARKET">FALSE</field>
+        <field name="VH_ENABLED">FALSE</field>
+        <field name="VH_SETTINGS_BTN">VH Settings</field>
+        <next>
+          <block type="trade_definition_tradetype" id="2}wcc?[fgv!x#kkTl$6o" deletable="false" movable="false">
+            <field name="TRADETYPECAT_LIST">digits</field>
+            <field name="TRADETYPE_LIST">evenodd</field>
+            <next>
+              <block type="trade_definition_contracttype" id="w,IubS0Y)aPaw[/(J,Tb" deletable="false" movable="false">
+                <field name="TYPE_LIST">both</field>
+                <next>
+                  <block type="trade_definition_candleinterval" id="Fv-$jpkN,djvJm5ThYGQ" deletable="false" movable="false">
+                    <field name="CANDLEINTERVAL_LIST">60</field>
+                    <next>
+                      <block type="trade_definition_restartbuysell" id="PClzs|t]C^18l@B^Htj(" deletable="false" movable="false">
+                        <field name="TIME_MACHINE_ENABLED">TRUE</field>
+                        <next>
+                          <block type="trade_definition_restartonerror" id="1ily$%Z!O$N;B.c]{4:c" deletable="false" movable="false">
+                            <field name="RESTARTONERROR">TRUE</field>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <statement name="INITIALIZATION">
+      <block type="variables_set" id="){D``eO*w8@p1?w`G!:X">
+        <field name="VAR" id="g8=sWfqhx=Mo=?X(iz1C">Prediction BL</field>
+        <value name="VALUE">
+          <block type="math_number" id="|-nRKt=ebaoWY[[PI~ZO">
+            <field name="NUM">3</field>
+          </block>
+        </value>
+        <next>
+          <block type="variables_set" id="F5.FPvrG2v4S=Ik1C@/#">
+            <field name="VAR" id="Q@58K1y5cQ0]@nrB%_F/">Prediction AL</field>
+            <value name="VALUE">
+              <block type="math_number" id="@;hTak8DEb,RKLCx?wf(">
+                <field name="NUM">3</field>
+              </block>
+            </value>
+            <next>
+              <block type="variables_set" id="SX9]6GL^muUpbL@PA?;n">
+                <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+                <value name="VALUE">
+                  <block type="math_number" id="O1fKsVZYzDWY]LZY?_f/">
+                    <field name="NUM">0.7</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="BI5pnBzxGCWf)sx})!sf">
+                    <field name="VAR" id="StrDUD`hhvc;uFw^et~W">Take profit</field>
+                    <value name="VALUE">
+                      <block type="math_number" id="*wk5I!Y_ZDQ23^||xJab">
+                        <field name="NUM">6</field>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="variables_set" id="D,YbxS~PJRS%p9!rAeXP">
+                        <field name="VAR" id="L.cN$B-UUzkS|eDQm2xZ">Stop Loss</field>
+                        <value name="VALUE">
+                          <block type="math_number" id="VA1^eZj2t]3lAr+x,hNT">
+                            <field name="NUM">500</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="init_2"><field name="VAR" id="new_streak_strategy">Streak</field><value name="VALUE"><block type="math_number" id="default_1"><field name="NUM">3</field></block></value><next><block type="variables_set" id="init_4"><field name="VAR" id="new_digit_history">Digit History</field><value name="VALUE"><block type="lists_create_with" id="empty_3"><mutation items="0"></mutation></block></value><next><block type="variables_set" id="init_6"><field name="VAR" id="new_all_even_signal">All Even Signal</field><value name="VALUE"><block type="math_number" id="zero_5"><field name="NUM">0</field></block></value><next><block type="variables_set" id="init_8"><field name="VAR" id="new_all_odd_signal">All Odd Signal</field><value name="VALUE"><block type="math_number" id="zero_7"><field name="NUM">0</field></block></value><next><block type="timeout" id="pNffIfX9vnqz2=l7BW5x" collapsed="true">
+                            <statement name="TIMEOUTSTACK">
+                              <block type="variables_set" id="pu`Zb;5^^#Z*p[?=_eS,">
+                                <field name="VAR" id="]5iLl6(7ZfUYNLLS6q.3">Prediction</field>
+                                <value name="VALUE">
+                                  <block type="variables_get" id="od?Balo5ttAS^vSY9cgW">
+                                    <field name="VAR" id="g8=sWfqhx=Mo=?X(iz1C">Prediction BL</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="?`F+#,2h5EuREdYOPMy^">
+                                    <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                                    <value name="VALUE">
+                                      <block type="math_number" id="fix_debt_init_zero">
+                                        <field name="NUM">0</field>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="variables_set" id="_E7*8tuf+`$15.3-W^fs">
+                                        <field name="VAR" id="r?74c|8o~%|1GqS~FuM:">Stake 2</field>
+                                        <value name="VALUE">
+                                          <block type="variables_get" id="fix_capture_base_stake">
+                                            <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+                                          </block>
+                                        </value>
+                                        <next>
+                                          <block type="variables_set" id="split_martingale_initialize">
+                                            <field name="VAR" id="split_martingale_mrduke_20260824">Split Martingale</field>
+                                            <value name="VALUE">
+                                              <block type="math_number" id="split_martingale_default_two">
+                                                <field name="NUM">1</field>
+                                              </block>
+                                            </value>
+                                            <next>
+                                              <block type="variables_set" id="mrduke_init_return_rate_memory">
+                                                <field name="VAR" id="!OF|(tiCVEhPXb)|U}|0">text</field>
+                                                <value name="VALUE">
+                                                  <block type="math_number" id="mrduke_default_return_rate_054">
+                                                    <field name="NUM">0.54</field>
+                                                  </block>
+                                                </value>
+                                              </block>
+                                            </next>
+                                          </block>
+                                        </next>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </statement>
+                            <value name="SECONDS">
+                              <block type="math_number" id="VC:-I;-k?6AL~~6%@EaQ">
+                                <field name="NUM">0</field>
+                              </block>
+                            </value>
+                          </block></next></block></next></block></next></block></next></block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <statement name="SUBMARKET">
+      <block type="trade_definition_tradeoptions" id="BlJYBZ)-T^2,JH5+%6(N" collapsed="true">
+        <mutation xmlns="http://www.w3.org/1999/xhtml" has_first_barrier="false" has_second_barrier="false" has_prediction="false"></mutation>
+        <field name="DURATIONTYPE_LIST">t</field>
+        <value name="DURATION">
+          <shadow type="math_number_positive" id="hH#~3.CCIij1UXG1F{VH">
+            <field name="NUM">1</field>
+          </shadow>
+          <block type="math_number" id="BBZ$L$2s^?~mx%ZdjZ)@">
+            <field name="NUM">1</field>
+          </block>
+        </value>
+        <value name="AMOUNT">
+          <shadow type="math_number_positive" id="zu(gUc|tiFy8i7RRa3fm">
+            <field name="NUM">1</field>
+          </shadow>
+          <block type="variables_get" id="t}jTkKZ~3l^tB^a6K2lX" collapsed="true">
+            <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+          </block>
+        </value>
+        
+      </block>
+    </statement>
+  </block>
+<block type="tick_analysis" id="tick_81" collapsed="true" x="0" y="920"><statement name="TICKANALYSIS_STACK"><block type="lists_setIndex" id="insert_82"><mutation at="false"></mutation><field name="MODE">INSERT</field><field name="WHERE">FIRST</field><value name="LIST"><block type="variables_get" id="get_83"><field name="VAR" id="new_digit_history">Digit History</field></block></value><value name="TO"><block type="last_digit" id="tick_digit_84"></block></value><next><block type="controls_if" id="trim_85"><value name="IF0"><block type="logic_compare" id="cmp_89"><field name="OP">GT</field><value name="A"><block type="lists_length" id="length_86"><value name="VALUE"><block type="variables_get" id="get_87"><field name="VAR" id="new_digit_history">Digit History</field></block></value></block></value><value name="B"><block type="math_number" id="max_88"><field name="NUM">100</field></block></value></block></value><statement name="DO0"><block type="lists_setIndex" id="remove_90"><mutation at="false"></mutation><field name="MODE">REMOVE</field><field name="WHERE">LAST</field><value name="LIST"><block type="variables_get" id="get_91"><field name="VAR" id="new_digit_history">Digit History</field></block></value></block></statement></block></next></block></statement></block>
+  <block type="after_purchase" id="qWVM-_};!KzsS]~n4Lda" collapsed="true" x="714" y="0">
+    <statement name="AFTERPURCHASE_STACK">
+      <block type="controls_if" id="|:W5CjB^?^Nc%BuV=ZEZ">
+        <mutation xmlns="http://www.w3.org/1999/xhtml" elseif="1" else="1"></mutation>
+        <value name="IF0">
+          <block type="logic_compare" id="kKr?:@]!N-;8aD1$|mYL">
+            <field name="OP">GTE</field>
+            <value name="A">
+              <block type="total_profit" id="$dP%633eN(dARC%.Jkg!"></block>
+            </value>
+            <value name="B">
+              <block type="variables_get" id="I_wGxvw|K)8}B09D,9o-">
+                <field name="VAR" id="StrDUD`hhvc;uFw^et~W">Take profit</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <statement name="DO0">
+          <block type="text_print" id="{qOcfXJ{0/s`PB,mb5.?">
+            <value name="TEXT">
+              <shadow type="text" id="/KlbwK%C*AbUk^1]K9lF">
+                <field name="TEXT">Take profit hit</field>
+              </shadow>
+            </value>
+          </block>
+        </statement>
+        <value name="IF1">
+          <block type="logic_compare" id="CWvRZjBTVuU[Nh}X.Kg-">
+            <field name="OP">LTE</field>
+            <value name="A">
+              <block type="total_profit" id="WX%?Dw?x6A}(my48Fw#/"></block>
+            </value>
+            <value name="B">
+              <block type="math_single" id="D-)2R@qBtGeI6Cf!V@:`">
+                <field name="OP">NEG</field>
+                <value name="NUM">
+                  <shadow type="math_number" id="b^(H5?UW1O^@c0o,$=@^">
+                    <field name="NUM">9</field>
+                  </shadow>
+                  <block type="variables_get" id="_IBP6Q[![h,;k}gY8A:g">
+                    <field name="VAR" id="L.cN$B-UUzkS|eDQm2xZ">Stop Loss</field>
+                  </block>
+                </value>
+              </block>
+            </value>
+          </block>
+        </value>
+        <statement name="DO1">
+          <block type="text_print" id="vKmJ{EE;u?h]jf2|t:-L">
+            <value name="TEXT">
+              <shadow type="text" id="y)?Jn$%V-jVzmdWZMLsV">
+                <field name="TEXT">Stop Loss hit</field>
+              </shadow>
+            </value>
+          </block>
+        </statement>
+        <statement name="ELSE">
+          <block type="controls_if" id="mrduke_after_loss_instant_controller">
+            <mutation xmlns="http://www.w3.org/1999/xhtml" else="1"></mutation>
+            <value name="IF0">
+              <block type="contract_check_result" id="mrduke_after_loss_is_win">
+                <field name="CHECK_RESULT">win</field>
+              </block>
+            </value>
+            <statement name="DO0">
+              <block type="variables_set" id="mrduke_update_return_rate_on_win">
+                <field name="VAR" id="!OF|(tiCVEhPXb)|U}|0">text</field>
+                <value name="VALUE">
+                  <block type="math_arithmetic" id="mrduke_return_profit_div_ask">
+                    <field name="OP">DIVIDE</field>
+                    <value name="A">
+                      <block type="read_details" id="mrduke_win_actual_profit_for_ratio">
+                        <field name="DETAIL_INDEX">4</field>
+                      </block>
+                    </value>
+                    <value name="B">
+                      <block type="read_details" id="mrduke_win_ask_for_ratio">
+                        <field name="DETAIL_INDEX">2</field>
+                      </block>
+                    </value>
+                  </block>
+                </value>
+                <next>
+                  <block type="controls_if" id="mrduke_win_check_recovery_debt">
+                    <mutation xmlns="http://www.w3.org/1999/xhtml" else="1"></mutation>
+                    <value name="IF0">
+                      <block type="logic_compare" id="mrduke_win_debt_gt_zero">
+                        <field name="OP">GT</field>
+                        <value name="A">
+                          <block type="variables_get" id="mrduke_win_debt_get">
+                            <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_number" id="mrduke_win_debt_zero">
+                            <field name="NUM">0</field>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <statement name="DO0">
+                      <block type="variables_set" id="mrduke_subtract_profit_from_debt">
+                        <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                        <value name="VALUE">
+                          <block type="math_arithmetic" id="mrduke_debt_minus_actual_profit">
+                            <field name="OP">MINUS</field>
+                            <value name="A">
+                              <block type="variables_get" id="mrduke_debt_before_win_get">
+                                <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="read_details" id="mrduke_actual_profit_reduce_debt">
+                                <field name="DETAIL_INDEX">4</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="controls_if" id="mrduke_check_debt_finished">
+                            <mutation xmlns="http://www.w3.org/1999/xhtml" else="1"></mutation>
+                            <value name="IF0">
+                              <block type="logic_compare" id="mrduke_debt_lte_cent">
+                                <field name="OP">LTE</field>
+                                <value name="A">
+                                  <block type="variables_get" id="mrduke_debt_after_win_get">
+                                    <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="mrduke_debt_cent_tolerance">
+                                    <field name="NUM">0.01</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <statement name="DO0">
+                              <block type="variables_set" id="mrduke_clear_recovery_debt">
+                                <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                                <value name="VALUE">
+                                  <block type="math_number" id="mrduke_clear_debt_zero">
+                                    <field name="NUM">0</field>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="variables_set" id="mrduke_restore_base_after_recovery">
+                                    <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+                                    <value name="VALUE">
+                                      <block type="variables_get" id="mrduke_base_get_after_recovery">
+                                        <field name="VAR" id="r?74c|8o~%|1GqS~FuM:">Stake 2</field>
+                                      </block>
+                                    </value>
+                                    <next>
+                                      <block type="variables_set" id="mrduke_restore_bl_after_recovery">
+                                        <field name="VAR" id="]5iLl6(7ZfUYNLLS6q.3">Prediction</field>
+                                        <value name="VALUE">
+                                          <block type="variables_get" id="mrduke_bl_get_after_recovery">
+                                            <field name="VAR" id="g8=sWfqhx=Mo=?X(iz1C">Prediction BL</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </next>
+                                  </block>
+                                </next>
+                              </block>
+                            </statement>
+                            <statement name="ELSE">
+                              <block type="variables_set" id="mrduke_keep_al_and_equal_stake">
+                                <field name="VAR" id="]5iLl6(7ZfUYNLLS6q.3">Prediction</field>
+                                <value name="VALUE">
+                                  <block type="variables_get" id="mrduke_keep_al_get">
+                                    <field name="VAR" id="Q@58K1y5cQ0]@nrB%_F/">Prediction AL</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </statement>
+                          </block>
+                        </next>
+                      </block>
+                    </statement>
+                    <statement name="ELSE">
+                      <block type="variables_set" id="mrduke_normal_win_reset_base">
+                        <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+                        <value name="VALUE">
+                          <block type="variables_get" id="mrduke_normal_base_get">
+                            <field name="VAR" id="r?74c|8o~%|1GqS~FuM:">Stake 2</field>
+                          </block>
+                        </value>
+                        <next>
+                          <block type="variables_set" id="mrduke_normal_win_bl">
+                            <field name="VAR" id="]5iLl6(7ZfUYNLLS6q.3">Prediction</field>
+                            <value name="VALUE">
+                              <block type="variables_get" id="mrduke_normal_bl_get">
+                                <field name="VAR" id="g8=sWfqhx=Mo=?X(iz1C">Prediction BL</field>
+                              </block>
+                            </value>
+                          </block>
+                        </next>
+                      </block>
+                    </statement>
+                  </block>
+                </next>
+              </block>
+            </statement>
+            <statement name="ELSE">
+              <block type="variables_set" id="mrduke_loss_switch_to_al">
+                <field name="VAR" id="]5iLl6(7ZfUYNLLS6q.3">Prediction</field>
+                <value name="VALUE">
+                  <block type="variables_get" id="mrduke_loss_al_get">
+                    <field name="VAR" id="Q@58K1y5cQ0]@nrB%_F/">Prediction AL</field>
+                  </block>
+                </value>
+                <next>
+                  <block type="variables_set" id="mrduke_loss_add_actual_loss_to_debt">
+                    <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                    <value name="VALUE">
+                      <block type="math_arithmetic" id="mrduke_loss_debt_plus_loss">
+                        <field name="OP">ADD</field>
+                        <value name="A">
+                          <block type="math_single" id="mrduke_loss_abs_existing_debt">
+                            <field name="OP">ABS</field>
+                            <value name="NUM">
+                              <block type="variables_get" id="mrduke_existing_debt_loss_get">
+                                <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <value name="B">
+                          <block type="math_single" id="mrduke_loss_abs_actual_loss">
+                            <field name="OP">ABS</field>
+                            <value name="NUM">
+                              <block type="read_details" id="mrduke_actual_loss_detail">
+                                <field name="DETAIL_INDEX">4</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                      </block>
+                    </value>
+                    <next>
+                      <block type="controls_if" id="mrduke_validate_split_minimum">
+                        <value name="IF0">
+                          <block type="logic_compare" id="mrduke_split_lt_one">
+                            <field name="OP">LT</field>
+                            <value name="A">
+                              <block type="variables_get" id="mrduke_split_get_validate">
+                                <field name="VAR" id="split_martingale_mrduke_20260824">Split Martingale</field>
+                              </block>
+                            </value>
+                            <value name="B">
+                              <block type="math_number" id="mrduke_split_one_compare">
+                                <field name="NUM">1</field>
+                              </block>
+                            </value>
+                          </block>
+                        </value>
+                        <statement name="DO0">
+                          <block type="variables_set" id="mrduke_force_split_one">
+                            <field name="VAR" id="split_martingale_mrduke_20260824">Split Martingale</field>
+                            <value name="VALUE">
+                              <block type="math_number" id="mrduke_split_one_value">
+                                <field name="NUM">1</field>
+                              </block>
+                            </value>
+                          </block>
+                        </statement>
+                        <next>
+                          <block type="controls_if" id="mrduke_validate_return_rate">
+                            <value name="IF0">
+                              <block type="logic_compare" id="mrduke_return_rate_lte_zero">
+                                <field name="OP">LTE</field>
+                                <value name="A">
+                                  <block type="variables_get" id="mrduke_return_rate_get_validate">
+                                    <field name="VAR" id="!OF|(tiCVEhPXb)|U}|0">text</field>
+                                  </block>
+                                </value>
+                                <value name="B">
+                                  <block type="math_number" id="mrduke_return_rate_zero_compare">
+                                    <field name="NUM">0</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </value>
+                            <statement name="DO0">
+                              <block type="variables_set" id="mrduke_force_default_return_rate">
+                                <field name="VAR" id="!OF|(tiCVEhPXb)|U}|0">text</field>
+                                <value name="VALUE">
+                                  <block type="math_number" id="mrduke_default_return_rate_again">
+                                    <field name="NUM">0.54</field>
+                                  </block>
+                                </value>
+                              </block>
+                            </statement>
+                            <next>
+                              <block type="variables_set" id="mrduke_calculate_instant_recovery_stake">
+                                <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+                                <value name="VALUE">
+                                  <block type="math_arithmetic" id="mrduke_recovery_divide_100">
+                                    <field name="OP">DIVIDE</field>
+                                    <value name="A">
+                                      <block type="math_round" id="mrduke_recovery_round_up">
+                                        <field name="OP">ROUNDUP</field>
+                                        <value name="NUM">
+                                          <block type="math_arithmetic" id="mrduke_recovery_times_100">
+                                            <field name="OP">MULTIPLY</field>
+                                            <value name="A">
+                                              <block type="math_arithmetic" id="mrduke_recovery_debt_div_split_rate">
+                                                <field name="OP">DIVIDE</field>
+                                                <value name="A">
+                                                  <block type="variables_get" id="mrduke_debt_for_recovery_stake">
+                                                    <field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field>
+                                                  </block>
+                                                </value>
+                                                <value name="B">
+                                                  <block type="math_arithmetic" id="mrduke_split_times_return_rate">
+                                                    <field name="OP">MULTIPLY</field>
+                                                    <value name="A">
+                                                      <block type="variables_get" id="mrduke_split_for_formula">
+                                                        <field name="VAR" id="split_martingale_mrduke_20260824">Split Martingale</field>
+                                                      </block>
+                                                    </value>
+                                                    <value name="B">
+                                                      <block type="variables_get" id="mrduke_return_rate_for_formula">
+                                                        <field name="VAR" id="!OF|(tiCVEhPXb)|U}|0">text</field>
+                                                      </block>
+                                                    </value>
+                                                  </block>
+                                                </value>
+                                              </block>
+                                            </value>
+                                            <value name="B">
+                                              <block type="math_number" id="mrduke_times_100_value">
+                                                <field name="NUM">100</field>
+                                              </block>
+                                            </value>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <value name="B">
+                                      <block type="math_number" id="mrduke_divide_100_value">
+                                        <field name="NUM">100</field>
+                                      </block>
+                                    </value>
+                                  </block>
+                                </value>
+                                <next>
+                                  <block type="controls_if" id="mrduke_minimum_stake_check">
+                                    <value name="IF0">
+                                      <block type="logic_compare" id="mrduke_stake_lt_min">
+                                        <field name="OP">LT</field>
+                                        <value name="A">
+                                          <block type="variables_get" id="mrduke_stake_min_get">
+                                            <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+                                          </block>
+                                        </value>
+                                        <value name="B">
+                                          <block type="math_number" id="mrduke_min_stake_compare">
+                                            <field name="NUM">0.35</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </value>
+                                    <statement name="DO0">
+                                      <block type="variables_set" id="mrduke_force_min_stake">
+                                        <field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field>
+                                        <value name="VALUE">
+                                          <block type="math_number" id="mrduke_min_stake_value">
+                                            <field name="NUM">0.35</field>
+                                          </block>
+                                        </value>
+                                      </block>
+                                    </statement>
+                                  </block>
+                                </next>
+                              </block>
+                            </next>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </statement>
+            <next>
+              <block type="trade_again" id="mrduke_trade_again_after_instant_stake"></block>
+            </next>
+          </block>
+        </statement>
+      </block>
+    </statement>
+  </block>
+<block type="before_purchase" id="before_76 " collapsed="true" deletable="false" x="0" y="986"><statement name="BEFOREPURCHASE_STACK"><block type="variables_set" id="set_80"><field name="VAR" id="new_all_even_signal">All Even Signal</field><value name="VALUE"><block type="math_number" id="one_77"><field name="NUM">1</field></block></value><next><block type="variables_set" id="set_79"><field name="VAR" id="new_all_odd_signal">All Odd Signal</field><value name="VALUE"><block type="math_number" id="one_78"><field name="NUM">1</field></block></value><next><block type="controls_if" id="enough_75"><value name="IF0"><block type="logic_compare" id="cmp_56"><field name="OP">GTE</field><value name="A"><block type="lists_length" id="length_53"><value name="VALUE"><block type="variables_get" id="get_54"><field name="VAR" id="new_digit_history">Digit History</field></block></value></block></value><value name="B"><block type="variables_get" id="get_55"><field name="VAR" id="new_streak_strategy">Streak</field></block></value></block></value><statement name="DO0"><block type="controls_for" id="for_71"><field name="VAR" id="new_streak_loop_index">Streak Loop Index</field><value name="FROM"><block type="math_number" id="from_72"><field name="NUM">1</field></block></value><value name="TO"><block type="variables_get" id="get_73"><field name="VAR" id="new_streak_strategy">Streak</field></block></value><value name="BY"><block type="math_number" id="by_74"><field name="NUM">1</field></block></value><statement name="DO"><block type="variables_set" id="set_70"><field name="VAR" id="new_all_even_signal">All Even Signal</field><value name="VALUE"><block type="logic_operation" id="and_62"><field name="OP">AND</field><value name="A"><block type="variables_get" id="get_57"><field name="VAR" id="new_all_even_signal">All Even Signal</field></block></value><value name="B"><block type="math_number_property" id="parity_61"><mutation divisor_input="false"></mutation><field name="PROPERTY">EVEN</field><value name="NUMBER_TO_CHECK"><block type="lists_getIndex" id="last_58"><mutation statement="false" at="true"></mutation><field name="MODE">GET</field><field name="WHERE">FROM_END</field><value name="VALUE"><block type="variables_get" id="get_59"><field name="VAR" id="new_digit_history">Digit History</field></block></value><value name="AT"><block type="variables_get" id="get_60"><field name="VAR" id="new_streak_loop_index">Streak Loop Index</field></block></value></block></value></block></value></block></value><next><block type="variables_set" id="set_69"><field name="VAR" id="new_all_odd_signal">All Odd Signal</field><value name="VALUE"><block type="logic_operation" id="and_68"><field name="OP">AND</field><value name="A"><block type="variables_get" id="get_63"><field name="VAR" id="new_all_odd_signal">All Odd Signal</field></block></value><value name="B"><block type="math_number_property" id="parity_67"><mutation divisor_input="false"></mutation><field name="PROPERTY">ODD</field><value name="NUMBER_TO_CHECK"><block type="lists_getIndex" id="last_64"><mutation statement="false" at="true"></mutation><field name="MODE">GET</field><field name="WHERE">FROM_END</field><value name="VALUE"><block type="variables_get" id="get_65"><field name="VAR" id="new_digit_history">Digit History</field></block></value><value name="AT"><block type="variables_get" id="get_66"><field name="VAR" id="new_streak_loop_index">Streak Loop Index</field></block></value></block></value></block></value></block></value></block></next></block></statement><next><block type="controls_if" id="odd_signal_51"><value name="IF0"><block type="variables_get" id="get_52"><field name="VAR" id="new_all_even_signal">All Even Signal</field></block></value><statement name="DO0"><block type="controls_if" id="debt_choice_47"><mutation xmlns="http://www.w3.org/1999/xhtml" else="1"></mutation><value name="IF0"><block type="logic_compare" id="cmp_50"><field name="OP">GT</field><value name="A"><block type="variables_get" id="get_48"><field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field></block></value><value name="B"><block type="math_number" id="zero_49"><field name="NUM">0</field></block></value></block></value><statement name="DO0"><block type="variables_set" id="set_44"><field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field><value name="VALUE"><block type="math_arithmetic" id="recovery_stake_41"><field name="OP">DIVIDE</field><value name="A"><block type="math_round" id="round_42"><field name="OP">ROUNDUP</field><value name="NUM"><block type="math_arithmetic" id="scaled_39"><field name="OP">MULTIPLY</field><value name="A"><block type="math_arithmetic" id="exact_38"><field name="OP">DIVIDE</field><value name="A"><block type="math_arithmetic" id="nume_36"><field name="OP">MULTIPLY</field><value name="A"><block type="variables_get" id="get_37"><field name="VAR" id=";!A*]:=Ua],2zrcP=+@$">Entry Digit</field></block></value><value name="B"><block type="ask_price" id="ask_32"><field name="PURCHASE_LIST">DIGITODD</field></block></value></block></value><value name="B"><block type="math_arithmetic" id="net_35"><field name="OP">MINUS</field><value name="A"><block type="payout" id="payout_34"><field name="PURCHASE_LIST">DIGITODD</field></block></value><value name="B"><block type="ask_price" id="ask_33"><field name="PURCHASE_LIST">DIGITODD</field></block></value></block></value></block></value><value name="B"><block type="math_number" id="hundred_40"><field name="NUM">100</field></block></value></block></value></block></value><value name="B"><block type="math_number" id="hundred_43"><field name="NUM">100</field></block></value></block></value><next><block type="apollo_purchase" id="recovery_purchase_30"><field name="PURCHASE_LIST">DIGITODD</field></block></next></block></statement><statement name="ELSE"><block type="variables_set" id="set_46"><field name="VAR" id="bl9gNIKkN@m|.7=Z9Dc%">Stake</field><value name="VALUE"><block type="variables_get" id="get_45"><field name="VAR" id="r?74c|8o~%|1GqS~FuM:">Stake 2</field></block></value><next><block type="apollo_purchase" id="base_purchase_31"><field name="PURCHASE_LIST">DIGITODD</field></block></next></block></statement></block></statement></block></next></block></statement></block></next></block></next></block></statement></block>
+</xml>
+
+
+
